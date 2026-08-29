@@ -79,8 +79,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: macOS arm64
-            os: macos-15-arm64
+          - name: macOS x86_64
+            os: macos-15-intel
           - name: Windows x86_64
             os: windows-2025
     runs-on: ${{ matrix.os }}

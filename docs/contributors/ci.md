@@ -11,7 +11,7 @@ updates to those pins.
   spelling, runs Clippy and rustdoc with warnings denied, tests, the workspace
   build, and unused dependencies using the committed Rust toolchain and
   lockfile.
-- `CI / Platform (macOS arm64)` and `CI / Platform (Windows x86_64)` build and
+- `CI / Platform (macOS x86_64)` and `CI / Platform (Windows x86_64)` build and
   test the executable on the other documented host platforms. These jobs use
   the locked Cargo graph and the same pinned CUE release as Linux.
 - `CI / Nix` evaluates and builds the flake, checks formatting, and rejects
@@ -57,7 +57,7 @@ gate.
 
 The Release workflow can be started manually from `main`. A manual run performs
 the complete validation and produces deterministic ZIP archives plus SPDX SBOMs
-for Linux x86_64, macOS arm64, and Windows x86_64. It never creates a GitHub
+for Linux x86_64, macOS x86_64, and Windows x86_64. It never creates a GitHub
 Release or requests attestations; publication remains restricted to an
 annotated `vMAJOR.MINOR.PATCH` tag whose commit belongs to `main`.
 
