@@ -124,6 +124,7 @@
               cargo-outdated
               cargo-udeps
               cue
+              deadnix
               fujicliToolchain
               libusb1
               pkg-config
@@ -161,6 +162,13 @@
           treefmt = inputs.treefmt-nix.lib.evalModule pkgs ./treefmt.nix;
         in
         {
+          deadnix = pkgs.runCommand "deadnix-check" {
+            nativeBuildInputs = [ pkgs.deadnix ];
+          } ''
+            cd ${inputs.self}
+            deadnix --fail .
+            touch "$out"
+          '';
           package-fujicli = inputs.self.packages.${system}.fujicli;
           formatting = treefmt.config.build.check inputs.self;
           devShell-default = inputs.self.devShells.${system}.default;
