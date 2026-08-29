@@ -138,6 +138,11 @@ Use `-` in place of any input or output filename to read from stdin or write to
 stdout. RAF input is limited to 512 MiB; simulation JSON remains limited to
 1 MiB. Inputs are read before the camera connection is opened.
 
+If the camera returns the rendered JPEG but fails to remove its temporary
+object, the CLI still saves the JPEG and then exits unsuccessfully with the
+camera cleanup error. The saved image is usable, but the camera may retain the
+temporary render object until it is cleaned up or restarted.
+
 ## Output and Logging
 
 `-j / --json` switches list/get commands to pretty JSON. Without it, output is

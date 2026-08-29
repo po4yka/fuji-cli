@@ -21,6 +21,13 @@ pub struct RenderCleanupError {
 }
 
 impl RenderCleanupError {
+    pub fn new(rendered_data: Vec<u8>, cleanup: anyhow::Error) -> Self {
+        Self {
+            rendered_data,
+            cleanup,
+        }
+    }
+
     pub fn rendered_data(&self) -> &[u8] {
         &self.rendered_data
     }
@@ -137,11 +144,9 @@ fn fetch_rendered_object<I: RenderObjectIo>(io: &mut I, handle: u32) -> anyhow::
 
     match (image, cleanup) {
         (Ok(rendered_data), Ok(())) => Ok(rendered_data),
-        (Ok(rendered_data), Err(cleanup)) => Err(RenderCleanupError {
-            rendered_data,
-            cleanup,
+        (Ok(rendered_data), Err(cleanup)) => {
+            Err(RenderCleanupError::new(rendered_data, cleanup).into())
         }
-        .into()),
         (Err(fetch), Ok(())) => Err(fetch),
         (Err(fetch), Err(cleanup)) => Err(RenderFetchError { fetch, cleanup }.into()),
     }

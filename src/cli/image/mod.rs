@@ -1,5 +1,8 @@
-use fujicli::generated::{
-    cli::RenderArgs, options::CustomSetting, renders::RenderBase, simulations::SimulationBase,
+use fujicli::{
+    features::render::RenderCleanupError,
+    generated::{
+        cli::RenderArgs, options::CustomSetting, renders::RenderBase, simulations::SimulationBase,
+    },
 };
 
 use super::common::file::{Input, Output};
@@ -7,6 +10,21 @@ use crate::cli::{GlobalOptions, common::usb};
 use clap::Subcommand;
 
 const MAX_IMAGE_INPUT_BYTES: usize = 512 * 1024 * 1024;
+
+fn write_render_result(
+    output: &Output,
+    render_result: anyhow::Result<Vec<u8>>,
+) -> anyhow::Result<()> {
+    match render_result {
+        Ok(rendered) => output.write_all(&rendered),
+        Err(error) => {
+            if let Some(cleanup) = error.downcast_ref::<RenderCleanupError>() {
+                output.write_all(cleanup.rendered_data())?;
+            }
+            Err(error)
+        }
+    }
+}
 
 #[derive(Subcommand, Debug)]
 pub enum ImageCmd {
@@ -79,11 +97,7 @@ fn handle_render(
     }
     base.merge(render.into());
 
-    let rendered = camera.render(&image, base, draft)?;
-
-    output.write_all(&rendered)?;
-
-    Ok(())
+    write_render_result(&output, camera.render(&image, base, draft))
 }
 
 pub fn handle(cmd: ImageCmd, options: GlobalOptions) -> anyhow::Result<()> {
@@ -96,5 +110,44 @@ pub fn handle(cmd: ImageCmd, options: GlobalOptions) -> anyhow::Result<()> {
             input,
             output,
         } => handle_render(options, slot, simulation_file, draft, render, input, output),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use anyhow::anyhow;
+    use fujicli::features::render::RenderCleanupError;
+    use tempfile::tempdir;
+
+    use super::{Output, write_render_result};
+
+    #[test]
+    fn saves_rendered_image_before_returning_camera_cleanup_failure() -> anyhow::Result<()> {
+        let directory = tempdir()?;
+        let destination = directory.path().join("rendered.jpg");
+        let rendered = b"rendered JPEG".to_vec();
+        let render_result = Err(RenderCleanupError::new(
+            rendered.clone(),
+            anyhow!("simulated camera cleanup failure"),
+        )
+        .into());
+
+        let error = write_render_result(&Output::Path(destination.clone()), render_result)
+            .expect_err("camera cleanup failure must keep the command unsuccessful");
+
+        assert!(
+            destination.exists(),
+            "successfully fetched JPEG must be saved despite cleanup failure"
+        );
+        assert_eq!(fs::read(destination)?, rendered);
+        assert!(
+            error
+                .to_string()
+                .contains("rendered image was fetched, but camera cleanup failed"),
+            "unexpected cleanup error: {error:#}"
+        );
+        Ok(())
     }
 }
