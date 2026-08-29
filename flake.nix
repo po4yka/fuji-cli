@@ -127,6 +127,7 @@
               fujicliToolchain
               libusb1
               pkg-config
+              taplo
             ];
 
             shellHook = ''
@@ -162,6 +163,13 @@
           package-fujicli = inputs.self.packages.${system}.fujicli;
           formatting = treefmt.config.build.check inputs.self;
           devShell-default = inputs.self.devShells.${system}.default;
+          taplo-lint = pkgs.runCommand "taplo-lint" {
+            nativeBuildInputs = [ pkgs.taplo ];
+          } ''
+            cd ${inputs.self}
+            taplo lint .
+            touch "$out"
+          '';
         }
       );
     };

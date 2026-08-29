@@ -15,6 +15,7 @@
       package = pkgs.fujicliToolchain;
     };
     shellcheck.enable = true;
+    taplo.enable = true;
   };
 
   settings.global.excludes = [ ".envrc" ];
