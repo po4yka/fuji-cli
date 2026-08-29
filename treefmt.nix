@@ -1,4 +1,4 @@
-{ ... }:
+{ pkgs, ... }:
 {
   projectRootFile = "flake.nix";
 
@@ -8,7 +8,10 @@
       strict = true;
     };
 
-    rustfmt.enable = true;
+    rustfmt = {
+      enable = true;
+      package = pkgs.fujicliToolchain;
+    };
     shellcheck.enable = true;
   };
 

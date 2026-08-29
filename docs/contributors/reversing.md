@@ -89,8 +89,7 @@ user-facing options and what the camera stores on the wire.
   RAW Studio. Minimal install ISOs without Microsoft's bullshit can be built at
   <https://schneegans.de/windows/unattend-generator/>.
 - **Wireshark** - for USB packet capture. A patched build that exposes
-  `frame.raw` in `tshark` is required for USB traffic; track the upstream
-  discussion in <https://gitlab.com/wireshark/wireshark/-/issues/20908>.
+  `frame.raw` in `tshark` is required for USB traffic.
 
 ### Procedure
 

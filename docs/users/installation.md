@@ -27,8 +27,8 @@ You need:
 
 - [rustup](https://rustup.rs/), which installs the repository's pinned Rust
   toolchain automatically.
-- [CUE](https://cuelang.org/) on `PATH` - the build script invokes `cue export`
-  to materialize the schema into JSON.
+- [CUE](https://cuelang.org/) 0.16.1 on `PATH` - the build script invokes
+  `cue export` to materialize the schema into JSON.
 - A C toolchain and `libusb-1.0` headers, for the `rusb` dependency.
 
 Then:
