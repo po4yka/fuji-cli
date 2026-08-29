@@ -20,8 +20,8 @@ def arguments() -> argparse.Namespace:
 
 
 def archive_timestamp(epoch: int) -> tuple[int, int, int, int, int, int]:
-    timestamp = dt.datetime.fromtimestamp(epoch, tz=dt.UTC)
-    timestamp = max(timestamp, dt.datetime(1980, 1, 1, tzinfo=dt.UTC))
+    timestamp = dt.datetime.fromtimestamp(epoch, tz=dt.timezone.utc)
+    timestamp = max(timestamp, dt.datetime(1980, 1, 1, tzinfo=dt.timezone.utc))
     return (
         timestamp.year,
         timestamp.month,
