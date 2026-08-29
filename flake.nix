@@ -127,6 +127,7 @@
               deadnix
               fujicliToolchain
               libusb1
+              markdownlint-cli2
               pkg-config
               statix
               taplo

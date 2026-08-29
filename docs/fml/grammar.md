@@ -114,7 +114,7 @@ There is no "merge" assignment; express that as multiple `apply` entries.
 Each leaf becomes a Rust boolean expression over `self.<field>`, or
 `original.<field>` when `scope: "original"`. Sketch:
 
-```
+```text
 {ref: "x", equals: 5}     (integer)        -> self.x.is_some_and(|v| i32::from(v) == 5i32)
 {ref: "x", scope: "original", equals: 5}   -> original.x.is_some_and(|v| i32::from(v) == 5i32)
 {ref: "x", in: ["a", "b"]} (enum)          -> self.x.is_some_and(|v| matches!(v, Path::A | Path::B))

@@ -25,7 +25,7 @@ CUE gives us three properties that drive the design:
 
 ## Layout
 
-```
+```text
 fml/
   main.cue        # Definition root
   grammar.cue     # Shared predicate / assignment grammar

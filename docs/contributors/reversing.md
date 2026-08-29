@@ -1,6 +1,6 @@
 # Reversing Fujifilm Cameras
 
-```
+```text
 Reverse engineer device communication
 
 Only run this if you have a full device backup and know what you are doing. Misuse can corrupt your camera or void your warranty.

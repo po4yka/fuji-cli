@@ -3,7 +3,7 @@
 The clever bits. Each pass turns one form of the AST into another that's better
 suited to the next step. The whole pipeline:
 
-```
+```text
 Predicate                          (ast/grammar.rs)
   | Dnf::from
   v
@@ -184,7 +184,7 @@ predicate is what `try_pull` wraps each read with.
 
 The intuition: the rule
 
-```
+```text
 Present(X) && cond(Y)  // X being set is inconsistent with cond(Y)
 ```
 
@@ -320,7 +320,7 @@ equivalent (the camera will render the same image).
 
 ## Putting It All Together - The `try_update_from` Path
 
-```
+```text
 SimulationBase (partial)
     |
     | project into Self::default(), then per-field copy from partial
@@ -353,7 +353,7 @@ before the merge and passes it through `solve(&pin, &original)` and
 
 The `try_pull` (read) path is simpler:
 
-```
+```text
 for each field in read order:
     if gate(staged): staged.<field> = Some(read from PTP)
     else:            staged.<field> = None

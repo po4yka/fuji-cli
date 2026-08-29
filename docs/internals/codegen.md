@@ -115,7 +115,7 @@ the `Simulation` trait impl (`try_pull` / `try_push` talking to PTP),
 
 `try_update_from` is the key method:
 
-```
+```text
 1. partial_profile = take the SimulationBase, project into Self fields
 2. partial_profile.apply_transformations()
 3. pin = the set of field ids that were Some in partial_profile (the

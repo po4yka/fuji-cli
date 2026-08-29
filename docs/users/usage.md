@@ -1,6 +1,6 @@
 # Usage
 
-```
+```text
 A CLI to manage Fujifilm devices, simulations, backups, and rendering
 
 Usage: fujicli [OPTIONS] <COMMAND>
