@@ -3,6 +3,8 @@
   projectRootFile = "flake.nix";
 
   programs = {
+    cue.enable = true;
+
     nixfmt = {
       enable = true;
       strict = true;
