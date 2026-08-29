@@ -33,7 +33,7 @@ elif [[ "$header_padding_arg" =~ ^[0-9]+$ ]]; then
     header_padding_digits="${header_padding_digits:1}"
   done
   if (( ${#header_padding_digits} > 10 )) ||
-    [[ ${#header_padding_digits} -eq 10 && "$header_padding_digits" > "4294967295" ]]; then
+    (( ${#header_padding_digits} == 10 && 10#$header_padding_digits > 4294967295 )); then
     echo "render-header-padding-bytes must fit uint32" >&2
     exit 64
   fi
