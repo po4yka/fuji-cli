@@ -195,7 +195,7 @@ jobs:
           path: target/${{ matrix.target }}/release/${{ matrix.binary }}
           format: spdx-json
           output-file: dist/fujicli-${{ needs.validate.outputs.release-label }}-${{ matrix.target }}.spdx.json
-          syft-version: 1.51.1
+          syft-version: v1.51.1
           dependency-snapshot: false
           upload-artifact: false
           upload-release-assets: false
