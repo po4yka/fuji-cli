@@ -4,6 +4,37 @@ members = [
     "crates/codegen",
 ]
 
+[workspace.lints.rust]
+let_underscore_drop = "deny"
+non_ascii_idents = "deny"
+unconditional_recursion = "deny"
+unused_must_use = "deny"
+
+[workspace.lints.rustdoc]
+broken_intra_doc_links = "deny"
+
+[workspace.lints.clippy]
+complexity = { level = "warn", priority = -1 }
+correctness = { level = "deny", priority = -1 }
+perf = { level = "warn", priority = -1 }
+style = { level = "warn", priority = -1 }
+suspicious = { level = "deny", priority = -1 }
+allow_attributes_without_reason = "warn"
+cloned_instead_of_copied = "warn"
+explicit_into_iter_loop = "warn"
+explicit_iter_loop = "warn"
+implicit_clone = "warn"
+inefficient_to_string = "warn"
+manual_let_else = "warn"
+map_unwrap_or = "warn"
+match_wildcard_for_single_variants = "warn"
+redundant_closure_for_method_calls = "warn"
+semicolon_if_nothing_returned = "warn"
+trivially_copy_pass_by_ref = "warn"
+uninlined_format_args = "warn"
+unnested_or_patterns = "warn"
+unused_self = "warn"
+
 [package]
 name = "fujicli"
 version = "0.2.0"
@@ -14,6 +45,9 @@ authors = [
     "Nikita Pochaev",
 ]
 build = "build.rs"
+
+[lints]
+workspace = true
 
 [lib]
 name = "fujicli"

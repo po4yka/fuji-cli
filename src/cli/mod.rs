@@ -38,7 +38,10 @@ pub struct GlobalOptions {
     #[arg(long, short = 'd', global = true)]
     pub device: Option<Location>,
 
-    #[allow(clippy::doc_markdown)]
+    #[expect(
+        clippy::doc_markdown,
+        reason = "the angle-bracket notation is user-facing CLI syntax, not Rust documentation"
+    )]
     /// Treat device as a different model using <VENDOR_ID>:<PRODUCT_ID>
     #[arg(long, global = true)]
     pub emulate: Option<Identity>,

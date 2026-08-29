@@ -215,7 +215,7 @@ fn generate_from_str_impl(type_name: &Ident) -> anyhow::Result<TokenStream> {
             fn from_str(s: &str) -> ::anyhow::Result<Self> {
                 let logical = crate::input::CleanAlphanumeric::clean(&s)
                     .parse::<f32>()
-                    .map_err(|e| ::anyhow::anyhow!("Invalid numeric value '{}': {}", s, e))?;
+                    .map_err(|e| ::anyhow::anyhow!("Invalid numeric value '{s}': {e}"))?;
                 Self::try_from(logical)
             }
         }

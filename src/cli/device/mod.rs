@@ -27,7 +27,10 @@ pub enum DeviceCmd {
     Reverse(ReverseCmd),
 }
 
-#[allow(clippy::needless_pass_by_value)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "command handlers consume parsed CLI values"
+)]
 fn handle_list(options: GlobalOptions) -> anyhow::Result<()> {
     let GlobalOptions { json, .. } = options;
 
@@ -53,7 +56,10 @@ fn handle_list(options: GlobalOptions) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[allow(clippy::needless_pass_by_value)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "command handlers consume parsed CLI values"
+)]
 fn handle_info(options: GlobalOptions) -> anyhow::Result<()> {
     let GlobalOptions {
         json,

@@ -21,7 +21,10 @@ pub enum BackupCmd {
     },
 }
 
-#[allow(clippy::needless_pass_by_value)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "command handlers consume parsed CLI values"
+)]
 fn handle_export(options: GlobalOptions, output: Output) -> anyhow::Result<()> {
     let GlobalOptions {
         device, emulate, ..
@@ -35,7 +38,10 @@ fn handle_export(options: GlobalOptions, output: Output) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[allow(clippy::needless_pass_by_value)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "command handlers consume parsed CLI values"
+)]
 fn handle_import(options: GlobalOptions, input: Input) -> anyhow::Result<()> {
     let GlobalOptions {
         device, emulate, ..

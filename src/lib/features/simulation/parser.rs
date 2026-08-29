@@ -14,9 +14,8 @@ mod tests {
 
     #[test]
     fn import_rejects_an_empty_incomplete_profile() {
-        let error = match XS20.deserialize_simulation(b"{}") {
-            Ok(_) => panic!("an imported profile must contain all required settings"),
-            Err(error) => error,
+        let Err(error) = XS20.deserialize_simulation(b"{}") else {
+            panic!("an imported profile must contain all required settings");
         };
 
         assert!(
@@ -27,9 +26,8 @@ mod tests {
 
     #[test]
     fn import_rejects_a_misspelled_setting() {
-        let error = match XS20.deserialize_simulation(br#"{"filmSimulaton": 1}"#) {
-            Ok(_) => panic!("unknown JSON fields must not be ignored"),
-            Err(error) => error,
+        let Err(error) = XS20.deserialize_simulation(br#"{"filmSimulaton": 1}"#) else {
+            panic!("unknown JSON fields must not be ignored");
         };
 
         assert!(

@@ -70,8 +70,7 @@ impl<'a> Dag<'a> {
                 .map(|(i, _)| self.nodes[i])
                 .collect();
             bail!(
-                "ordering cycle detected among settings: {:?} (cannot produce a stable read/write order)",
-                stuck
+                "ordering cycle detected among settings: {stuck:?} (cannot produce a stable read/write order)"
             );
         }
 

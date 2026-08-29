@@ -380,7 +380,10 @@ pub fn generate_emit_warnings_and_infos(
         None => quote! {},
     };
     Ok(quote! {
-        #[allow(unused_variables)]
+        #[allow(
+            unused_variables,
+            reason = "generated signatures stay uniform when a schema needs no warning context"
+        )]
         fn emit_warnings_and_infos(&self #original_param) -> ::anyhow::Result<()> {
             #( #parts )*
             Ok(())

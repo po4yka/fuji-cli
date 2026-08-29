@@ -345,7 +345,10 @@ fn generate_ptp_deserialize_impl(
         impl ::binrw::BinRead for #struct_ident {
             type Args<'a> = ();
 
-            #[allow(clippy::field_reassign_with_default)]
+            #[allow(
+                clippy::field_reassign_with_default,
+                reason = "generated field decoding assigns options in wire order"
+            )]
             fn read_options<R: ::std::io::Read + ::std::io::Seek>(
                 reader: &mut R,
                 _endian: ::binrw::Endian,

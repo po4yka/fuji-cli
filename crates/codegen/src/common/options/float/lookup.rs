@@ -178,8 +178,8 @@ fn generate_inherent_impl(type_name: &Ident, resolved: &[Resolved]) -> anyhow::R
         })
         .collect();
 
-    let logical_min = resolved.first().map(|r| r.logical).unwrap_or(0.0);
-    let logical_max = resolved.last().map(|r| r.logical).unwrap_or(0.0);
+    let logical_min = resolved.first().map_or(0.0, |r| r.logical);
+    let logical_max = resolved.last().map_or(0.0, |r| r.logical);
 
     Ok(quote! {
         impl #type_name {
@@ -198,8 +198,7 @@ fn generate_inherent_impl(type_name: &Ident, resolved: &[Resolved]) -> anyhow::R
                         let db = (b.0 - value).abs();
                         da.partial_cmp(&db).unwrap_or(::std::cmp::Ordering::Equal)
                     })
-                    .map(|(_, v)| *v)
-                    .unwrap_or(Self::VALUES[0].1)
+                    .map_or(Self::VALUES[0].1, |(_, v)| *v)
             }
         }
     })
@@ -265,7 +264,7 @@ fn generate_from_str_impl(type_name: &Ident) -> anyhow::Result<TokenStream> {
             fn from_str(s: &str) -> ::anyhow::Result<Self> {
                 let value = crate::input::CleanAlphanumeric::clean(&s)
                     .parse::<f32>()
-                    .map_err(|e| ::anyhow::anyhow!("Invalid numeric value '{}': {}", s, e))?;
+                    .map_err(|e| ::anyhow::anyhow!("Invalid numeric value '{s}': {e}"))?;
                 if !(Self::LOGICAL_MIN..=Self::LOGICAL_MAX).contains(&value) {
                     ::anyhow::bail!(
                         "{} value {} is out of range [{}, {}]",

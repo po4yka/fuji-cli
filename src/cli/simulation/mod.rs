@@ -53,7 +53,10 @@ pub enum SimulationCmd {
     },
 }
 
-#[allow(clippy::needless_pass_by_value)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "command handlers consume parsed CLI values"
+)]
 fn handle_list(options: GlobalOptions) -> anyhow::Result<()> {
     let GlobalOptions {
         json,
@@ -85,7 +88,10 @@ fn handle_list(options: GlobalOptions) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[allow(clippy::needless_pass_by_value)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "command handlers consume parsed CLI values"
+)]
 fn handle_get(options: GlobalOptions, slot: CustomSetting) -> anyhow::Result<()> {
     let GlobalOptions {
         json,
@@ -110,7 +116,10 @@ fn handle_get(options: GlobalOptions, slot: CustomSetting) -> anyhow::Result<()>
     Ok(())
 }
 
-#[allow(clippy::needless_pass_by_value)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "command handlers consume parsed CLI values"
+)]
 fn handle_set(
     options: GlobalOptions,
     simulation: SimulationArgs,
@@ -126,7 +135,10 @@ fn handle_set(
     Ok(())
 }
 
-#[allow(clippy::needless_pass_by_value)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "command handlers consume parsed CLI values"
+)]
 fn handle_export(
     options: GlobalOptions,
     slot: CustomSetting,
@@ -145,7 +157,10 @@ fn handle_export(
     Ok(())
 }
 
-#[allow(clippy::needless_pass_by_value)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "command handlers consume parsed CLI values"
+)]
 fn handle_import(options: GlobalOptions, slot: CustomSetting, input: Input) -> anyhow::Result<()> {
     let GlobalOptions {
         device, emulate, ..

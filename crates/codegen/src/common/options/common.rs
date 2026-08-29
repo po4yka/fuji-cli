@@ -19,19 +19,11 @@ pub fn resolve_numeric_repr_signed(min: i32, max: i32) -> anyhow::Result<bool> {
     let above_u16_max = max > i32::from(u16::MAX);
 
     if below_i16_min || above_u16_max {
-        bail!(
-            "wire value range [{}, {}] fits neither i16 nor u16",
-            min,
-            max
-        );
+        bail!("wire value range [{min}, {max}] fits neither i16 nor u16");
     }
 
     if negative && above_i16_max {
-        bail!(
-            "wire values [{}, {}] mix negatives with values above i16::MAX",
-            min,
-            max
-        );
+        bail!("wire values [{min}, {max}] mix negatives with values above i16::MAX");
     }
 
     Ok(negative)

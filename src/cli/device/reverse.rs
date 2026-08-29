@@ -81,7 +81,10 @@ fn log_simulation_probe<T, E>(code: u16, result: &Result<T, E>) {
     }
 }
 
-#[allow(clippy::needless_pass_by_value)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "command handlers consume parsed CLI values"
+)]
 fn handle_backup_export(options: GlobalOptions, output: Output) -> anyhow::Result<()> {
     let GlobalOptions { device, .. } = options;
 
@@ -104,7 +107,10 @@ fn handle_backup_export(options: GlobalOptions, output: Output) -> anyhow::Resul
     Ok(())
 }
 
-#[allow(clippy::needless_pass_by_value)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "command handlers consume parsed CLI values"
+)]
 fn handle_backup_import(options: GlobalOptions, input: Input) -> anyhow::Result<()> {
     let GlobalOptions { device, .. } = options;
 
@@ -118,7 +124,10 @@ fn handle_backup_import(options: GlobalOptions, input: Input) -> anyhow::Result<
     Ok(())
 }
 
-#[allow(clippy::needless_pass_by_value)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "command handlers consume parsed CLI values"
+)]
 fn handle_info(options: GlobalOptions) -> anyhow::Result<()> {
     let GlobalOptions { device, .. } = options;
 
@@ -137,9 +146,10 @@ fn handle_info(options: GlobalOptions) -> anyhow::Result<()> {
     probes.finish("camera info")
 }
 
-#[allow(clippy::too_many_lines)]
-#[allow(clippy::cognitive_complexity)]
-#[allow(clippy::needless_pass_by_value)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "command handlers consume parsed CLI values"
+)]
 fn handle_simulation(options: GlobalOptions) -> anyhow::Result<()> {
     let GlobalOptions { device, .. } = options;
 

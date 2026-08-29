@@ -116,7 +116,7 @@ pub fn import_backup_over_ptp(ptp: &mut Ptp, buffer: &[u8]) -> anyhow::Result<()
 pub trait CameraBackupManager: CameraBase {
     fn export_backup(&self, ptp: &mut Ptp) -> anyhow::Result<Vec<u8>> {
         debug!("Starting backup export");
-        let _ = ptp.send(CommandCode::GetObjectInfo, &EXPORT_OBJECT_INFO_HANDLE, None)?;
+        drop(ptp.send(CommandCode::GetObjectInfo, &EXPORT_OBJECT_INFO_HANDLE, None)?);
         let response = ptp.send(CommandCode::GetObject, &OBJECT_HANDLE, None)?;
         debug!("Backup export completed");
 

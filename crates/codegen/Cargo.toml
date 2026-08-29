@@ -11,6 +11,9 @@ authors = [
 [lib]
 path = "src/lib.rs"
 
+[lints]
+workspace = true
+
 [dependencies]
 anyhow = "1.0.104"
 heck = "0.5.0"

@@ -213,7 +213,10 @@ impl Ptp {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the transport call mirrors the PTP endpoint and transaction tuple"
+)]
 fn send_with_transport<T: BulkTransport>(
     transport: &T,
     bulk_in: u8,
@@ -239,7 +242,10 @@ fn send_with_transport<T: BulkTransport>(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the transport call mirrors the PTP endpoint, transaction, and clock tuple"
+)]
 fn send_with_transport_and_clock<T: BulkTransport, C: Clock>(
     transport: &T,
     bulk_in: u8,
@@ -267,7 +273,10 @@ fn send_with_transport_and_clock<T: BulkTransport, C: Clock>(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the transport call mirrors the PTP endpoint, transaction, and deadline tuple"
+)]
 fn send_with_transport_until<T: BulkTransport>(
     transport: &T,
     bulk_in: u8,
@@ -295,7 +304,10 @@ fn send_with_transport_until<T: BulkTransport>(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the transport call mirrors the PTP endpoint, transaction, deadline, and clock tuple"
+)]
 fn send_with_transport_until_and_clock<T: BulkTransport, C: Clock>(
     transport: &T,
     bulk_in: u8,
@@ -324,7 +336,10 @@ fn send_with_transport_until_and_clock<T: BulkTransport, C: Clock>(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the transport call keeps the PTP request and response deadline explicit"
+)]
 fn send_with_transport_and_deadline<T: BulkTransport, C: Clock>(
     transport: &T,
     bulk_in: u8,
@@ -472,7 +487,10 @@ fn encode_command_params(params: &[u32]) -> anyhow::Result<Vec<u8>> {
     Ok(writer.into_inner())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "container writes keep the PTP endpoint, deadline, and clock explicit"
+)]
 fn write_container<T: BulkTransport, C: Clock>(
     transport: &T,
     bulk_out: u8,

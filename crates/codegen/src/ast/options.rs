@@ -207,7 +207,7 @@ mod tests {
         assert!(matches!(spec.values["a"], LookupValue::Single(5)));
         match &spec.values["b"] {
             LookupValue::Multi(v) => assert_eq!(v, &[1, 2, 3]),
-            _ => panic!("expected Multi for [1,2,3]"),
+            LookupValue::Single(_) => panic!("expected Multi for [1,2,3]"),
         }
     }
 

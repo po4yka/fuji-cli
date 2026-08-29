@@ -344,7 +344,7 @@ impl Predicate {
                             .collect()
                     })
             }
-            Predicate::Any(a) => a.any.into_iter().flat_map(|p| p.into_disjuncts()).collect(),
+            Predicate::Any(a) => a.any.into_iter().flat_map(Self::into_disjuncts).collect(),
             Predicate::Not(n) => Self::into_negation(*n.not),
             Predicate::Bool(true) => vec![Conjunction(Vec::new())],
             Predicate::Bool(false) => Vec::new(),

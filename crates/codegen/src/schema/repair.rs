@@ -88,7 +88,10 @@ pub fn generate_solve(
             let mut counter = 0usize;
             let walk = generate_dnf_walk(settings, &r.when, &mut counter, has_original)?;
             Ok(quote! {
-                #[allow(unused_variables)]
+                #[allow(
+                    unused_variables,
+                    reason = "generated repair signatures stay uniform across schema rules"
+                )]
                 fn #fn_name(
                     &mut self,
                     pin: &::std::collections::HashSet<&'static str>,
@@ -115,7 +118,11 @@ pub fn generate_solve(
         .collect::<anyhow::Result<Vec<_>>>()?;
 
     Ok(quote! {
-        #[allow(unused_assignments, unused_variables)]
+        #[allow(
+            unused_assignments,
+            unused_variables,
+            reason = "generated solver state is conditionally used by camera-specific rules"
+        )]
         pub fn solve(
             &mut self,
             pin: &::std::collections::HashSet<&'static str>
@@ -129,7 +136,10 @@ pub fn generate_solve(
 
         #( #repair_fns )*
 
-        #[allow(unused_variables)]
+        #[allow(
+            unused_variables,
+            reason = "generated repair predicates stay uniform across schema rules"
+        )]
         fn re_fires_other_ok(
             state: &Self,
             ok: &[bool; #n_lit],

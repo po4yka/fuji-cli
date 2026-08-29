@@ -365,8 +365,7 @@ fn generate_display_impl(
         let ident = info.field_ident();
         let label = info
             .option
-            .map(|o| o.spec.name().to_string())
-            .unwrap_or_else(|| info.id.to_string());
+            .map_or_else(|| info.id.to_string(), |o| o.spec.name().to_string());
         let escaped = label.replace('{', "{{").replace('}', "}}");
         let fmt = format!("{escaped}: {{value}}");
         quote! {

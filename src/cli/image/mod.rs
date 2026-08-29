@@ -36,7 +36,10 @@ pub enum ImageCmd {
     },
 }
 
-#[allow(clippy::needless_pass_by_value, clippy::too_many_arguments)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the handler consumes the flattened CLI render command"
+)]
 fn handle_render(
     options: GlobalOptions,
     slot: Option<CustomSetting>,
@@ -83,7 +86,6 @@ fn handle_render(
     Ok(())
 }
 
-#[allow(clippy::needless_pass_by_value)]
 pub fn handle(cmd: ImageCmd, options: GlobalOptions) -> anyhow::Result<()> {
     match cmd {
         ImageCmd::Render {

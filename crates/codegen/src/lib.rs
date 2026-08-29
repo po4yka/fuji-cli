@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 pub mod ast;
 mod cli;
 mod common;
@@ -52,6 +54,12 @@ fn root(fml: &ast::Fml) -> TokenStream {
 
     quote! {
         #![doc = #banner]
+        #![allow(
+            clippy::nonminimal_bool,
+            clippy::trivially_copy_pass_by_ref,
+            clippy::unused_self,
+            reason = "generated schema predicates and uniform signatures prioritize deterministic emission"
+        )]
 
         pub mod cameras;
         pub mod options;

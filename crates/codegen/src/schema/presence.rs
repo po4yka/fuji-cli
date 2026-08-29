@@ -857,7 +857,7 @@ mod tests {
         let cond = &info.conditions["A"];
         assert_eq!(cond.0.len(), 1, "expected one disjunct, got {cond:?}");
         assert_eq!(cond.0[0].0.len(), 2);
-        let mut refs: Vec<&str> = cond.0[0].0.iter().map(|l| l.r#ref()).collect();
+        let mut refs: Vec<&str> = cond.0[0].0.iter().map(Leaf::r#ref).collect();
         refs.sort();
         assert_eq!(refs, vec!["B", "C"]);
         assert!(cond.0[0].0.iter().all(|l| matches!(l, Leaf::NotEquals(_))));

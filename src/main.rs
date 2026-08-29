@@ -1,5 +1,10 @@
-#![warn(clippy::all, clippy::pedantic, clippy::nursery)]
-#![allow(clippy::missing_docs_in_private_items, clippy::similar_names)]
+#![forbid(unsafe_code)]
+#![warn(clippy::pedantic, clippy::nursery)]
+#![allow(
+    clippy::missing_docs_in_private_items,
+    clippy::similar_names,
+    reason = "the CLI keeps private command plumbing terse and mirrors protocol field names"
+)]
 
 use clap::Parser;
 

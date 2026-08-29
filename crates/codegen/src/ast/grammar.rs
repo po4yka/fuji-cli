@@ -401,7 +401,10 @@ mod tests {
             values: vec![json!(1), json!(2)],
         })
         .refs(&mut out);
-        assert_eq!(out, ["A", "B", "C"].iter().map(|s| s.to_string()).collect());
+        assert_eq!(
+            out,
+            ["A", "B", "C"].iter().map(ToString::to_string).collect()
+        );
     }
 
     #[test]
@@ -440,7 +443,10 @@ mod tests {
             ],
         })
         .refs(&mut out);
-        assert_eq!(out, ["A", "B", "C"].iter().map(|s| s.to_string()).collect());
+        assert_eq!(
+            out,
+            ["A", "B", "C"].iter().map(ToString::to_string).collect()
+        );
     }
 
     #[test]

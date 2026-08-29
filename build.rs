@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 use std::{path::PathBuf, process::Command, str};
 
 use anyhow::bail;
