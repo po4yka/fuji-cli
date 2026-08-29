@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 
 pub mod features;
-pub mod generated;
+include!(concat!(env!("OUT_DIR"), "/generated_module.rs"));
 pub mod input;
 pub mod ptp;
 

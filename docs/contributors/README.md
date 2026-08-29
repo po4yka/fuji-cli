@@ -23,8 +23,8 @@ No strict process; just be sane.
   arrays, and exact-buffer validation. Touch when adding new low-level wire
   types.
 - `src/lib/` - the runtime: USB, PTP transport, feature traits, image-side
-  helpers. `src/lib/generated/` is the codegen output; it's gitignored and
-  rebuilt on every `cargo build`.
+  helpers. Build-time Rust is generated under Cargo's `OUT_DIR` and included as
+  the public `generated` module; it never modifies the source tree.
 - `src/main.rs` + `src/cli/` - the CLI front-end.
 - `support/` - out-of-band scripts used during reversing.
 

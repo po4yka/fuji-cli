@@ -41,9 +41,10 @@ Read the nearby documentation before changing a subsystem. Start with
 
 ## Generated code
 
-Never edit or commit `src/lib/generated/`. It is ignored, wiped, and rewritten
-by each build. Make the change in `fml/` or `crates/codegen/`, regenerate through
-Cargo, and inspect the generated output locally when it helps review the result.
+Never edit or commit generated Rust under Cargo's build `OUT_DIR`. Make the
+change in `fml/` or `crates/codegen/`, regenerate through Cargo, and inspect the
+generated output locally when it helps review the result. Builds must not write
+generated modules into the source tree.
 
 Generated output must be deterministic. Preserve stable ordering, canonical
 module paths, and formatting through `prettyplease`; do not patch generated text

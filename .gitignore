@@ -31,7 +31,7 @@ result-*
 # Artifacts from `cue export ./fml`
 *.json
 
-# Build-time codegen output. Inspect locally; never commit.
+# Legacy build-time codegen output from checkouts predating OUT_DIR generation.
 src/lib/generated/
 
 .omc/

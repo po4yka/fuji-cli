@@ -1,8 +1,8 @@
 # Runtime
 
-The runtime is the small Rust crate that mounts the `src/lib/generated/` module
-and dispatches user requests through trait objects. There is deliberately not
-much here; the heavy lifting is at build time.
+The runtime is the small Rust crate that mounts the generated module from
+Cargo's build `OUT_DIR` and dispatches user requests through trait objects.
+There is deliberately not much here; the heavy lifting is at build time.
 
 ## The Trait Hierarchy
 
@@ -29,7 +29,7 @@ pub trait CameraBase {
 The codegen emits overrides only for the features the camera spec declares:
 
 ```rust
-// src/lib/generated/cameras.rs (sketch)
+// $OUT_DIR/generated/cameras.rs (sketch)
 impl CameraBase for XT5 {
     type Context = rusb::GlobalContext;
     fn camera_definition(&self) -> &'static SupportedCamera { &C_X_T5 }

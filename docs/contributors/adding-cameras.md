@@ -46,7 +46,7 @@ Run `cargo build` once. The build will:
 
 1. `cue export ./fml --out json` - CUE validates the entire spec.
 2. `codegen::generate` - emits the per-camera struct and registry entry into
-   `src/lib/generated/`.
+   Cargo's build `OUT_DIR`.
 
 If anything fails, the CUE error will pinpoint the bad field.
 

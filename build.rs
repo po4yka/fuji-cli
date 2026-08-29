@@ -1,8 +1,8 @@
 #![forbid(unsafe_code)]
 
-use std::{path::PathBuf, process::Command, str};
+use std::{fs, path::PathBuf, process::Command, str};
 
-use anyhow::bail;
+use anyhow::{Context, bail};
 
 fn main() -> anyhow::Result<()> {
     println!("cargo:rerun-if-changed=fml/");
@@ -11,7 +11,8 @@ fn main() -> anyhow::Result<()> {
     let manifest = PathBuf::from(
         std::env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR must be set by cargo"),
     );
-    let generated = manifest.join("src").join("lib").join("generated");
+    let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR must be set by cargo"));
+    let generated = out_dir.join("generated");
 
     let cue = Command::new("cue")
         .args(["export", "./fml", "--out", "json"])
@@ -30,6 +31,12 @@ fn main() -> anyhow::Result<()> {
 
     let json = str::from_utf8(&cue.stdout)?;
     codegen::generate(json, &generated)?;
+
+    let generated_root = generated.join("mod.rs");
+    let module = format!("#[path = {generated_root:?}]\npub mod generated;\n");
+    let module_path = out_dir.join("generated_module.rs");
+    fs::write(&module_path, module)
+        .with_context(|| format!("writing generated module shim {}", module_path.display()))?;
 
     Ok(())
 }

@@ -101,7 +101,7 @@ The pre-migration generated snapshot contained 117 `PtpSerialize` and 116
 `PtpDeserialize` references. Most are repetitions emitted by codegen, not
 independent migration decisions. The migration should therefore change the
 generators before judging the generated diff, and must never patch
-`src/lib/generated/` directly.
+the generated modules in Cargo's `OUT_DIR` directly.
 
 `byteorder` was reachable only through `ptp_cursor` and `ptp_macro`, and was
 removed with those crates. With `verbose-backtrace` disabled, `binrw` added five

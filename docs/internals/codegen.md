@@ -3,7 +3,8 @@
 The pipeline entrypoint is
 [`codegen::generate`](../../crates/codegen/src/lib.rs); from there each
 `common/*::generate` function returns a `proc_macro2::TokenStream` that gets
-formatted by `prettyplease` and written to disk.
+formatted by `prettyplease`, staged, and atomically published under Cargo's
+build `OUT_DIR`.
 
 The mechanical contract every emitter follows:
 

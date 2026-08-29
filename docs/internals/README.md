@@ -22,25 +22,27 @@ and dispatches everything through traits the codegen implements.
 1. Tells cargo to rerun if `fml/` or `crates/codegen/` change.
 2. Shells out to `cue export ./fml --out json`. If `cue` isn't on `PATH`, the
    error tells the user how to install it.
-3. Passes the JSON to `codegen::generate(json, &generated)`.
+3. Passes the JSON to `codegen::generate(json, &generated)` where `generated`
+   is under Cargo's build `OUT_DIR`.
 
 `codegen::generate` (see [lib.rs](../../crates/codegen/src/lib.rs)):
 
 ```text
-options     -> src/lib/generated/options.rs      (~3.4 KLOC for current schema)
-cameras     -> src/lib/generated/cameras.rs      (one ZST + registry entry per camera)
-simulations -> src/lib/generated/simulations.rs  (SimulationBase + per-camera structs)
-renders     -> src/lib/generated/renders.rs      (RenderBase + per-camera profiles)
-cli         -> src/lib/generated/cli.rs          (SimulationArgs + RenderArgs + PROP_CODES)
-mod         -> src/lib/generated/mod.rs          (module roots)
+options     -> $OUT_DIR/generated/options.rs      (~3.4 KLOC for current schema)
+cameras     -> $OUT_DIR/generated/cameras.rs      (one ZST + registry entry per camera)
+simulations -> $OUT_DIR/generated/simulations.rs  (SimulationBase + per-camera structs)
+renders     -> $OUT_DIR/generated/renders.rs      (RenderBase + per-camera profiles)
+cli         -> $OUT_DIR/generated/cli.rs          (SimulationArgs + RenderArgs + PROP_CODES)
+mod         -> $OUT_DIR/generated/mod.rs          (module roots)
 ```
 
 Output is formatted through `prettyplease` before being written, so any
 diagnostic dump of the file is human-readable.
 
-`src/lib/generated/` is gitignored. Builds wipe and rewrite it; `cargo build` on
-a fresh checkout always regenerates from `fml/`. Don't edit the files directly,
-changes are lost on the next build.
+Generation happens in a sibling staging directory. Only a complete set of
+formatted modules is published into `OUT_DIR`, so an emitter failure preserves
+the last complete output. `cargo build` on a fresh checkout always regenerates
+from `fml/`; generated files are artifacts, not source files to edit or commit.
 
 ## Why the Analyses Live in Their Own Module
 
