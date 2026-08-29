@@ -43,7 +43,7 @@
 
           fujicli = rustPlatform.buildRustPackage {
             pname = manifest.package.name;
-            version = manifest.package.version;
+            inherit (manifest.package) version;
 
             src = ./.;
             cargoLock = {
