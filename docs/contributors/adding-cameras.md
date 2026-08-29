@@ -152,7 +152,8 @@ features: {
     // ... backup, simulation ...
 
     render: {
-        profile_code: 0xff179502    // unique per camera; see reversing
+        profile_code:   0xff179502  // unique per camera; see reversing
+        header_padding: 0x1ee       // observed bytes before the field array
         fields: [
             {id: "head_0"},                          // inline pad
             {ref: "file_type"},
@@ -188,9 +189,11 @@ Field semantics:
   encoding.
 - `id` (without `ref`) - an inline `i32` slot. Used for headers, trailers, and
   undocumented padding. Set `skip_read` or `skip_write` if the slot is one-way.
+- `header_padding` - exact number of zero padding bytes observed after the
+  profile-code string. It is required per camera and has no shared default.
 - Order is significant. The wire format is
-  `[i16 n_props][hex profile_code][padding][i32 * n_props]`, in declaration
-  order.
+  `[i16 n_props][hex profile_code][header_padding bytes][i32 * n_props]`, in
+  declaration order.
 
 See [internals / codegen](../internals/codegen.md#renders) for what the emitter
 does with this, and [reversing](reversing.md) for how to discover

@@ -286,10 +286,9 @@ small derived wire header plus a generated semantic conversion phase. The
 second option is preferred because it lets `binrw` own the header and padding
 without obscuring the conversion DAG.
 
-The existing hard-coded `RENDER_HEADER_PADDING = 0x1EE` remains a separate FML
-modeling issue. Moving it into the camera schema is desirable, but combining
-that change with the codec migration would make byte-equivalence harder to
-review.
+The codec migration deliberately left render header padding as a separate FML
+modeling change so byte equivalence stayed reviewable. It is now a required
+camera-specific schema value that the generated reader and writer share.
 
 ## Error-model changes
 

@@ -104,9 +104,13 @@ user-facing options and what the camera stores on the wire.
 ### Procedure
 
 1. Load the `usbmon` kernel module.
-2. Start `support/monitor-rendering.sh` **before** connecting the camera. (See
+2. Start `support/monitor-rendering.sh <usb-interface>
+   <render-header-padding-bytes>` **before** connecting the camera, for example
+   `support/monitor-rendering.sh usbmon1 0x1ee` for the X-T5. Pass the exact
+   padding observed for the selected camera (or the candidate value being
+   investigated); the helper deliberately has no cross-camera default. See
    <https://gitlab.com/wireshark/wireshark/-/issues/20908> for why ordering
-   matters).
+   matters.
 3. Start the Windows VM.
 4. Connect the camera and pass it through to the VM.
 5. Open Fujifilm X RAW Studio.
@@ -145,8 +149,7 @@ constraints (the apply pattern must be unique among transformations).
 - **X RAW Studio sometimes reads fewer conversion-profile fields than it writes
   back.** Observed on the X-T5; root cause unknown. When reversing, prefer the
   _write_ path as ground truth.
-- **Padding sizes vary or may not be constant.** The X-T5 uses `0x1EE` bytes
-  between the profile-code string and the field array. Until a second
-  render-capable camera is reversed, the codegen assumes this value is
-  universal; see
-  [`crates/codegen/src/common/renders/camera.rs`](../../crates/codegen/src/common/renders/camera.rs).
+- **Padding sizes vary or may not be constant.** The X-T5 uses `0x1ee` bytes
+  between the profile-code string and the field array. Record the observed
+  count as the camera's required `render.header_padding`; codegen deliberately
+  has no shared default.

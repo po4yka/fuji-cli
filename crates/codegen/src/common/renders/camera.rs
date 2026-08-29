@@ -20,10 +20,6 @@ use crate::{
     util::{dag::Dag, ident::safe_upper_camel_case_ident},
 };
 
-// NOTE: Naively assume the same padding holds for all Fujifilm cameras
-// until we have a second render-capable camera to compare against.
-const RENDER_HEADER_PADDING: usize = 0x1EE;
-
 pub fn generate(
     options: &BTreeMap<String, FujiOption>,
     cameras: &BTreeMap<String, Camera>,
@@ -152,6 +148,9 @@ fn generate_inherent_impl(
     profile_code: u32,
 ) -> anyhow::Result<TokenStream> {
     let profile_code_lit = Literal::u32_suffixed(profile_code);
+    let header_padding = usize::try_from(render.header_padding)
+        .context("render header padding does not fit the target pointer width")?;
+    let header_padding_lit = Literal::usize_suffixed(header_padding);
 
     let apply_transformations = generate_apply_transformations(settings, &render.transformations)?;
     let self_acc = quote! { self };
@@ -168,6 +167,7 @@ fn generate_inherent_impl(
     Ok(quote! {
         impl #struct_ident {
             pub const PROFILE_CODE: u32 = #profile_code_lit;
+            pub const HEADER_PADDING: usize = #header_padding_lit;
 
             #apply_transformations
             #warnings_infos
@@ -234,7 +234,6 @@ fn generate_ptp_serialize_impl(
     n_props: i16,
 ) -> TokenStream {
     let n_props_lit = Literal::i16_suffixed(n_props);
-    let padding_lit = Literal::usize_suffixed(RENDER_HEADER_PADDING);
 
     let writes = fields
         .iter()
@@ -262,8 +261,7 @@ fn generate_ptp_serialize_impl(
                 <crate::ptp::codec::PtpExactString as ::binrw::BinWrite>::write_options(
                     &profile_code, writer, endian, (),
                 )?;
-                let padding = [0u8; #padding_lit];
-                ::std::io::Write::write_all(writer, &padding)?;
+                crate::ptp::codec::write_zero_padding(writer, Self::HEADER_PADDING)?;
 
                 #( #writes )*
 
@@ -312,7 +310,6 @@ fn generate_ptp_deserialize_impl(
     convert_order: &[String],
 ) -> anyhow::Result<TokenStream> {
     let n_props_lit = Literal::i16_suffixed(n_props);
-    let padding_lit = Literal::usize_suffixed(RENDER_HEADER_PADDING);
 
     let raw_reads: Vec<TokenStream> = fields
         .iter()
@@ -395,8 +392,7 @@ fn generate_ptp_deserialize_impl(
                         ),
                     });
                 }
-                let mut padding = [0u8; #padding_lit];
-                <R as ::std::io::Read>::read_exact(reader, &mut padding)?;
+                crate::ptp::codec::consume_padding(reader, Self::HEADER_PADDING)?;
 
                 #( #raw_reads )*
 
@@ -492,11 +488,85 @@ mod tests {
     use proc_macro2::{Ident, Span};
 
     use crate::{
-        ast::{Codegen, Field, FieldRef, FujiOption, NumericEncoding, OptionSpec, SpecKind},
+        ast::{
+            Camera, Codegen, Field, FieldRef, FujiOption, NumericEncoding, OptionSpec, SpecKind,
+        },
         schema::grammar::SettingInfo,
     };
 
-    use super::{generate_ptp_deserialize_impl, generate_ptp_serialize_impl};
+    use super::{generate, generate_ptp_deserialize_impl, generate_ptp_serialize_impl};
+
+    #[test]
+    fn render_header_padding_is_required_and_drives_both_wire_directions() {
+        let parsed = serde_json::from_str::<Camera>(
+            r#"{
+                "id": "fixture",
+                "spec": {
+                    "name": "Fixture",
+                    "generation": "fixture",
+                    "usb": {
+                        "vendor_id": 1227,
+                        "product_id": 1,
+                        "chunk_size": 1024
+                    },
+                    "features": {
+                        "render": {
+                            "profile_code": 1,
+                            "header_padding": 37,
+                            "fields": []
+                        }
+                    }
+                }
+            }"#,
+        );
+        assert!(
+            parsed.is_ok(),
+            "camera-specific render header padding must be accepted: {parsed:?}"
+        );
+
+        let camera = parsed.expect("checked above");
+        let cameras = BTreeMap::from([(camera.id.clone(), camera)]);
+        let generated = generate(&BTreeMap::new(), &cameras)
+            .expect("fixture camera should generate")
+            .to_string();
+
+        assert!(
+            generated.contains("pub const HEADER_PADDING : usize = 37usize"),
+            "generated profile must retain its camera-specific padding: {generated}"
+        );
+        assert_eq!(
+            generated.matches("Self :: HEADER_PADDING").count(),
+            2,
+            "serializer and deserializer must use the same camera-specific padding: {generated}"
+        );
+        assert!(
+            generated.contains("write_zero_padding (writer , Self :: HEADER_PADDING)"),
+            "serializer must use bounded padding I/O: {generated}"
+        );
+        assert!(
+            generated.contains("consume_padding (reader , Self :: HEADER_PADDING)"),
+            "deserializer must use bounded padding I/O: {generated}"
+        );
+
+        let missing = serde_json::from_str::<Camera>(
+            r#"{
+                "id": "fixture",
+                "spec": {
+                    "name": "Fixture",
+                    "generation": "fixture",
+                    "usb": {
+                        "vendor_id": 1227,
+                        "product_id": 1,
+                        "chunk_size": 1024
+                    },
+                    "features": {
+                        "render": { "profile_code": 1, "fields": [] }
+                    }
+                }
+            }"#,
+        );
+        assert!(missing.is_err(), "render header padding must be required");
+    }
 
     #[test]
     fn generated_render_decoder_is_streaming_binread() {

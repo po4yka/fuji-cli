@@ -163,7 +163,7 @@ simulation into the render base.
   `emit_warnings_and_infos`, `solve`, `try_update_from`.
 - `binrw::BinWrite` - writes
   `[i16 n_props][hex profile_code
-  ExactString][padding][i32 * n_props]` in
+  ExactString][camera header_padding][i32 * n_props]` in
   declaration order. For ref-fields, uses `ConversionProfileField`. For inline
   fields, writes a raw `i32` (defaulting to 0 if unset).
 - `binrw::BinRead` - reads the same header, then `i32` fields in declaration
@@ -177,10 +177,9 @@ simulation into the render base.
   -> get current profile -> try_update_from(partial) -> set profile ->
   render_image.
 
-A hard-coded constant
-[`RENDER_HEADER_PADDING`](../../crates/codegen/src/common/renders/camera.rs)
-holds the 0x1EE-byte padding observed on the X-T5; it'll need to move into the
-camera spec when a render-capable body with a different padding is added.
+Each render-capable camera owns a required `header_padding` value in FML. The
+emitter exposes it as the profile's `HEADER_PADDING` constant and uses the same
+value for both wire directions; the X-T5 declares its observed `0x1ee` bytes.
 
 ## CLI
 

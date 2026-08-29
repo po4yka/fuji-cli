@@ -4,6 +4,7 @@ use binrw::{BinRead, BinResult, BinWrite, Endian, Error};
 
 const MAX_PTP_ARRAY_ELEMENTS: u32 = 1_000_000;
 const MAX_PTP_ARRAY_ALLOCATION_BYTES: usize = 64 * 1024 * 1024;
+const PADDING_IO_CHUNK_BYTES: usize = 4 * 1024;
 
 mod fixed_wire_size {
     pub trait Sealed {}
@@ -297,6 +298,28 @@ where
     Ok(values)
 }
 
+pub fn write_zero_padding<W: Write>(writer: &mut W, length: usize) -> io::Result<()> {
+    let chunk = [0u8; PADDING_IO_CHUNK_BYTES];
+    let mut remaining = length;
+    while remaining != 0 {
+        let count = remaining.min(chunk.len());
+        writer.write_all(&chunk[..count])?;
+        remaining -= count;
+    }
+    Ok(())
+}
+
+pub fn consume_padding<R: Read>(reader: &mut R, length: usize) -> io::Result<()> {
+    let mut chunk = [0u8; PADDING_IO_CHUNK_BYTES];
+    let mut remaining = length;
+    while remaining != 0 {
+        let count = remaining.min(chunk.len());
+        reader.read_exact(&mut chunk[..count])?;
+        remaining -= count;
+    }
+    Ok(())
+}
+
 pub fn encode<T>(value: &T) -> BinResult<Vec<u8>>
 where
     T: for<'a> BinWrite<Args<'a> = ()>,
@@ -326,9 +349,34 @@ mod tests {
     use binrw::{BinRead, BinWrite};
 
     use super::{
-        PtpArray, PtpExactString, PtpString, decode_exact, encode, read_ptp_array, read_ptp_string,
-        write_ptp_array, write_ptp_string,
+        PtpArray, PtpExactString, PtpString, consume_padding, decode_exact, encode, read_ptp_array,
+        read_ptp_string, write_ptp_array, write_ptp_string, write_zero_padding,
     };
+
+    #[test]
+    fn camera_specific_padding_preserves_the_following_wire_offset() {
+        let padding_len = 4_097;
+        let marker = 0x1234_5678_u32;
+        let mut wire = std::io::Cursor::new(Vec::new());
+
+        write_zero_padding(&mut wire, padding_len).expect("padding must be written");
+        marker
+            .write_le(&mut wire)
+            .expect("marker after padding must be written");
+
+        assert_eq!(
+            wire.get_ref().len(),
+            padding_len + std::mem::size_of::<u32>()
+        );
+        assert!(wire.get_ref()[..padding_len].iter().all(|byte| *byte == 0));
+
+        wire.set_position(0);
+        consume_padding(&mut wire, padding_len).expect("padding must be consumed");
+        assert_eq!(
+            u32::read_le(&mut wire).expect("marker after padding must be read"),
+            marker
+        );
+    }
 
     #[test]
     fn encode_writes_u16_in_little_endian_order() {

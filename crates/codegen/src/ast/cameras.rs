@@ -51,6 +51,7 @@ pub struct Simulation {
 #[serde(deny_unknown_fields)]
 pub struct Render {
     pub profile_code: u32,
+    pub header_padding: u32,
     pub fields: Vec<Field>,
     #[serde(default)]
     pub transformations: Vec<Transformation>,
@@ -315,7 +316,8 @@ mod tests {
         assert!(!f.backup);
         assert!(f.simulation.is_none() && f.render.is_none());
 
-        let only_render: Features = parse(r#"{ "render": { "profile_code": 1, "fields": [] } }"#);
+        let only_render: Features =
+            parse(r#"{ "render": { "profile_code": 1, "header_padding": 0, "fields": [] } }"#);
         assert!(!only_render.backup);
         assert!(only_render.simulation.is_none());
         assert!(only_render.render.is_some());

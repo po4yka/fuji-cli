@@ -69,7 +69,8 @@ cameras: [string]: #Camera
 			}
 
 			#Render: {
-				profile_code: uint32
+				profile_code:   uint32
+				header_padding: uint32
 
 				fields: [...#Field]
 
@@ -339,7 +340,8 @@ cameras: {
 
 				// TODO: Extract common info to generation
 				render: {
-					profile_code: 0xff179502
+					profile_code:   0xff179502
+					header_padding: 0x1ee
 					fields: [
 						{id: "head_0"},
 						{ref: "file_type"},

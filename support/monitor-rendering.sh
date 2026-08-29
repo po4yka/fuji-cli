@@ -6,6 +6,44 @@ set -o pipefail
 
 PACKET_FILTER='_ws.col.protocol == "USB-PTP" && usb.endpoint_address.direction == "Out"'
 
+usage() {
+  echo "Usage: $0 <usb-interface> <render-header-padding-bytes>" >&2
+}
+
+if (( $# != 2 )); then
+  usage
+  exit 64
+fi
+
+interface="$1"
+header_padding_arg="$2"
+if [[ "$header_padding_arg" =~ ^0[xX][0-9a-fA-F]+$ ]]; then
+  header_padding_digits="${header_padding_arg:2}"
+  while [[ "$header_padding_digits" == 0* ]] && (( ${#header_padding_digits} > 1 )); do
+    header_padding_digits="${header_padding_digits:1}"
+  done
+  if (( ${#header_padding_digits} > 8 )); then
+    echo "render-header-padding-bytes must fit uint32" >&2
+    exit 64
+  fi
+  header_padding=$((16#$header_padding_digits))
+elif [[ "$header_padding_arg" =~ ^[0-9]+$ ]]; then
+  header_padding_digits="$header_padding_arg"
+  while [[ "$header_padding_digits" == 0* ]] && (( ${#header_padding_digits} > 1 )); do
+    header_padding_digits="${header_padding_digits:1}"
+  done
+  if (( ${#header_padding_digits} > 10 )) ||
+    [[ ${#header_padding_digits} -eq 10 && "$header_padding_digits" > "4294967295" ]]; then
+    echo "render-header-padding-bytes must fit uint32" >&2
+    exit 64
+  fi
+  header_padding=$((10#$header_padding_digits))
+else
+  echo "render-header-padding-bytes must be an unsigned decimal or hexadecimal integer" >&2
+  usage
+  exit 64
+fi
+
 parsing=""
 profile=""
 start_tx_id_num=-1
@@ -46,7 +84,7 @@ print_profile() {
   done
 
   # Buffer
-  zeros_len=$((0x1EE * 2))
+  zeros_len=$((header_padding * 2))
   echo -n "[...] "
   pos=$((pos + zeros_len))
 
@@ -93,7 +131,7 @@ while IFS=$'|' read -r cont_type op_code tx_id device_prop payload frame; do
     profile+="$payload"
   fi
 done < <(
-  tshark -Q -l -i "$INTERFACE" \
+  tshark -Q -l -i "$interface" \
     -Y "$PACKET_FILTER" \
     -T fields \
     -E separator=\| \

@@ -79,8 +79,9 @@ If your camera shares its generation's profile verbatim, set
 
 ```cue
 render: {
-    profile_code: uint32  // identifies the wire format
-    fields: [...#Field]   // ordered list of slots
+    profile_code:   uint32  // identifies the wire format
+    header_padding: uint32  // bytes between profile code and fields
+    fields: [...#Field]     // ordered list of slots
     transformations?: [...]
     rules?:           [...]
 }
@@ -103,6 +104,9 @@ Fields fall into two kinds:
 
 `profile_code` is part of the wire format. The camera enforces it on read.
 Reverse it before guessing (see [reversing](../contributors/reversing.md)).
+`header_padding` is also camera-specific wire data and has no default. Record
+the exact observed byte count for every render-capable camera; the X-T5 uses
+`0x1ee` bytes.
 
 ## CUE-Side Validation
 
