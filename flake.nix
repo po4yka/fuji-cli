@@ -46,7 +46,13 @@
             version = manifest.package.version;
 
             src = ./.;
-            cargoLock.lockFile = ./Cargo.lock;
+            cargoLock = {
+              lockFile = ./Cargo.lock;
+              extraRegistries = {
+                "https://github.com/rust-lang/crates.io-index" =
+                  "https://static.crates.io/crates";
+              };
+            };
 
             nativeBuildInputs = with final; [
               cue
