@@ -1,4 +1,7 @@
-use std::process::{Command, Output};
+use std::{
+    path::Path,
+    process::{Command, Output},
+};
 
 fn run(arguments: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_fujicli"))
@@ -10,9 +13,14 @@ fn run(arguments: &[&str]) -> Output {
 #[test]
 fn help_is_stdout_only_and_successful() {
     let output = run(&["--help"]);
+    let executable_name = Path::new(env!("CARGO_BIN_EXE_fujicli"))
+        .file_name()
+        .expect("fujicli executable path must have a file name")
+        .to_string_lossy();
+    let expected_usage = format!("Usage: {executable_name} [OPTIONS] <COMMAND>");
 
     assert!(output.status.success());
-    assert!(String::from_utf8_lossy(&output.stdout).contains("Usage: fujicli [OPTIONS] <COMMAND>"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains(&expected_usage));
     assert!(output.stderr.is_empty());
 }
 
