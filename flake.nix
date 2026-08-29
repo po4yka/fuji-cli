@@ -172,6 +172,13 @@
             deadnix --fail .
             touch "$out"
           '';
+          markdownlint = pkgs.runCommand "markdownlint-check" {
+            nativeBuildInputs = [ pkgs.markdownlint-cli2 ];
+          } ''
+            cd ${inputs.self}
+            markdownlint-cli2 "docs/**/*.md"
+            touch "$out"
+          '';
           package-fujicli = inputs.self.packages.${system}.fujicli;
           formatting = treefmt.config.build.check inputs.self;
           devShell-default = inputs.self.devShells.${system}.default;

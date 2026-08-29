@@ -11,9 +11,10 @@ updates to those pins.
   spelling, runs Clippy and rustdoc with warnings denied, tests, the workspace
   build, and unused dependencies using the committed Rust toolchain and
   lockfile.
-- `CI / Nix` evaluates and builds the flake without modifying `flake.lock`.
-- `CI / Docs` rejects malformed Markdown and broken documentation links or
-  anchors without depending on external network availability.
+- `CI / Nix` evaluates and builds the flake, checks formatting, and rejects
+  malformed Markdown without modifying `flake.lock`.
+- `CI / Docs` rejects broken documentation links or anchors without depending
+  on external network availability.
 - `Security / cargo-deny` enforces the dependency, license, advisory, source,
   and duplicate-version policy in `deny.toml`.
 - `Security / dependency review` rejects pull requests that introduce
