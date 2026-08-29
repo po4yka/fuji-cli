@@ -11,6 +11,8 @@
 - [Contributing](contributors/README.md) - workflow, branches, formatting.
 - [Continuous Integration](contributors/ci.md) - hosted checks and local
   reproduction.
+- [Releasing](contributors/releasing.md) - tag policy, artifacts, and
+  provenance.
 - [Adding a Camera](contributors/adding-cameras.md) - the most common
   contribution.
 - [Reversing](contributors/reversing.md) - capturing PTP traffic from Fujifilm's
