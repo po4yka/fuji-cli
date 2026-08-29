@@ -189,10 +189,20 @@ jobs:
             --output "dist/$package.zip" \
             --epoch "$source_date_epoch"
 
+      - name: Stage SBOM input
+        shell: bash
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+          RELEASE_BINARY: ${{ matrix.binary }}
+        run: |
+          sbom_root="$RUNNER_TEMP/fujicli-sbom"
+          mkdir -p "$sbom_root"
+          cp "target/${RELEASE_TARGET}/release/${RELEASE_BINARY}" "$sbom_root/${RELEASE_BINARY}"
+
       - name: Generate SPDX SBOM
         uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
-          path: target/${{ matrix.target }}/release/${{ matrix.binary }}
+          path: ${{ runner.temp }}/fujicli-sbom
           format: spdx-json
           output-file: dist/fujicli-${{ needs.validate.outputs.release-label }}-${{ matrix.target }}.spdx.json
           syft-version: v1.51.1
