@@ -35,6 +35,12 @@ jobs:
           bash support/install-cue.sh "$RUNNER_TEMP/cue-bin"
           printf '%s\n' "$RUNNER_TEMP/cue-bin" >>"$GITHUB_PATH"
 
+      - name: Install cargo-udeps
+        uses: taiki-e/install-action@742a3317eac7bd62f91cd888b4eead5e784ba833 # v2.87.1
+        with:
+          tool: cargo-udeps@0.1.61
+          fallback: none
+
       - name: Check all targets
         run: cargo check --locked --all-features --all-targets --workspace --jobs 4
 
@@ -54,6 +60,9 @@ jobs:
 
       - name: Build workspace
         run: cargo build --locked --workspace --jobs 4
+
+      - name: Detect unused dependencies
+        run: cargo udeps --locked --workspace --all-features --all-targets --jobs 4
 
   nix:
     name: CI / Nix
