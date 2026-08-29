@@ -1,4 +1,2 @@
 imports_granularity = "Crate"
-ignore = [
-  "src/lib/generated/**/*.rs",
-]
+ignore = ["src/lib/generated/**/*.rs"]

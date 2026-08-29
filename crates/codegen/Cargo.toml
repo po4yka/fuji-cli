@@ -5,9 +5,7 @@ edition = "2024"
 description = "Build-time codegen from FML JSON to Rust for fujicli"
 license = "MIT"
 repository = "https://github.com/po4yka/fuji-cli"
-authors = [
-    "Nikita Pochaev",
-]
+authors = ["Nikita Pochaev"]
 
 [lib]
 path = "src/lib.rs"

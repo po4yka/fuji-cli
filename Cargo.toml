@@ -1,8 +1,5 @@
 [workspace]
-members = [
-    ".",
-    "crates/codegen",
-]
+members = [".", "crates/codegen"]
 
 [workspace.lints.rust]
 let_underscore_drop = "deny"
@@ -47,9 +44,7 @@ edition = "2024"
 description = "A CLI to manage Fujifilm devices, simulations, backups, and rendering"
 license = "MIT"
 repository = "https://github.com/po4yka/fuji-cli"
-authors = [
-    "Nikita Pochaev",
-]
+authors = ["Nikita Pochaev"]
 build = "build.rs"
 
 [lints]
@@ -68,9 +63,9 @@ anyhow = "1.0.104"
 codegen = { path = "crates/codegen", version = "0.1.0" }
 
 [profile.release]
-panic         = 'abort'
-strip         = true
-lto           = true
+panic = 'abort'
+strip = true
+lto = true
 codegen-units = 1
 
 [dependencies]

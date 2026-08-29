@@ -165,33 +165,27 @@
           treefmt = inputs.treefmt-nix.lib.evalModule pkgs ./treefmt.nix;
         in
         {
-          deadnix = pkgs.runCommand "deadnix-check" {
-            nativeBuildInputs = [ pkgs.deadnix ];
-          } ''
+          deadnix = pkgs.runCommand "deadnix-check" { nativeBuildInputs = [ pkgs.deadnix ]; } ''
             cd ${inputs.self}
             deadnix --fail .
             touch "$out"
           '';
-          markdownlint = pkgs.runCommand "markdownlint-check" {
-            nativeBuildInputs = [ pkgs.markdownlint-cli2 ];
-          } ''
-            cd ${inputs.self}
-            markdownlint-cli2 "docs/**/*.md"
-            touch "$out"
-          '';
+          markdownlint =
+            pkgs.runCommand "markdownlint-check" { nativeBuildInputs = [ pkgs.markdownlint-cli2 ]; }
+              ''
+                cd ${inputs.self}
+                markdownlint-cli2 "docs/**/*.md"
+                touch "$out"
+              '';
           package-fujicli = inputs.self.packages.${system}.fujicli;
           formatting = treefmt.config.build.check inputs.self;
           devShell-default = inputs.self.devShells.${system}.default;
-          statix = pkgs.runCommand "statix-check" {
-            nativeBuildInputs = [ pkgs.statix ];
-          } ''
+          statix = pkgs.runCommand "statix-check" { nativeBuildInputs = [ pkgs.statix ]; } ''
             cd ${inputs.self}
             statix check .
             touch "$out"
           '';
-          taplo-lint = pkgs.runCommand "taplo-lint" {
-            nativeBuildInputs = [ pkgs.taplo ];
-          } ''
+          taplo-lint = pkgs.runCommand "taplo-lint" { nativeBuildInputs = [ pkgs.taplo ]; } ''
             cd ${inputs.self}
             taplo lint .
             touch "$out"
