@@ -67,17 +67,18 @@
                 "$cargo_config"
             '';
 
-            nativeBuildInputs =
-              [
-                final.cue
-                final.pkg-config
-              ]
-              ++ final.lib.optionals final.stdenv.hostPlatform.isLinux [ final.autoPatchelfHook ];
+            nativeBuildInputs = [
+              final.cue
+              final.pkg-config
+            ]
+            ++ final.lib.optionals final.stdenv.hostPlatform.isLinux [ final.autoPatchelfHook ];
 
             buildInputs = [ final.libusb1 ];
 
             preCheck = final.lib.optionalString final.stdenv.hostPlatform.isLinux ''
-              export LD_LIBRARY_PATH="${final.lib.makeLibraryPath [ final.libusb1 ]}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+              export LD_LIBRARY_PATH="${
+                final.lib.makeLibraryPath [ final.libusb1 ]
+              }''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
             '';
 
             doInstallCheck = true;
