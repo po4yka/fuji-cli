@@ -127,6 +127,7 @@
               deadnix
               fujicliToolchain
               libusb1
+              lychee
               markdownlint-cli2
               pkg-config
               statix

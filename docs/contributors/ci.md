@@ -12,7 +12,8 @@ updates to those pins.
   build, and unused dependencies using the committed Rust toolchain and
   lockfile.
 - `CI / Nix` evaluates and builds the flake without modifying `flake.lock`.
-- `CI / Docs` rejects malformed Markdown.
+- `CI / Docs` rejects malformed Markdown and broken documentation links or
+  anchors without depending on external network availability.
 - `Security / cargo-deny` enforces the dependency, license, advisory, source,
   and duplicate-version policy in `deny.toml`.
 - `Security / dependency review` rejects pull requests that introduce
@@ -40,6 +41,7 @@ cargo build --locked --workspace --jobs 4
 cargo udeps --locked --workspace --all-features --all-targets --jobs 4
 cargo deny --locked check
 markdownlint-cli2 "docs/**/*.md"
+lychee --offline --include-fragments=anchor-only --no-progress "docs/**/*.md"
 ```
 
 On the managed development Mac, wrap each compiler-backed Cargo command with

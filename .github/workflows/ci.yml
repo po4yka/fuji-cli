@@ -88,6 +88,14 @@ jobs:
         with:
           globs: "docs/**/*.md"
 
+      - name: Install Lychee
+        run: |
+          bash support/install-lychee.sh "$RUNNER_TEMP/lychee-bin"
+          printf '%s\n' "$RUNNER_TEMP/lychee-bin" >>"$GITHUB_PATH"
+
+      - name: Check documentation links
+        run: lychee --offline --include-fragments=anchor-only --no-progress 'docs/**/*.md'
+
   nix:
     name: CI / Nix
     runs-on: ubuntu-24.04
