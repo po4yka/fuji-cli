@@ -23,7 +23,7 @@ use rusb::GlobalContext;
 const PTP_BULK_TIMEOUT: Duration = Duration::from_secs(10);
 const MIN_PTP_BULK_TIMEOUT: Duration = Duration::from_millis(1);
 const PTP_TRANSACTION_TIMEOUT: Duration = Duration::from_secs(5 * 60);
-const MAX_PTP_CONTAINER_PAYLOAD_LEN: usize = 128 * 1024 * 1024;
+pub const MAX_PTP_CONTAINER_PAYLOAD_BYTES: usize = 128 * 1024 * 1024;
 
 trait BulkTransport {
     fn read_bulk(&self, endpoint: u8, buf: &mut [u8], timeout: Duration) -> rusb::Result<usize>;
@@ -475,8 +475,8 @@ fn encode_command_params(params: &[u32]) -> anyhow::Result<Vec<u8>> {
         .checked_mul(size_of::<u32>())
         .ok_or_else(|| anyhow!("too many PTP command parameters"))?;
     ensure!(
-        payload_capacity <= MAX_PTP_CONTAINER_PAYLOAD_LEN,
-        "PTP command parameter payload {payload_capacity} exceeds maximum {MAX_PTP_CONTAINER_PAYLOAD_LEN}"
+        payload_capacity <= MAX_PTP_CONTAINER_PAYLOAD_BYTES,
+        "PTP command parameter payload {payload_capacity} exceeds maximum {MAX_PTP_CONTAINER_PAYLOAD_BYTES}"
     );
     let mut bytes = Vec::new();
     reserve_bytes(&mut bytes, payload_capacity, "PTP command parameters")?;
@@ -507,7 +507,7 @@ fn write_container<T: BulkTransport, C: Clock>(
         "PTP chunk size must exceed the container header size"
     );
     let max_chunk_size = ContainerInfo::SIZE
-        .checked_add(MAX_PTP_CONTAINER_PAYLOAD_LEN)
+        .checked_add(MAX_PTP_CONTAINER_PAYLOAD_BYTES)
         .ok_or_else(|| anyhow!("PTP maximum chunk size overflow"))?;
     ensure!(
         chunk_size <= max_chunk_size,
@@ -620,8 +620,8 @@ fn read_container_with_deadline<T: BulkTransport, C: Clock>(
     let container_info = ContainerInfo::read_options(&mut cur, Endian::Little, ())?;
     let payload_len = container_info.payload_len()?;
     ensure!(
-        payload_len <= MAX_PTP_CONTAINER_PAYLOAD_LEN,
-        "PTP container payload length {payload_len} exceeds maximum {MAX_PTP_CONTAINER_PAYLOAD_LEN}"
+        payload_len <= MAX_PTP_CONTAINER_PAYLOAD_BYTES,
+        "PTP container payload length {payload_len} exceeds maximum {MAX_PTP_CONTAINER_PAYLOAD_BYTES}"
     );
 
     let mut payload = Vec::new();
@@ -662,7 +662,7 @@ mod tests {
 
     use super::{
         BulkTransport, Clock, CommandCode, ContainerCode, ContainerInfo, ContainerType, Deadline,
-        MAX_PTP_CONTAINER_PAYLOAD_LEN, PTP_BULK_TIMEOUT, PTP_TRANSACTION_TIMEOUT, ResponseCode,
+        MAX_PTP_CONTAINER_PAYLOAD_BYTES, PTP_BULK_TIMEOUT, PTP_TRANSACTION_TIMEOUT, ResponseCode,
         encode_command_params, read_container, read_container_with_deadline, send_with_transport,
         send_with_transport_and_clock, send_with_transport_until_and_clock,
         validate_bulk_read_geometry, write_container,
@@ -862,7 +862,7 @@ mod tests {
     #[test]
     fn rejects_payload_larger_than_protocol_limit_before_allocation() {
         let header = crate::ptp::codec::encode(&ContainerInfo {
-            total_len: (ContainerInfo::SIZE + MAX_PTP_CONTAINER_PAYLOAD_LEN + 1)
+            total_len: (ContainerInfo::SIZE + MAX_PTP_CONTAINER_PAYLOAD_BYTES + 1)
                 .try_into()
                 .unwrap(),
             kind: ContainerType::Data,
@@ -1375,7 +1375,7 @@ mod tests {
         let error = write_container(
             &transport,
             0x02,
-            MAX_PTP_CONTAINER_PAYLOAD_LEN + ContainerInfo::SIZE + 1,
+            MAX_PTP_CONTAINER_PAYLOAD_BYTES + ContainerInfo::SIZE + 1,
             ContainerType::Command,
             CommandCode::GetDeviceInfo,
             &[],

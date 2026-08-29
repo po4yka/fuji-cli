@@ -61,8 +61,10 @@ is declared. Once you've round-tripped a backup that way, set:
 features: backup: true
 ```
 
-That's the entire feature block. Backup is the same PTP dance for every Fuji
-camera we've seen.
+That's the entire feature block. It enables the versioned guarded backup workflow,
+but only after the reverse round-trip has established the model's native PTP
+dance, object handles, object-info layout, and padding. A fixture or another
+camera model is not sufficient evidence.
 
 ## 3. Enable Simulations
 

@@ -52,9 +52,14 @@ message.
 
 ```rust
 impl Camera {
-    pub fn export_backup(&mut self) -> anyhow::Result<Vec<u8>> {
+    pub fn export_backup(
+        &mut self,
+        purpose: BackupPurpose,
+    ) -> anyhow::Result<BackupArtifact> {
+        let identity = self.backup_identity()?;
         if let Some(backups) = self.r#impl.as_backup_manager() {
-            backups.export_backup(&mut self.ptp)
+            let payload = backups.export_backup(&mut self.ptp)?;
+            BackupArtifact::create(purpose, identity, &payload)
         } else {
             bail!(ERROR_CAMERA_DOES_NOT_SUPPORT_BACKUP_MANAGEMENT);
         }
@@ -77,6 +82,36 @@ provides default implementations of `export_backup` and `import_backup` against
 seen, so this is a blanket
 `impl<T> CameraBackupManager for T where T: CameraBase`. A camera opts in by
 overriding `as_backup_manager` to return `Some(self)`.
+
+The manager owns the opaque Fuji wire exchange only. The guarded public boundary
+is [`features/backup/artifact.rs`](../../src/lib/features/backup/artifact.rs): a
+versioned envelope with a strict JSON manifest, exact EOF framing, source
+schema/PTP identity, purpose, bounded payload length, and SHA-256 fingerprints.
+Main import accepts only a parsed artifact. Raw bytes can reach
+`SendObjectInfo` only through the explicitly named unchecked reverse helper.
+
+The artifact is an integrity and compatibility envelope, not a vendor-authentic
+container: the native payload remains opaque and unsigned. Destructive import
+therefore also requires an independently trusted complete-artifact SHA-256. A
+manifest and digest supplied together by an attacker remain forgeable.
+
+Export validates that `GetObjectInfo` describes `FujiBackup`, has the expected
+1020-byte zero padding, and reports the exact subsequent payload length. Import
+checks live model and firmware plus serial policy before the CLI durably creates
+a no-clobber recovery artifact. Transport or framing failures poison the PTP
+session; backup import classifies both metadata and data failures as unknown
+camera state and never retries automatically.
+
+The current X-T5 exchange uses zero object handles for `SendObjectInfo` and
+`SendObject`, matching the existing reverse-engineered sequence. The transport
+does not retain response parameters, so the runtime cannot validate a
+camera-returned object handle. Changing this sequence requires a captured X-T5
+exchange and physical-device validation rather than an inferred protocol fix.
+
+There is no claimed rollback, `CancelTransaction`, `GetDeviceStatus`, device
+reset, or byte-for-byte post-import verification. Those require captured X-T5
+behavior and physical fault-injection evidence; a successful import currently
+means only that the final PTP response accepted the restore operation.
 
 ### `CameraSimulationParser` + `Simulation`
 

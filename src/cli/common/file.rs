@@ -41,6 +41,10 @@ impl FromStr for Input {
 }
 
 impl Input {
+    pub const fn is_stdin(&self) -> bool {
+        matches!(self, Self::Stdin)
+    }
+
     pub fn read_limited(&self, max_len: usize, description: &str) -> anyhow::Result<Vec<u8>> {
         let (reader, known_len): (Box<dyn io::Read>, Option<u64>) = match self {
             Self::Path(path) => {
@@ -164,6 +168,10 @@ impl FromStr for Output {
 }
 
 impl Output {
+    pub const fn is_stdout(&self) -> bool {
+        matches!(self, Self::Stdout)
+    }
+
     fn begin_write(&self) -> anyhow::Result<OutputTransaction> {
         match self {
             Self::Stdout => Ok(OutputTransaction::Stdout(io::stdout())),
@@ -189,6 +197,25 @@ impl Output {
         let mut output = self.begin_write()?;
         io::Write::write_all(&mut output, data)?;
         output.commit()
+    }
+
+    pub fn write_all_new(&self, data: &[u8]) -> anyhow::Result<()> {
+        let transaction = self.begin_write()?;
+        let OutputTransaction::Path {
+            mut file,
+            destination,
+            directory,
+        } = transaction
+        else {
+            bail!("exclusive output requires a file path, not stdout");
+        };
+
+        io::Write::write_all(&mut file, data)?;
+        io::Write::flush(&mut file)?;
+        file.as_file().sync_all()?;
+        drop(file.persist_noclobber(destination)?);
+        sync_directory(&directory)?;
+        Ok(())
     }
 }
 
@@ -308,6 +335,36 @@ mod tests {
         Output::Path(destination.clone()).write_all(b"replacement backup")?;
 
         assert_eq!(fs::read(destination)?, b"replacement backup");
+        Ok(())
+    }
+
+    #[test]
+    fn exclusive_output_atomically_creates_new_file() -> anyhow::Result<()> {
+        let directory = tempdir()?;
+        let destination = directory.path().join("recovery.fbk");
+
+        Output::Path(destination.clone()).write_all_new(b"recovery backup")?;
+
+        assert_eq!(fs::read(destination)?, b"recovery backup");
+        Ok(())
+    }
+
+    #[test]
+    fn exclusive_output_preserves_existing_recovery_file() -> anyhow::Result<()> {
+        let directory = tempdir()?;
+        let destination = directory.path().join("recovery.fbk");
+        fs::write(&destination, b"existing recovery")?;
+
+        let error = Output::Path(destination.clone())
+            .write_all_new(b"replacement")
+            .expect_err("recovery output must never clobber an existing file");
+
+        assert!(error.chain().any(|cause| {
+            cause
+                .downcast_ref::<io::Error>()
+                .is_some_and(|error| error.kind() == io::ErrorKind::AlreadyExists)
+        }));
+        assert_eq!(fs::read(destination)?, b"existing recovery");
         Ok(())
     }
 }

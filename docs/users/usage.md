@@ -48,22 +48,70 @@ or open a PTP session; use `device info` when live camera properties are needed.
 
 ## Backups
 
-Backups are camera-native blobs; treat them as opaque.
+The camera-native backup payload is opaque. The normal commands wrap it in a
+versioned fujicli artifact containing bounded metadata, source identity,
+payload length, and SHA-256 fingerprints.
 
 ```sh
-fujicli backup export camera.fbk  # write to file
-fujicli backup export -           # write to stdout
-fujicli backup import camera.fbk --yes
+fujicli backup export camera.fbk
+fujicli backup inspect camera.fbk
+fujicli backup import camera.fbk --dry-run
+fujicli backup import camera.fbk \
+  --yes \
+  --recovery-backup before-import.fbk \
+  --expect-sha256 SHA256_RECORDED_AT_EXPORT
 ```
 
-Backup imports are limited to 256 MiB. The complete input is read and checked
-before the CLI opens a camera connection.
+`backup inspect` is offline. It verifies magic, format version, exact framing,
+manifest fields, payload length, and payload SHA-256, then prints the source
+model, firmware, serial fingerprint, payload fingerprint, and complete artifact
+fingerprint. Pass `--json` for machine-readable output.
 
-`backup import` is destructive and backup blobs do not carry a trustworthy
-camera-model identity, so the command requires explicit `--yes` acknowledgement.
-Before sending bytes, the CLI identifies the selected camera and physical USB
-location on stderr. Combining restore with `--emulate` additionally requires
-`--allow-emulated-target`.
+When export targets a file, it prints the complete artifact SHA-256 (or a JSON
+object under `--json`) so automation can save an independent trusted record.
+Export to stdout remains binary-only and prints no fingerprint into the stream.
+
+The native payload remains limited to the PTP transport ceiling of 128 MiB. The
+complete artifact is read and cryptographically checked before the CLI opens a
+camera connection. Import then requires an exact source/target schema camera,
+USB product, live PTP model, manufacturer, and firmware match. By default it
+also requires the source camera serial fingerprint. To transfer settings to a
+different body of the same model and firmware, first run `--dry-run`; then pin
+the reported target explicitly:
+
+```sh
+fujicli backup import camera.fbk \
+  --yes \
+  --recovery-backup before-import.fbk \
+  --expect-sha256 SHA256_RECORDED_AT_EXPORT \
+  --target-serial-sha256 SHA256_FROM_DRY_RUN
+```
+
+Destructive import requires `--yes`, the complete artifact's
+`--expect-sha256`, and a new `--recovery-backup` file. The CLI exports the
+target's current state, syncs it, and creates that file without clobbering an
+existing path before it sends `SendObjectInfo`. A recovery artifact is bound to
+that exact camera serial. Any validation, compatibility, export, or
+recovery-write failure stops before restore metadata is sent.
+
+The envelope and hashes detect corruption, truncation, accidental substitution,
+and target mismatch; they do not authenticate Fujifilm's opaque native payload.
+Fujifilm exposes no signature or public parser here, so the value passed to
+`--expect-sha256` must come from a trusted export/inspection record independent
+of the artifact being imported. A hash supplied by the same untrusted party as
+the file does not establish provenance.
+
+Safe backup export and import reject `--emulate`. The explicitly unsafe
+`device reverse backup import` remains available only for protocol research and
+continues to require its two acknowledgement flags.
+
+Destructive import from stdin is additionally disabled unless `--allow-stdin`
+is supplied. The external artifact fingerprint, explicit serial binding,
+confirmation, and recovery path form the unattended-automation contract. Do
+not automatically retry a restore after a timeout, disconnect, or other wire
+error: the camera state is unknown. A successful command means that the PTP
+restore operation was accepted, not that post-reboot persistence was
+independently verified.
 
 File exports are written to a temporary file in the destination directory,
 synced, and atomically renamed only after the complete output is available. If

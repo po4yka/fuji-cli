@@ -161,7 +161,10 @@ fn handle_backup_import(
         "{}",
         backup_import_target_warning(camera.name(), &camera.connected_usb_id(), false)
     );
-    try_call!(backup::import_backup_over_ptp(&mut camera.ptp, &backup))?;
+    try_call!(backup::import_backup_over_ptp_unchecked(
+        &mut camera.ptp,
+        &backup
+    ))?;
 
     Ok(())
 }

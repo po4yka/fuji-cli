@@ -119,6 +119,66 @@ mod tests {
     }
 
     #[test]
+    fn backup_import_dry_run_does_not_require_destructive_acknowledgement() {
+        let parsed =
+            Cli::try_parse_from(["fujicli", "backup", "import", "backup.dat", "--dry-run"]);
+
+        assert!(
+            parsed.is_ok(),
+            "dry-run must be non-destructive: {parsed:?}"
+        );
+    }
+
+    #[test]
+    fn backup_import_requires_recovery_output_before_destructive_restore() {
+        let error = Cli::try_parse_from([
+            "fujicli",
+            "backup",
+            "import",
+            "backup.dat",
+            "--yes",
+            "--expect-sha256",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+        ])
+        .expect_err("destructive restore must require a recovery backup path");
+
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+    }
+
+    #[test]
+    fn backup_import_requires_external_artifact_fingerprint() {
+        let error = Cli::try_parse_from([
+            "fujicli",
+            "backup",
+            "import",
+            "backup.dat",
+            "--yes",
+            "--recovery-backup",
+            "recovery.fbk",
+        ])
+        .expect_err("destructive restore must pin the complete artifact");
+
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+        assert!(error.to_string().contains("--expect-sha256"));
+    }
+
+    #[test]
+    fn backup_inspect_is_available_without_device_options() {
+        let parsed = Cli::try_parse_from(["fujicli", "backup", "inspect", "backup.dat"]);
+
+        assert!(
+            parsed.is_ok(),
+            "offline backup inspect must parse: {parsed:?}"
+        );
+    }
+
+    #[test]
     fn reverse_backup_import_requires_unknown_camera_opt_in() {
         let error = Cli::try_parse_from([
             "fujicli",

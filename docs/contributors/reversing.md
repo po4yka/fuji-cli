@@ -58,9 +58,12 @@ commands. Mark `features: backup: true` in the camera spec. Backup bytes are
 written only to the selected output; they are never copied into diagnostic
 logs.
 
-Unknown-camera restore has no model or format validation and no rollback. The
-two acknowledgement flags are intentionally mandatory, and the command reports
-the physical USB target on stderr before sending the backup.
+Unknown-camera restore accepts a raw opaque payload. It has no envelope,
+integrity, model, firmware, serial, or native-format validation and no rollback.
+The two acknowledgement flags are intentionally mandatory, and the command
+reports the physical USB target on stderr before sending the backup. Do not use
+this escape hatch for normal restore or unattended automation; the main
+`fujicli backup` commands provide the integrity and compatibility boundary.
 
 ### Simulation
 

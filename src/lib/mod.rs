@@ -8,15 +8,17 @@ pub mod ptp;
 #[cfg(test)]
 mod tests;
 
-use anyhow::{anyhow, bail};
+use std::time::{Duration, Instant};
+
+use anyhow::{anyhow, bail, ensure};
 use features::{
+    backup::{BackupArtifact, BackupIdentity, BackupPurpose, sha256_hex},
     base::{CameraBase, info::CameraInfo},
     simulation::Simulation,
 };
 use log::{debug, error};
 use ptp::{Ptp, validate_bulk_read_geometry};
 use rusb::{GlobalContext, constants::LIBUSB_CLASS_IMAGE};
-use std::time::{Duration, Instant};
 
 use crate::{
     features::base::UNKNOWN_CAMERA,
@@ -238,17 +240,49 @@ impl Camera {
         self.r#impl.get_info(&mut self.ptp)
     }
 
-    pub fn export_backup(&mut self) -> anyhow::Result<Vec<u8>> {
+    pub fn backup_identity(&mut self) -> anyhow::Result<BackupIdentity> {
+        let info = self.ptp.get_info()?;
+        ensure_backup_identity_fields(&info)?;
+
+        Ok(BackupIdentity {
+            camera_name: self.name().to_owned(),
+            vendor_id: self.vendor_id(),
+            product_id: self.product_id(),
+            manufacturer: info.manufacturer,
+            model: info.model,
+            firmware: info.device_version,
+            serial_sha256: sha256_hex(info.serial_number.as_bytes()),
+        })
+    }
+
+    pub fn export_backup(&mut self, purpose: BackupPurpose) -> anyhow::Result<BackupArtifact> {
+        let identity = self.backup_identity()?;
         if let Some(backups) = self.r#impl.as_backup_manager() {
-            backups.export_backup(&mut self.ptp)
+            let payload = backups.export_backup(&mut self.ptp)?;
+            BackupArtifact::create(purpose, identity, &payload)
         } else {
             bail!(ERROR_CAMERA_DOES_NOT_SUPPORT_BACKUP_MANAGEMENT);
         }
     }
 
-    pub fn import_backup(&mut self, buffer: &[u8]) -> anyhow::Result<()> {
+    pub fn validate_backup(
+        &mut self,
+        artifact: &BackupArtifact,
+        expected_target_serial_sha256: Option<&str>,
+    ) -> anyhow::Result<BackupIdentity> {
+        let target = self.backup_identity()?;
+        artifact.validate_target(&target, expected_target_serial_sha256)?;
+        Ok(target)
+    }
+
+    pub fn import_backup(
+        &mut self,
+        artifact: &BackupArtifact,
+        expected_target_serial_sha256: Option<&str>,
+    ) -> anyhow::Result<()> {
+        drop(self.validate_backup(artifact, expected_target_serial_sha256)?);
         if let Some(backups) = self.r#impl.as_backup_manager() {
-            backups.import_backup(&mut self.ptp, buffer)
+            backups.import_backup(&mut self.ptp, artifact)
         } else {
             bail!(ERROR_CAMERA_DOES_NOT_SUPPORT_BACKUP_MANAGEMENT);
         }
@@ -322,4 +356,18 @@ impl Camera {
             bail!(ERROR_CAMERA_DOES_NOT_SUPPORT_RENDER_MANAGEMENT);
         }
     }
+}
+
+fn ensure_backup_identity_fields(info: &ptp::DeviceInfo) -> anyhow::Result<()> {
+    ensure!(
+        !info.manufacturer.is_empty(),
+        "camera manufacturer is empty"
+    );
+    ensure!(!info.model.is_empty(), "camera model is empty");
+    ensure!(!info.device_version.is_empty(), "camera firmware is empty");
+    ensure!(
+        !info.serial_number.is_empty(),
+        "camera serial number is empty"
+    );
+    Ok(())
 }
