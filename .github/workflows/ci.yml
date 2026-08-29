@@ -73,6 +73,36 @@ jobs:
       - name: Detect unused dependencies
         run: cargo udeps --locked --workspace --all-features --all-targets --jobs 4
 
+  platform:
+    name: CI / Platform (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS arm64
+            os: macos-15-arm64
+          - name: Windows x86_64
+            os: windows-2025
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install CUE
+        shell: bash
+        run: |
+          go install cuelang.org/go/cmd/cue@v0.16.1
+          printf '%s\n' "$(go env GOPATH)/bin" >>"$GITHUB_PATH"
+
+      - name: Test all targets
+        run: cargo test --locked --all-features --all-targets --workspace --jobs 4
+
+      - name: Build workspace
+        run: cargo build --locked --workspace --jobs 4
+
   docs:
     name: CI / Docs
     runs-on: ubuntu-24.04
