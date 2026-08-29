@@ -538,6 +538,25 @@ fn reserve_bytes(buffer: &mut Vec<u8>, len: usize, purpose: &str) -> anyhow::Res
         .map_err(|error| anyhow!("failed to allocate {purpose} ({len} bytes): {error}"))
 }
 
+pub(crate) fn validate_bulk_read_geometry(
+    chunk_size: usize,
+    max_packet_size: usize,
+) -> anyhow::Result<()> {
+    ensure!(
+        max_packet_size != 0,
+        "PTP bulk IN endpoint maximum packet size must be non-zero"
+    );
+    ensure!(
+        chunk_size >= ContainerInfo::SIZE,
+        "PTP chunk size must fit the container header"
+    );
+    ensure!(
+        chunk_size.is_multiple_of(max_packet_size),
+        "PTP chunk size {chunk_size} must be a multiple of the bulk IN endpoint packet size {max_packet_size}"
+    );
+    Ok(())
+}
+
 fn write_all_bulk<T: BulkTransport, C: Clock>(
     transport: &T,
     bulk_out: u8,
@@ -581,22 +600,23 @@ fn read_container_with_deadline<T: BulkTransport, C: Clock>(
     chunk_size: usize,
     deadline: &Deadline<'_, C>,
 ) -> anyhow::Result<(ContainerInfo, Vec<u8>)> {
-    ensure!(chunk_size != 0, "PTP chunk size must be non-zero");
-    let mut header = [0u8; ContainerInfo::SIZE];
-    let mut header_len = 0;
-    while header_len < header.len() {
-        let n = transport.read_bulk(bulk_in, &mut header[header_len..], deadline.io_timeout()?)?;
+    ensure!(
+        chunk_size >= ContainerInfo::SIZE,
+        "PTP chunk size must fit the container header"
+    );
+    let mut chunk = Vec::new();
+    reserve_bytes(&mut chunk, chunk_size, "PTP bulk read chunk")?;
+    chunk.resize(chunk_size, 0);
+
+    let mut initial = Vec::new();
+    reserve_bytes(&mut initial, chunk_size, "PTP initial bulk read")?;
+    while initial.len() < ContainerInfo::SIZE {
+        let n = transport.read_bulk(bulk_in, &mut chunk, deadline.io_timeout()?)?;
         ensure!(n != 0, "PTP container header is truncated");
-        header_len = header_len
-            .checked_add(n)
-            .ok_or_else(|| anyhow!("PTP container header length overflow"))?;
-        ensure!(
-            header_len <= header.len(),
-            "PTP container header exceeded its declared length"
-        );
+        initial.extend_from_slice(&chunk[..n]);
     }
 
-    let mut cur = Cursor::new(header);
+    let mut cur = Cursor::new(&initial[..ContainerInfo::SIZE]);
     let container_info = ContainerInfo::read_options(&mut cur, Endian::Little, ())?;
     let payload_len = container_info.payload_len()?;
     ensure!(
@@ -606,14 +626,15 @@ fn read_container_with_deadline<T: BulkTransport, C: Clock>(
 
     let mut payload = Vec::new();
     reserve_bytes(&mut payload, payload_len, "PTP container payload")?;
-    let chunk_capacity = min(payload_len, chunk_size);
-    let mut chunk = Vec::new();
-    reserve_bytes(&mut chunk, chunk_capacity, "PTP bulk read chunk")?;
+    let initial_payload = &initial[ContainerInfo::SIZE..];
+    ensure!(
+        initial_payload.len() <= payload_len,
+        "PTP payload exceeded its declared length"
+    );
+    payload.extend_from_slice(initial_payload);
 
     while payload.len() < payload_len {
         let remaining = payload_len - payload.len();
-        let chunk_len = min(remaining, chunk_capacity);
-        chunk.resize(chunk_len, 0);
         let n = transport.read_bulk(bulk_in, &mut chunk, deadline.io_timeout()?)?;
         ensure!(n != 0, "PTP payload ended before its declared length");
         ensure!(n <= remaining, "PTP payload exceeded its declared length");
@@ -643,7 +664,8 @@ mod tests {
         BulkTransport, Clock, CommandCode, ContainerCode, ContainerInfo, ContainerType, Deadline,
         MAX_PTP_CONTAINER_PAYLOAD_LEN, PTP_BULK_TIMEOUT, PTP_TRANSACTION_TIMEOUT, ResponseCode,
         encode_command_params, read_container, read_container_with_deadline, send_with_transport,
-        send_with_transport_and_clock, send_with_transport_until_and_clock, write_container,
+        send_with_transport_and_clock, send_with_transport_until_and_clock,
+        validate_bulk_read_geometry, write_container,
     };
 
     #[test]
@@ -706,7 +728,9 @@ mod tests {
                 return Err(error);
             }
             let next = self.reads.borrow_mut().pop_front().unwrap_or_default();
-            assert!(next.len() <= buf.len());
+            if next.len() > buf.len() {
+                return Err(rusb::Error::Overflow);
+            }
             buf[..next.len()].copy_from_slice(&next);
             Ok(next.len())
         }
@@ -899,6 +923,32 @@ mod tests {
                 "split at {split_at}",
             );
         }
+    }
+
+    #[test]
+    fn reads_header_and_payload_from_one_bulk_transfer() {
+        let payload = [0x11, 0x22, 0x33, 0x44];
+        let packet = container(
+            ContainerType::Data,
+            ContainerCode::Command(CommandCode::GetObject),
+            7,
+            &payload,
+        );
+        let transport = FakeBulkTransport::with_reads([packet]);
+
+        let (header, received_payload) = read_container(&transport, 0x81, 1024)
+            .expect("combined PTP header and payload must be accepted in one bulk transfer");
+
+        assert_eq!(header.transaction_id, 7);
+        assert_eq!(received_payload, payload);
+    }
+
+    #[test]
+    fn rejects_bulk_read_buffer_that_is_not_packet_aligned() {
+        let error = validate_bulk_read_geometry(1000, 512)
+            .expect_err("bulk read buffers must align to endpoint packets");
+
+        assert!(error.to_string().contains("multiple"));
     }
 
     #[test]

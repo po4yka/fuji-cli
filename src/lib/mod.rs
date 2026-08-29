@@ -14,7 +14,7 @@ use features::{
     simulation::Simulation,
 };
 use log::{debug, error};
-use ptp::Ptp;
+use ptp::{Ptp, validate_bulk_read_geometry};
 use rusb::{GlobalContext, constants::LIBUSB_CLASS_IMAGE};
 use std::time::{Duration, Instant};
 
@@ -109,23 +109,25 @@ impl Camera {
 
         let find_endpoint = |direction: rusb::Direction,
                              transfer_type: rusb::TransferType|
-         -> Result<u8, rusb::Error> {
+         -> Result<(u8, usize), rusb::Error> {
             interface_descriptor
                 .endpoint_descriptors()
                 .find(|ep| ep.direction() == direction && ep.transfer_type() == transfer_type)
-                .map(|x| x.address())
+                .map(|endpoint| (endpoint.address(), usize::from(endpoint.max_packet_size())))
                 .ok_or(rusb::Error::NotFound)
         };
 
-        let bulk_in = find_endpoint(rusb::Direction::In, rusb::TransferType::Bulk)?;
+        let (bulk_in, bulk_in_max_packet_size) =
+            find_endpoint(rusb::Direction::In, rusb::TransferType::Bulk)?;
         debug!("Found Bulk In endpoint");
 
-        let bulk_out = find_endpoint(rusb::Direction::Out, rusb::TransferType::Bulk)?;
+        let (bulk_out, _) = find_endpoint(rusb::Direction::Out, rusb::TransferType::Bulk)?;
         debug!("Found Bulk Out endpoint");
 
         let transaction_id = 0;
         let r#impl = (factory)();
         let chunk_size = r#impl.chunk_size();
+        validate_bulk_read_geometry(chunk_size, bulk_in_max_packet_size)?;
 
         let mut ptp = Ptp {
             bus,
