@@ -143,18 +143,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes libusb-1.0-0-dev pkg-config
 
-      - name: Install CUE on Linux
-        if: runner.os == 'Linux'
+      - name: Install CUE
+        shell: bash
         run: |
           bash support/install-cue.sh "$RUNNER_TEMP/cue-bin"
           printf '%s\n' "$RUNNER_TEMP/cue-bin" >>"$GITHUB_PATH"
-
-      - name: Install CUE on macOS and Windows
-        if: runner.os != 'Linux'
-        shell: bash
-        run: |
-          go install cuelang.org/go/cmd/cue@v0.16.1
-          printf '%s\n' "$(go env GOPATH)/bin" >>"$GITHUB_PATH"
 
       - name: Build release binary
         env:

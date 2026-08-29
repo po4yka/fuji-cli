@@ -94,8 +94,8 @@ jobs:
       - name: Install CUE
         shell: bash
         run: |
-          go install cuelang.org/go/cmd/cue@v0.16.1
-          printf '%s\n' "$(go env GOPATH)/bin" >>"$GITHUB_PATH"
+          bash support/install-cue.sh "$RUNNER_TEMP/cue-bin"
+          printf '%s\n' "$RUNNER_TEMP/cue-bin" >>"$GITHUB_PATH"
 
       - name: Test all targets
         run: cargo test --locked --all-features --all-targets --workspace --jobs 4
