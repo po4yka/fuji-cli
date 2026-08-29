@@ -130,6 +130,7 @@
               pkg-config
               statix
               taplo
+              typos
             ];
 
             shellHook = ''

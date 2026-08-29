@@ -41,6 +41,15 @@ jobs:
           tool: cargo-udeps@0.1.61
           fallback: none
 
+      - name: Install typos
+        uses: taiki-e/install-action@742a3317eac7bd62f91cd888b4eead5e784ba833 # v2.87.1
+        with:
+          tool: typos@1.50.0
+          fallback: none
+
+      - name: Check spelling
+        run: typos . .github
+
       - name: Check all targets
         run: cargo check --locked --all-features --all-targets --workspace --jobs 4
 
