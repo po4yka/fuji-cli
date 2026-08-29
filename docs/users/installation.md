@@ -12,21 +12,21 @@ nix run github:po4yka/fuji-cli
 Or add the flake to your system inputs and use the `fujicli` package from
 `overlays.default`.
 
-For a dev shell with the right toolchain (`cue`, `cargo`, fenix nightly):
+For a dev shell with the pinned Rust toolchain, CUE, and native dependencies:
 
 ```sh
 git clone https://github.com/po4yka/fuji-cli.git
-cd fujicli
+cd fuji-cli
 nix develop
-cargo build --release
+cargo build --locked --release
 ```
 
 ## From Source (non-Nix)
 
 You need:
 
-- A recent Rust toolchain (edition 2024). Install via
-  [rustup](https://rustup.rs/).
+- [rustup](https://rustup.rs/), which installs the repository's pinned Rust
+  toolchain automatically.
 - [CUE](https://cuelang.org/) on `PATH` - the build script invokes `cue export`
   to materialize the schema into JSON.
 - A C toolchain and `libusb-1.0` headers, for the `rusb` dependency.
@@ -35,8 +35,8 @@ Then:
 
 ```sh
 git clone https://github.com/po4yka/fuji-cli.git
-cd fujicli
-cargo build --release
+cd fuji-cli
+cargo build --locked --release
 ./target/release/fujicli --help
 ```
 

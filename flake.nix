@@ -7,15 +7,6 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
-    lib = {
-      # FIXME: https://github.com/NixOS/nix/issues/12281
-      url = "git+https://git.karaolidis.com/karaolidis/nix-lib.git";
-      inputs = {
-        nixpkgs.follows = "nixpkgs";
-        treefmt-nix.follows = "treefmt-nix";
-      };
-    };
-
     fenix = {
       url = "github:nix-community/fenix";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -33,20 +24,17 @@
         {
           fujicli = pkgs.rustPlatform.buildRustPackage {
             pname = "fujicli";
-            version = "0.1.0";
+            version = "0.2.0";
 
             src = ./.;
             cargoLock.lockFile = ./Cargo.lock;
 
             nativeBuildInputs = with pkgs; [
-              makeWrapper
               cue
+              pkg-config
             ];
 
-            postInstall = ''
-              wrapProgram $out/bin/fujicli \
-                --prefix PATH : "${pkgs.lib.makeBinPath [ pkgs.exiftool ]}"
-            '';
+            buildInputs = with pkgs; [ libusb1 ];
           };
         };
     }
@@ -56,23 +44,27 @@
 
         pkgs = import inputs.nixpkgs {
           inherit system;
-          config.allowUnfree = true;
           overlays = [
-            inputs.lib.overlays.default
             inputs.self.overlays.default
           ];
         };
 
         treefmt = inputs.treefmt-nix.lib.evalModule pkgs ./treefmt.nix;
+        toolchain = inputs.fenix.packages.${system}.fromToolchainFile {
+          file = ./rust-toolchain.toml;
+          sha256 = "sha256-rhEZgHt/jCYmcHMuzwInk+upD3eO86bJ6jVg6nqLkl0=";
+        };
       in
       {
         devShells.${system}.default = pkgs.mkShell {
           packages = with pkgs; [
-            inputs.fenix.packages.${system}.latest.toolchain
             cargo-udeps
             cargo-outdated
             cargo-expand
             cue
+            libusb1
+            pkg-config
+            toolchain
           ];
 
           shellHook = ''

@@ -21,29 +21,6 @@
         "type": "github"
       }
     },
-    "lib": {
-      "inputs": {
-        "nixpkgs": [
-          "nixpkgs"
-        ],
-        "treefmt-nix": [
-          "treefmt-nix"
-        ]
-      },
-      "locked": {
-        "lastModified": 1776158282,
-        "narHash": "sha256-+gI6f0mGyQgGIJh2iJWXrU05oBESFVvXTlRewc4heIo=",
-        "ref": "refs/heads/main",
-        "rev": "28ba569d911c8e59839a26d43b6709b6553ae127",
-        "revCount": 15,
-        "type": "git",
-        "url": "https://git.karaolidis.com/karaolidis/nix-lib.git"
-      },
-      "original": {
-        "type": "git",
-        "url": "https://git.karaolidis.com/karaolidis/nix-lib.git"
-      }
-    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1776169885,
@@ -63,7 +40,6 @@
     "root": {
       "inputs": {
         "fenix": "fenix",
-        "lib": "lib",
         "nixpkgs": "nixpkgs",
         "treefmt-nix": "treefmt-nix"
       }

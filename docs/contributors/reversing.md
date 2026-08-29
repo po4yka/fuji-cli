@@ -88,9 +88,9 @@ user-facing options and what the camera stores on the wire.
 - **Windows VM (QEMU + USB pass-through)** - running Fujifilm's closed-source X
   RAW Studio. Minimal install ISOs without Microsoft's bullshit can be built at
   <https://schneegans.de/windows/unattend-generator/>.
-- **Wireshark** - for USB packet capture. A patch is required to expose
-  `frame.raw` in `tshark` for USB traffic; see
-  <https://git.karaolidis.com/karaolidis/nix/src/branch/main/overlays/wireshark/add-frame-raw.patch>.
+- **Wireshark** - for USB packet capture. A patched build that exposes
+  `frame.raw` in `tshark` is required for USB traffic; track the upstream
+  discussion in <https://gitlab.com/wireshark/wireshark/-/issues/20908>.
 
 ### Procedure
 

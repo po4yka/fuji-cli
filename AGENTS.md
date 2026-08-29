@@ -54,11 +54,9 @@ after emission.
 - Run commands from the workspace root containing `Cargo.toml`.
 - `cue` must be on `PATH` for compiler-backed Cargo commands. `nix develop`
   provides the intended Rust/CUE environment.
-- Source builds also require a C toolchain and `libusb-1.0` headers. Image
-  workflows require `exiftool` at runtime.
-- CI currently uses Rust nightly with `rustfmt` and `clippy`. The repository has
-  no pinned `rust-toolchain.toml`; do not introduce or change toolchain/MSRV
-  policy as part of an unrelated task.
+- Source builds also require a C toolchain and `libusb-1.0` headers.
+- Rust nightly, `rustfmt`, and `clippy` are pinned in `rust-toolchain.toml`.
+  Change the toolchain deliberately and validate the full workspace gate.
 - `Cargo.lock` is committed application state. Pass `--locked` to routine Cargo
   commands. Change the lockfile only for a deliberate dependency update and
   review the resulting dependency diff.

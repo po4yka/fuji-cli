@@ -41,6 +41,7 @@ version = "0.2.0"
 edition = "2024"
 description = "A CLI to manage Fujifilm devices, simulations, backups, and rendering"
 license = "MIT"
+repository = "https://github.com/po4yka/fuji-cli"
 authors = [
     "Nikita Pochaev",
 ]
