@@ -65,7 +65,9 @@ jobs:
           cargo_version="$(cargo metadata --locked --no-deps --format-version 1 | jq --raw-output '.packages[] | select(.name == "fujicli") | .version')"
           nix_version="$(nix eval --raw .#packages.x86_64-linux.fujicli.version)"
 
-          if [[ "$tag_version" != "$cargo_version" || "$tag_version" != "$nix_version" ]]; then
+          if [[ "$tag_version" == "$cargo_version" && "$tag_version" == "$nix_version" ]]; then
+            printf 'release version: %s\n' "$tag_version"
+          else
             printf 'version mismatch: tag=%s cargo=%s nix=%s\n' "$tag_version" "$cargo_version" "$nix_version" >&2
             exit 1
           fi
