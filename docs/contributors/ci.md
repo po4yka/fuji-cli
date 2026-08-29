@@ -1,0 +1,41 @@
+# Continuous Integration
+
+GitHub Actions validates every pull request and every push to `main`. All
+third-party actions are pinned to full commit hashes, and Dependabot proposes
+updates to those pins.
+
+## Required checks
+
+- `CI / Rust` installs CUE 0.16.1 and the native USB dependencies, then runs
+  formatting, check, Clippy with warnings denied, tests, and a workspace build
+  using the committed Rust toolchain and lockfile.
+- `CI / Nix` evaluates and builds the flake without modifying `flake.lock`.
+- `Security / cargo-deny` enforces the dependency, license, advisory, source,
+  and duplicate-version policy in `deny.toml`.
+- `Security / dependency review` rejects pull requests that introduce
+  dependencies with moderate-or-higher known vulnerabilities.
+- `Security / workflow lint` runs actionlint and zizmor against the workflow
+  definitions.
+
+The scheduled security run repeats the dependency and workflow checks daily.
+Hardware behaviour remains outside CI: a successful workflow does not prove a
+camera feature on a physical device.
+
+## Reproducing the Rust gate
+
+Install the prerequisites from [the installation guide](../users/installation.md),
+then run:
+
+```sh
+cargo fmt --all --check
+cargo check --locked --all-features --all-targets --workspace --jobs 4
+cargo clippy --locked --all-features --all-targets --workspace --jobs 4 -- -D warnings
+cargo test --locked --all-features --all-targets --workspace --jobs 4
+cargo build --locked --workspace --jobs 4
+cargo deny --locked check
+```
+
+On the managed development Mac, wrap each compiler-backed Cargo command with
+`build-gate --`. With Nix installed, run
+`nix flake check --no-update-lock-file --print-build-logs` as the separate Nix
+gate.

@@ -9,6 +9,8 @@
 ## For Contributors
 
 - [Contributing](contributors/README.md) - workflow, branches, formatting.
+- [Continuous Integration](contributors/ci.md) - hosted checks and local
+  reproduction.
 - [Adding a Camera](contributors/adding-cameras.md) - the most common
   contribution.
 - [Reversing](contributors/reversing.md) - capturing PTP traffic from Fujifilm's

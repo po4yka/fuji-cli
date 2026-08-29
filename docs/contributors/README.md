@@ -8,8 +8,7 @@ No strict process; just be sane.
 
 - Fork on GitHub and open a PR.
 - A short note in the description (what, why) helps.
-- `cargo build --locked --workspace` and `cargo test --locked --workspace`
-  should pass.
+- Reproduce the applicable [continuous-integration checks](ci.md) locally.
 - Run the project formatter if you have Nix (`nix fmt`); otherwise `cargo fmt`
   covers Rust.
 
