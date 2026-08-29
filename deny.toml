@@ -4,6 +4,7 @@ all-features = true
 [advisories]
 unmaintained = "workspace"
 unsound = "all"
+yanked = "deny"
 ignore = []
 
 [licenses]
@@ -18,9 +19,17 @@ allow = [
 ]
 
 [bans]
-multiple-versions = "warn"
+multiple-versions = "deny"
 wildcards = "deny"
 highlight = "all"
+skip = [
+    # log4rs -> rand still uses getrandom 0.3, while tempfile uses 0.4.
+    { name = "getrandom", version = "=0.3.4" },
+    # This is the target-specific companion of the reviewed getrandom 0.3 split.
+    { name = "r-efi", version = "=5.3.0" },
+    # Several derive dependencies still use syn 2 while codegen and clap use syn 3.
+    { name = "syn", version = "=2.0.119" },
+]
 
 [sources]
 unknown-registry = "deny"
