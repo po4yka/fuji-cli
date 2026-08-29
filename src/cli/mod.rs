@@ -106,4 +106,36 @@ mod tests {
 
         assert!(result.is_err());
     }
+
+    #[test]
+    fn backup_import_requires_explicit_acknowledgement() {
+        let error = Cli::try_parse_from(["fujicli", "backup", "import", "backup.dat"])
+            .expect_err("backup import must require --yes before any I/O");
+
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+    }
+
+    #[test]
+    fn reverse_backup_import_requires_unknown_camera_opt_in() {
+        let error = Cli::try_parse_from([
+            "fujicli",
+            "device",
+            "reverse",
+            "backup",
+            "import",
+            "backup.dat",
+            "--device",
+            "1.2",
+            "--yes",
+        ])
+        .expect_err("reverse restore must require --allow-unknown-camera");
+
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+    }
 }

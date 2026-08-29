@@ -47,13 +47,20 @@ succeed.
 
 ```sh
 fujicli device reverse backup export /tmp/probe.fbk
-fujicli device reverse backup import /tmp/probe.fbk
+fujicli device reverse backup import /tmp/probe.fbk \
+  --device BUS.ADDRESS \
+  --yes \
+  --allow-unknown-camera
 ```
 
 Successful round-trip means the camera supports the standard Fuji backup
 commands. Mark `features: backup: true` in the camera spec. Backup bytes are
 written only to the selected output; they are never copied into diagnostic
 logs.
+
+Unknown-camera restore has no model or format validation and no rollback. The
+two acknowledgement flags are intentionally mandatory, and the command reports
+the physical USB target on stderr before sending the backup.
 
 ### Simulation
 

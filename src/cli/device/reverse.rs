@@ -9,12 +9,12 @@ use fujicli::{
     },
     ptp::{CommandCode, DevicePropCode, option::SimulationSetting},
 };
-use log::debug;
+use log::{debug, warn};
 use strum::IntoEnumIterator;
 
 use crate::cli::{
     GlobalOptions,
-    backup::{BackupCmd, MAX_BACKUP_INPUT_BYTES},
+    backup::{MAX_BACKUP_INPUT_BYTES, backup_import_target_warning},
     common::{
         file::{Input, Output},
         usb,
@@ -25,7 +25,7 @@ use crate::cli::{
 pub enum ReverseCmd {
     /// Attempt to manage backups
     #[command(alias = "b", subcommand)]
-    Backup(BackupCmd),
+    Backup(ReverseBackupCmd),
 
     /// Attempt to get camera info
     #[command(alias = "i")]
@@ -34,6 +34,31 @@ pub enum ReverseCmd {
     /// Get information about supported simulation management commands
     #[command(alias = "s")]
     Simulation,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum ReverseBackupCmd {
+    /// Attempt to export a backup from an unknown camera
+    #[command(alias = "e")]
+    Export {
+        /// Output file (use '-' to write to stdout)
+        output: Output,
+    },
+
+    /// Attempt to import a backup into an unknown camera
+    #[command(alias = "i")]
+    Import {
+        /// Input file (use '-' to read from stdin)
+        input: Input,
+
+        /// Confirm sending this opaque backup to the selected camera
+        #[arg(long, required = true)]
+        yes: bool,
+
+        /// Allow restore without a known camera model or format identity
+        #[arg(long, required = true, requires = "yes")]
+        allow_unknown_camera: bool,
+    },
 }
 
 macro_rules! try_call {
@@ -111,7 +136,20 @@ fn handle_backup_export(options: GlobalOptions, output: Output) -> anyhow::Resul
     clippy::needless_pass_by_value,
     reason = "command handlers consume parsed CLI values"
 )]
-fn handle_backup_import(options: GlobalOptions, input: Input) -> anyhow::Result<()> {
+fn handle_backup_import(
+    options: GlobalOptions,
+    input: Input,
+    yes: bool,
+    allow_unknown_camera: bool,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        yes,
+        "reverse backup import requires explicit --yes confirmation"
+    );
+    anyhow::ensure!(
+        allow_unknown_camera,
+        "reverse backup import requires --allow-unknown-camera"
+    );
     let GlobalOptions { device, .. } = options;
 
     let location = device.ok_or_else(|| anyhow!("Device must be specified for backup import"))?;
@@ -119,6 +157,10 @@ fn handle_backup_import(options: GlobalOptions, input: Input) -> anyhow::Result<
     let usb = usb::get_usb_device_by_location(location)?;
     let mut camera = Camera::open_unknown(&usb)?;
 
+    warn!(
+        "{}",
+        backup_import_target_warning(camera.name(), &camera.connected_usb_id(), false)
+    );
     try_call!(backup::import_backup_over_ptp(&mut camera.ptp, &backup))?;
 
     Ok(())
@@ -176,8 +218,14 @@ fn handle_simulation(options: GlobalOptions) -> anyhow::Result<()> {
 
 pub fn handle(cmd: ReverseCmd, options: GlobalOptions) -> anyhow::Result<()> {
     match cmd {
-        ReverseCmd::Backup(BackupCmd::Export { output }) => handle_backup_export(options, output),
-        ReverseCmd::Backup(BackupCmd::Import { input }) => handle_backup_import(options, input),
+        ReverseCmd::Backup(ReverseBackupCmd::Export { output }) => {
+            handle_backup_export(options, output)
+        }
+        ReverseCmd::Backup(ReverseBackupCmd::Import {
+            input,
+            yes,
+            allow_unknown_camera,
+        }) => handle_backup_import(options, input, yes, allow_unknown_camera),
         ReverseCmd::Info => handle_info(options),
         ReverseCmd::Simulation => handle_simulation(options),
     }

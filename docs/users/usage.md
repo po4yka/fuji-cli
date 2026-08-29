@@ -50,11 +50,17 @@ Backups are camera-native blobs; treat them as opaque.
 ```sh
 fujicli backup export camera.fbk  # write to file
 fujicli backup export -           # write to stdout
-fujicli backup import camera.fbk
+fujicli backup import camera.fbk --yes
 ```
 
 Backup imports are limited to 256 MiB. The complete input is read and checked
 before the CLI opens a camera connection.
+
+`backup import` is destructive and backup blobs do not carry a trustworthy
+camera-model identity, so the command requires explicit `--yes` acknowledgement.
+Before sending bytes, the CLI identifies the selected camera and physical USB
+location on stderr. Combining restore with `--emulate` additionally requires
+`--allow-emulated-target`.
 
 File exports are written to a temporary file in the destination directory,
 synced, and atomically renamed only after the complete output is available. If
