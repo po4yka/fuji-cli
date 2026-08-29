@@ -1,0 +1,22 @@
+[package]
+name = "codegen"
+version = "0.1.0"
+edition = "2024"
+description = "Build-time codegen from FML JSON to Rust for fujicli"
+license = "MIT"
+authors = [
+    "Nikita Pochaev",
+]
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = "1.0.104"
+heck = "0.5.0"
+prettyplease = "0.3.0"
+proc-macro2 = "1.0"
+quote = "1.0"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+syn = { version = "3.0", features = ["full"] }

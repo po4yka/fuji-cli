@@ -1,0 +1,106 @@
+pub mod backup;
+pub mod common;
+pub mod device;
+pub mod image;
+pub mod simulation;
+
+use clap::{ArgAction, Args, Parser, Subcommand};
+
+use backup::BackupCmd;
+use device::DeviceCmd;
+use image::ImageCmd;
+use simulation::SimulationCmd;
+
+use crate::cli::common::usb::{Identity, Location};
+
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None, author)]
+pub struct Cli {
+    /// Subcommands
+    #[command(subcommand)]
+    pub command: Commands,
+
+    #[command(flatten)]
+    pub options: GlobalOptions,
+}
+
+#[derive(Args, Debug)]
+pub struct GlobalOptions {
+    /// Format output using json
+    #[arg(long, short = 'j', global = true)]
+    pub json: bool,
+
+    /// Log extra debugging information (multiple instances increase verbosity)
+    #[arg(long, short = 'v', action = ArgAction::Count, global = true)]
+    pub verbose: u8,
+
+    /// Manually specify target device using USB <BUS>.<ADDRESS>
+    #[arg(long, short = 'd', global = true)]
+    pub device: Option<Location>,
+
+    #[allow(clippy::doc_markdown)]
+    /// Treat device as a different model using <VENDOR_ID>:<PRODUCT_ID>
+    #[arg(long, global = true)]
+    pub emulate: Option<Identity>,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum Commands {
+    /// Manage devices
+    #[command(alias = "d", subcommand)]
+    Device(DeviceCmd),
+
+    /// Manage film simulations
+    #[command(alias = "s", subcommand)]
+    Simulation(SimulationCmd),
+
+    /// Manage backups
+    #[command(alias = "b", subcommand)]
+    Backup(BackupCmd),
+
+    /// Manage and render images
+    #[command(alias = "i", subcommand)]
+    Image(ImageCmd),
+}
+
+pub fn handle(cli: Cli) -> Result<(), anyhow::Error> {
+    let () = match cli.command {
+        Commands::Device(device_cmd) => device::handle(device_cmd, cli.options)?,
+        Commands::Backup(backup_cmd) => backup::handle(backup_cmd, cli.options)?,
+        Commands::Simulation(simulation_cmd) => {
+            simulation::handle(simulation_cmd, cli.options)?;
+        }
+        Commands::Image(render_cmd) => image::handle(render_cmd, cli.options)?,
+    };
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::Cli;
+
+    #[test]
+    fn image_extract_is_not_advertised_until_it_is_implemented() {
+        let result = Cli::try_parse_from(["fujicli", "image", "extract", "input.jpg", "-"]);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn image_render_does_not_accept_unimplemented_like_option() {
+        let result = Cli::try_parse_from([
+            "fujicli",
+            "image",
+            "render",
+            "--like",
+            "reference.jpg",
+            "input.raf",
+            "output.jpg",
+        ]);
+
+        assert!(result.is_err());
+    }
+}

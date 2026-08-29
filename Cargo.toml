@@ -1,0 +1,51 @@
+[workspace]
+members = [
+    ".",
+    "crates/codegen",
+]
+
+[package]
+name = "fujicli"
+version = "0.2.0"
+edition = "2024"
+description = "A CLI to manage Fujifilm devices, simulations, backups, and rendering"
+license = "MIT"
+authors = [
+    "Nikita Pochaev",
+]
+build = "build.rs"
+
+[lib]
+name = "fujicli"
+path = "src/lib/mod.rs"
+
+[[bin]]
+name = "fujicli"
+path = "src/main.rs"
+
+[build-dependencies]
+anyhow = "1.0.104"
+codegen = { path = "crates/codegen" }
+
+[profile.release]
+panic         = 'abort'
+strip         = true
+lto           = true
+codegen-units = 1
+
+[dependencies]
+anyhow = "1.0.104"
+binrw = { version = "0.15.2", default-features = false, features = ["std"] }
+clap = { version = "4.6.6", features = ["derive", "wrap_help"] }
+log = "0.4.34"
+log4rs = "1.4.0"
+num_enum = "0.7.6"
+rusb = "0.9.4"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+strsim = "0.11.1"
+strum = { version = "0.28.0", features = ["strum_macros"] }
+strum_macros = "0.28.0"
+erased-serde = "0.4.10"
+serde_with = "3.22.0"
+tempfile = "3.27.0"
