@@ -74,7 +74,7 @@
             ++ final.lib.optionals final.stdenv.hostPlatform.isLinux [ final.autoPatchelfHook ];
 
             buildInputs = [ final.libusb1 ] ++ final.lib.optionals final.stdenv.hostPlatform.isLinux [
-              final.stdenv.cc.cc.lib
+              (final.stdenv.cc.cc.libgcc or final.stdenv.cc.cc.lib)
             ];
 
             preCheck = final.lib.optionalString final.stdenv.hostPlatform.isLinux ''
