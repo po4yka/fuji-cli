@@ -53,6 +53,20 @@
               };
             };
 
+            # nixpkgs emits an extra source block for every registry override,
+            # including the built-in crates.io index. Cargo rejects that alias
+            # as a duplicate of `source.crates-io`; the vendor source already
+            # covers it, so remove only the redundant generated block.
+            postPatch = ''
+              cargo_config=.cargo/config.toml
+              duplicate_source='[source."https://github.com/rust-lang/crates.io-index"]'
+
+              grep -Fqx "$duplicate_source" "$cargo_config"
+              sed -i \
+                '/^\[source\."https:\/\/github\.com\/rust-lang\/crates\.io-index"\]$/,/^replace-with = "vendored-sources"$/d' \
+                "$cargo_config"
+            '';
+
             nativeBuildInputs = with final; [
               cue
               pkg-config
