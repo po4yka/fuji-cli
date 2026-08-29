@@ -127,6 +127,7 @@
               fujicliToolchain
               libusb1
               pkg-config
+              statix
               taplo
             ];
 
@@ -163,6 +164,13 @@
           package-fujicli = inputs.self.packages.${system}.fujicli;
           formatting = treefmt.config.build.check inputs.self;
           devShell-default = inputs.self.devShells.${system}.default;
+          statix = pkgs.runCommand "statix-check" {
+            nativeBuildInputs = [ pkgs.statix ];
+          } ''
+            cd ${inputs.self}
+            statix check .
+            touch "$out"
+          '';
           taplo-lint = pkgs.runCommand "taplo-lint" {
             nativeBuildInputs = [ pkgs.taplo ];
           } ''
