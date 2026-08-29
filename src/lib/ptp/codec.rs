@@ -411,6 +411,60 @@ mod tests {
     }
 
     #[test]
+    fn ptp_strings_round_trip_generated_unicode_corpus() {
+        let mut samples = vec![
+            String::new(),
+            "ASCII".to_owned(),
+            "Fujifilm 日本語".to_owned(),
+            "emoji: 📷".to_owned(),
+        ];
+        samples.push("x".repeat(254));
+
+        for sample in samples {
+            let value = PtpString::from(sample.as_str());
+            let encoded = encode(&value).expect("generated PTP string must encode");
+            let decoded = decode_exact::<PtpString>(&encoded)
+                .expect("encoded PTP string must decode exactly");
+            assert_eq!(decoded, value, "failed UTF-16 round trip for {sample:?}");
+        }
+    }
+
+    #[test]
+    fn ptp_arrays_round_trip_generated_vectors() {
+        let mut state = 0x9e37_79b9_u32;
+        for length in 0..=128 {
+            let values = (0..length)
+                .map(|_| {
+                    state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    state
+                })
+                .collect::<Vec<_>>();
+            let value = PtpArray::from(values);
+            let encoded = encode(&value).expect("generated PTP array must encode");
+            let decoded = decode_exact::<PtpArray<u32>>(&encoded)
+                .expect("encoded PTP array must decode exactly");
+            assert_eq!(decoded, value, "failed array round trip at length {length}");
+        }
+    }
+
+    #[test]
+    fn arbitrary_bytes_never_panic_the_bounded_ptp_decoders() {
+        let mut state = 0xa5a5_5a5a_u32;
+        for length in 0..=256 {
+            let bytes = (0..length)
+                .map(|_| {
+                    state = state.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                    state.to_le_bytes()[2]
+                })
+                .collect::<Vec<_>>();
+
+            drop(decode_exact::<PtpString>(&bytes));
+            drop(decode_exact::<PtpExactString>(&bytes));
+            drop(decode_exact::<PtpArray<u16>>(&bytes));
+        }
+    }
+
+    #[test]
     fn decode_rejects_ptp_array_count_above_safety_limit() {
         let error = decode_exact::<PtpArray<u8>>(&[0x41, 0x42, 0x0f, 0x00])
             .expect_err("PTP array count above the safety limit must be rejected");
