@@ -4,7 +4,7 @@ use std::{
 };
 
 use anyhow::{anyhow, bail};
-use fujicli::Camera;
+use fujicli::{Camera, features::base::info::CameraInfoListItem};
 use log::trace;
 
 #[derive(Default)]
@@ -12,18 +12,13 @@ struct UsbScanSummary {
     scanned: usize,
     matched: usize,
     probe_errors: usize,
-    open_errors: usize,
 }
 
 impl Display for UsbScanSummary {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "scanned={}, matched={}", self.scanned, self.matched)?;
-        if self.probe_errors > 0 || self.open_errors > 0 {
-            write!(
-                f,
-                ", probe_errors={}, open_errors={}",
-                self.probe_errors, self.open_errors
-            )?;
+        if self.probe_errors > 0 {
+            write!(f, ", probe_errors={}", self.probe_errors)?;
         }
         Ok(())
     }
@@ -47,6 +42,47 @@ fn probe_candidates<T, E>(
         }
     }
     (candidates, summary)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct UsbIdentity {
+    bus: u8,
+    address: u8,
+    vendor: u16,
+    product: u16,
+}
+
+fn discover_camera_info<T, E>(
+    devices: impl IntoIterator<Item = T>,
+    mut inspect: impl FnMut(&T) -> Result<UsbIdentity, E>,
+) -> (Vec<CameraInfoListItem>, UsbScanSummary) {
+    let mut cameras = Vec::new();
+    let mut summary = UsbScanSummary::default();
+
+    for device in devices {
+        summary.scanned += 1;
+        let Ok(identity) = inspect(&device) else {
+            summary.probe_errors += 1;
+            continue;
+        };
+
+        let Some(camera) = fujicli::generated::cameras::SUPPORTED
+            .iter()
+            .find(|camera| camera.vendor == identity.vendor && camera.product == identity.product)
+        else {
+            continue;
+        };
+
+        summary.matched += 1;
+        cameras.push(CameraInfoListItem {
+            name: camera.name,
+            usb_id: format!("{}.{}", identity.bus, identity.address),
+            vendor_id: format!("0x{:04x}", identity.vendor),
+            product_id: format!("0x{:04x}", identity.product),
+        });
+    }
+
+    (cameras, summary)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -131,19 +167,19 @@ pub fn get_usb_device_by_location(
     bail!("No USB device found at location {location}");
 }
 
-pub fn get_all_cameras() -> anyhow::Result<Vec<Camera>> {
-    let mut cameras = Vec::new();
-    let (devices, mut summary) = probe_candidates(rusb::devices()?.iter(), Camera::probe);
-
-    for device in devices {
-        match Camera::open(&device) {
-            Ok(camera) => cameras.push(camera),
-            Err(_) => summary.open_errors += 1,
-        }
-    }
+pub fn get_all_cameras() -> anyhow::Result<Vec<CameraInfoListItem>> {
+    let (cameras, summary) = discover_camera_info(rusb::devices()?.iter(), |device| {
+        let descriptor = device.device_descriptor()?;
+        Ok::<_, rusb::Error>(UsbIdentity {
+            bus: device.bus_number(),
+            address: device.address(),
+            vendor: descriptor.vendor_id(),
+            product: descriptor.product_id(),
+        })
+    });
 
     trace!("USB camera scan complete: {summary}");
-    if cameras.is_empty() && (summary.probe_errors > 0 || summary.open_errors > 0) {
+    if cameras.is_empty() && summary.probe_errors > 0 {
         bail!("No supported camera found ({summary})");
     }
     Ok(cameras)
@@ -189,9 +225,29 @@ pub fn get_camera(device: Option<Location>, emulate: Option<Identity>) -> anyhow
 
 #[cfg(test)]
 mod tests {
-    use std::io;
+    use std::{cell::Cell, io};
 
-    use super::{UsbScanSummary, probe_candidates, select_only};
+    use super::{UsbIdentity, UsbScanSummary, discover_camera_info, probe_candidates, select_only};
+
+    #[test]
+    fn discovery_lists_supported_descriptors_without_opening_a_camera() {
+        let descriptor_reads = Cell::new(0);
+        let (cameras, summary) = discover_camera_info([()], |()| {
+            descriptor_reads.set(descriptor_reads.get() + 1);
+            Ok::<_, io::Error>(UsbIdentity {
+                bus: 1,
+                address: 4,
+                vendor: 0x04cb,
+                product: 0x02fc,
+            })
+        });
+
+        assert_eq!(descriptor_reads.get(), 1);
+        assert_eq!(summary.matched, 1);
+        assert_eq!(cameras.len(), 1);
+        assert_eq!(cameras[0].name, "FUJIFILM X-T5");
+        assert_eq!(cameras[0].usb_id, "1.4");
+    }
 
     #[test]
     fn scan_continues_after_one_device_probe_fails() {
@@ -212,7 +268,6 @@ mod tests {
             scanned: 7,
             matched: 2,
             probe_errors: 0,
-            open_errors: 0,
         };
 
         assert_eq!(summary.to_string(), "scanned=7, matched=2");

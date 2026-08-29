@@ -34,10 +34,7 @@ pub enum DeviceCmd {
 fn handle_list(options: GlobalOptions) -> anyhow::Result<()> {
     let GlobalOptions { json, .. } = options;
 
-    let cameras: Vec<CameraInfoListItem> = usb::get_all_cameras()?
-        .iter()
-        .map(std::convert::Into::into)
-        .collect();
+    let cameras: Vec<CameraInfoListItem> = usb::get_all_cameras()?;
 
     if json {
         write_stdout_line(format_args!("{}", serde_json::to_string_pretty(&cameras)?))?;

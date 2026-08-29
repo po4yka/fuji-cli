@@ -43,6 +43,9 @@ fujicli device list
 fujicli device info
 ```
 
+`device list` reads USB descriptors only. It does not claim a camera interface
+or open a PTP session; use `device info` when live camera properties are needed.
+
 ## Backups
 
 Backups are camera-native blobs; treat them as opaque.
