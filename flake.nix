@@ -49,8 +49,7 @@
             cargoLock = {
               lockFile = ./Cargo.lock;
               extraRegistries = {
-                "https://github.com/rust-lang/crates.io-index" =
-                  "https://static.crates.io/crates";
+                "https://github.com/rust-lang/crates.io-index" = "https://static.crates.io/crates";
               };
             };
 
