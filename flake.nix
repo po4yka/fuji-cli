@@ -58,7 +58,7 @@
             # as a duplicate of `source.crates-io`; the vendor source already
             # covers it, so remove only the redundant generated block.
             postPatch = ''
-              cargo_config=.cargo/config.toml
+              cargo_config=../.cargo/config.toml
               duplicate_source='[source."https://github.com/rust-lang/crates.io-index"]'
 
               grep -Fqx "$duplicate_source" "$cargo_config"
