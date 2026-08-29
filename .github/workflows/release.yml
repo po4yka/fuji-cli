@@ -50,9 +50,9 @@ jobs:
           sudo apt-get install --yes libusb-1.0-0-dev pkg-config
 
       - name: Install CUE
-        uses: cue-lang/setup-cue@a93fa358375740cd8b0078f76355512b9208acb1 # v1.0.1
-        with:
-          version: v0.16.1
+        run: |
+          bash support/install-cue.sh "$RUNNER_TEMP/cue-bin"
+          printf '%s\n' "$RUNNER_TEMP/cue-bin" >>"$GITHUB_PATH"
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
@@ -72,11 +72,11 @@ jobs:
             exit 1
           fi
 
-      - name: Verify formatting
-        run: cargo fmt --all --check
-
       - name: Check all targets
         run: cargo check --locked --all-features --all-targets --workspace --jobs 4
+
+      - name: Verify formatting
+        run: cargo fmt --all --check
 
       - name: Lint all targets
         run: cargo clippy --locked --all-features --all-targets --workspace --jobs 4 -- -D warnings
@@ -101,9 +101,9 @@ jobs:
           sudo apt-get install --yes libusb-1.0-0-dev pkg-config
 
       - name: Install CUE
-        uses: cue-lang/setup-cue@a93fa358375740cd8b0078f76355512b9208acb1 # v1.0.1
-        with:
-          version: v0.16.1
+        run: |
+          bash support/install-cue.sh "$RUNNER_TEMP/cue-bin"
+          printf '%s\n' "$RUNNER_TEMP/cue-bin" >>"$GITHUB_PATH"
 
       - name: Build release binary
         run: cargo build --locked --release --all-features --workspace --target x86_64-unknown-linux-gnu --jobs 2
