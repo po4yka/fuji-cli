@@ -8,8 +8,8 @@ updates to those pins.
 
 - `CI / Rust` installs checksum-verified CUE 0.16.1 and the native USB
   dependencies, then generates and checks the code, verifies formatting, runs
-  Clippy with warnings denied, tests, and a workspace build using the committed
-  Rust toolchain and lockfile.
+  Clippy with warnings denied, checks rustdoc with warnings denied, tests, and a
+  workspace build using the committed Rust toolchain and lockfile.
 - `CI / Nix` evaluates and builds the flake without modifying `flake.lock`.
 - `Security / cargo-deny` enforces the dependency, license, advisory, source,
   and duplicate-version policy in `deny.toml`.
@@ -31,6 +31,7 @@ then run:
 cargo check --locked --all-features --all-targets --workspace --jobs 4
 cargo fmt --all --check
 cargo clippy --locked --all-features --all-targets --workspace --jobs 4 -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --all-features --no-deps --jobs 4
 cargo test --locked --all-features --all-targets --workspace --jobs 4
 cargo build --locked --workspace --jobs 4
 cargo deny --locked check

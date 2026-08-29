@@ -44,6 +44,11 @@ jobs:
       - name: Lint all targets
         run: cargo clippy --locked --all-features --all-targets --workspace --jobs 4 -- -D warnings
 
+      - name: Check documentation
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --locked --workspace --all-features --no-deps --jobs 4
+
       - name: Test all targets
         run: cargo test --locked --all-features --all-targets --workspace --jobs 4
 
