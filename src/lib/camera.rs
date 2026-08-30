@@ -68,6 +68,17 @@ pub struct Camera {
     session_control_permit: Option<ptp::SessionControlPermit>,
 }
 
+/// See [`Camera::reverse_probe_device_identity`]. Carries the raw serial
+/// number; the caller MUST hash it before display, logging, or persistence.
+#[doc(hidden)]
+#[cfg(feature = "dangerous-reverse-engineering")]
+pub struct ProbeDeviceIdentity {
+    pub manufacturer: String,
+    pub model: String,
+    pub firmware: String,
+    pub serial_number: String,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CameraMode {
     Supported,
@@ -420,6 +431,40 @@ impl Camera {
     #[cfg(feature = "reverse-tools")]
     pub fn reverse_device_property(&mut self, code: u16) -> anyhow::Result<Vec<u8>> {
         self.ptp.get_prop_raw(code)
+    }
+
+    /// Probe-only single-property write. See
+    /// [`crate::ptp::Ptp::probe_write_single_property_unverified`]; sanctioned for
+    /// the 0xD18C namespace probe, compiled only under
+    /// `dangerous-reverse-engineering`.
+    #[doc(hidden)]
+    #[cfg(feature = "dangerous-reverse-engineering")]
+    pub fn reverse_probe_write_single_property(
+        &mut self,
+        prop: u16,
+        value: &[u8],
+    ) -> anyhow::Result<Vec<u8>> {
+        self.ptp.probe_write_single_property_unverified(prop, value)
+    }
+
+    /// Probe-only device identity, including the raw serial number. The
+    /// caller MUST hash the serial (see `crate::features::backup::sha256_hex`)
+    /// before ever displaying, logging, or persisting it; nothing in this
+    /// crate does that hashing on the caller's behalf. Compiled only under
+    /// `dangerous-reverse-engineering` because it is the only path that
+    /// exposes the raw serial outside the crate — the read-only
+    /// `reverse_device_info`/`discover info` surface deliberately never
+    /// returns it. Read-only: issues only `GetDeviceInfo`.
+    #[doc(hidden)]
+    #[cfg(feature = "dangerous-reverse-engineering")]
+    pub fn reverse_probe_device_identity(&mut self) -> anyhow::Result<ProbeDeviceIdentity> {
+        let info = self.ptp.get_info()?;
+        Ok(ProbeDeviceIdentity {
+            manufacturer: info.manufacturer,
+            model: info.model,
+            firmware: info.device_version,
+            serial_number: info.serial_number,
+        })
     }
 
     #[doc(hidden)]

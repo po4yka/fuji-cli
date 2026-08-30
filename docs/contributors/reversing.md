@@ -134,12 +134,65 @@ setting names, arbitrary camera strings, or full error chains.
 
 ## Design: the `simulation-namespace` Probe
 
-This section designs (but does not yet implement) the still/movie namespace
-probe called for in `docs/users/support.md` and `docs/users/usage.md`: does
-selector `0xD18C` address the X-T5's still C1-C7 custom-setting slots, its
-movie C1-C7 slots, or something else. The command name is
-`fujicli-dev probe simulation-namespace`, gated behind the
-`dangerous-reverse-engineering` feature described above.
+This section designs the still/movie namespace probe called for in
+`docs/users/support.md` and `docs/users/usage.md`: does selector `0xD18C`
+address the X-T5's still C1-C7 custom-setting slots, its movie C1-C7 slots, or
+something else. The command is `fujicli-dev probe simulation-namespace`,
+gated behind the `dangerous-reverse-engineering` feature described above. It
+is now implemented; the physical-device run remains a maintainer step (see
+"Maintainer decisions" below -- run the non-mutating X RAW Studio capture
+first, and treat this probe strictly as the fallback).
+
+### Run procedure
+
+```sh
+cargo run --locked -p fujicli-dev --features reverse-tools,dangerous-reverse-engineering -- \
+  --device BUS.ADDRESS -vvv probe simulation-namespace c1 \
+  /path/to/new-backup.fbk /path/to/audit-log.jsonl \
+  --confirm-fingerprint <SHA256> \
+  --acknowledge I-UNDERSTAND-THIS-WRITES-SELECTOR-D18C
+```
+
+The command implements the six-step guard sequence from "Requirements for Any
+Future Dangerous Probe" above:
+
+1. Opens the camera at the exact `--device` given (never auto-selected) and
+   prints USB bus/address, VID:PID, PTP manufacturer/model/firmware, and the
+   SHA-256 fingerprint of the live serial number. The raw serial is never
+   printed, logged, or written anywhere.
+2. Compares that live fingerprint against `--confirm-fingerprint`. A
+   mismatch aborts before any write. Because the operator cannot know the
+   live fingerprint in advance, the intended flow is two invocations: a
+   first attempt with any placeholder value (which fails and prints the live
+   fingerprint), then a second, deliberate invocation with that value copied
+   into `--confirm-fingerprint`.
+3. Compares `--acknowledge` against the fixed string
+   `I-UNDERSTAND-THIS-WRITES-SELECTOR-D18C`. A mismatch aborts before any
+   write.
+4. Exports a fresh backup to the given `backup` path (must not already
+   exist; the export path reuses the same validated no-clobber writer as
+   `discover backup export`) and computes its SHA-256 digest.
+5. Appends exactly one JSONL line to `audit-log` (created with mode `0600`
+   if absent, otherwise appended to) recording the attempt -- timestamp,
+   tool version, invocation ID, operation/risk class, the two PTP operation
+   codes involved, USB location, VID:PID, bounded model/firmware, the serial
+   fingerprint, the pre-backup digest, and outcome `attempted`. This record
+   is durably written *before* the mutating send, so a durable trail exists
+   even if the process is interrupted immediately afterward.
+6. Reads the current raw value of `0xD18C` (snapshot), writes the chosen
+   C1-C7 slot's wire value once, reads `0xD18C` back (observed), writes the
+   snapshot value back once (restore), and reads `0xD18C` once more to
+   verify the restore. Any failure or mismatch at any of these steps prints
+   `DO NOT RETRY AUTOMATICALLY` and exits non-zero; there is no automatic
+   retry anywhere in this sequence.
+
+No PTP property is currently known to distinguish the still and movie
+custom-setting namespaces on the wire (open question 1, still unresolved at
+the wire level), so the command's verdict is always "ambiguous" today: it
+prints `DO NOT RETRY AUTOMATICALLY` and instructs the operator to corroborate
+manually via the camera's own C1-C7 LCD menu, read before and after the
+write, per the maintainer decision below. The command does not fabricate a
+still/movie verdict from an unknown signal.
 
 What it writes: exactly one explicit C1-C7 slot value to `0xD18C`, exactly
 once per invocation, as the single mutating PTP container required by the
@@ -154,8 +207,10 @@ What it reads after the write: ideally, one or more properties whose value
 differs depending on whether the write landed in the still or the movie
 custom-setting namespace. No such property is currently known.
 
-Decision table (as designed; the "observed still/movie signal" column is the
-open question below):
+Decision table (as implemented in `crates/fujicli-dev/src/decision.rs`; the
+"observed still/movie signal" column is the open question below, so the
+implementation always resolves to the ambiguous row until a signal is
+supplied):
 
 | Observed still/movie signal | Verdict |
 | --- | --- |

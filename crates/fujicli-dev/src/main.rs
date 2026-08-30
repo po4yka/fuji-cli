@@ -5,6 +5,10 @@
     reason = "the unpublished adapter keeps private command plumbing terse"
 )]
 
+#[cfg(feature = "dangerous-reverse-engineering")]
+mod audit;
+#[cfg(feature = "dangerous-reverse-engineering")]
+mod decision;
 mod log;
 mod output;
 #[cfg(feature = "dangerous-reverse-engineering")]
@@ -127,8 +131,19 @@ mod tests {
     #[test]
     #[cfg(feature = "dangerous-reverse-engineering")]
     fn probe_simulation_namespace_still_requires_an_explicit_device() {
-        let error = Cli::try_parse_from(["fujicli-dev", "probe", "simulation-namespace", "c1"])
-            .expect_err("the dangerous probe must never auto-select a camera either");
+        let error = Cli::try_parse_from([
+            "fujicli-dev",
+            "probe",
+            "simulation-namespace",
+            "c1",
+            "/tmp/nonexistent-backup.fbk",
+            "/tmp/nonexistent-audit.jsonl",
+            "--confirm-fingerprint",
+            "deadbeef",
+            "--acknowledge",
+            "I-UNDERSTAND-THIS-WRITES-SELECTOR-D18C",
+        ])
+        .expect_err("the dangerous probe must never auto-select a camera either");
 
         assert_eq!(
             error.kind(),

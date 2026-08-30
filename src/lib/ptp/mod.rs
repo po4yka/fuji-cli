@@ -665,6 +665,34 @@ impl Ptp {
         Ok(response)
     }
 
+    /// Issues exactly one `SetDevicePropValue` for `prop` WITHOUT a
+    /// `MutationPermit`, bypassing the preflight/permit authorization that
+    /// `send_mutating` requires. This deliberately reopens the raw-mutation
+    /// surface sealed by `124aa4f`, sanctioned ONLY for the `0xD18C` still/movie
+    /// namespace probe (see docs/contributors/reversing.md, "Maintainer
+    /// decisions"). It still goes through the transport core, so transaction-id
+    /// sequencing, poisoning, and chunk policy are preserved. Single send; the
+    /// caller must not retry. Compiled only under `dangerous-reverse-engineering`.
+    #[cfg(feature = "dangerous-reverse-engineering")]
+    pub(crate) fn probe_write_single_property_unverified(
+        &mut self,
+        prop: u16,
+        value: &[u8],
+    ) -> anyhow::Result<Vec<u8>> {
+        ensure!(
+            command_risk(CommandCode::SetDevicePropValue, &[u32::from(prop)])
+                == CommandRisk::StateChanging,
+            "probe write expected a state-changing SetDevicePropValue"
+        );
+        debug!("PROBE (unverified, unpermitted) SetDevicePropValue 0x{prop:04x}");
+        self.send_unchecked_for_operation(
+            PtpOperation::Standard,
+            CommandCode::SetDevicePropValue,
+            &[u32::from(prop)],
+            Some(value),
+        )
+    }
+
     pub(crate) fn get_prop_desc(&mut self, prop: impl Into<u16>) -> anyhow::Result<DevicePropDesc> {
         let prop = prop.into();
         let response = self.get_prop_desc_raw(prop)?;
