@@ -36,3 +36,6 @@ src/lib/generated/
 
 .omc/
 .omo/
+
+# Agent worktrees created by Claude Code
+.claude/worktrees/
