@@ -93,9 +93,19 @@ capabilities: {
         "4.31": {
             option_overrides: [/* exact logical-value allowlist */]
             raw_conversion: {
-                profile_code:   0xff179502
-                header_padding: 0x1ee
-                fields: [/* exact ordered field ids */]
+                id: "x_t5-4.31-raw-layout-unverified"
+                evidence: {status: "unverified", manifests: []}
+                binding: {usb_modes: [0x6]}
+                read: {
+                    profile_code: "ff179502", header_padding: 0x1ee
+                    declared_field_count: 29, total_length: 625
+                    fields: [/* 28 exact read-side field ids */]
+                }
+                write: {
+                    profile_code: "ff179502", header_padding: 0x1ee
+                    declared_field_count: 29, total_length: 629
+                    fields: [/* 29 assumed write-side field ids */]
+                }
             }
         }
     }
@@ -107,17 +117,22 @@ map. A scalar wire value is canonical for writes; a list means canonical first
 plus accepted read aliases. Codegen rejects missing or ambiguous mappings.
 It also rejects a verified operation whose exact firmware profile omits any
 enum consumed by that operation.
-Simulation PTP reads and writes use the selected profile directly. RAW
-conversion also requires an exact profile code, padding, and field order, then
-uses the selected profile for enum encoding and decoding. Every enum consumed
+Simulation PTP reads and writes use the selected profile directly. RAW layouts
+are exact-firmware descriptors with separate read/write counts, lengths, and
+orders. `write_verified` is reserved and currently rejected by codegen until
+evidence manifests/hashes, camera state, and lossless opaque-byte preservation
+are machine-checked; all current descriptor states therefore cannot authorize
+an upload, D185 write, or conversion trigger. Every enum consumed
 by the X-T5 selector, simulation, or RAW path is explicitly pinned so there is
 no implicit global encoding fallback.
 
 Documented capability presence does not authorize writes. Only a matching
 `verified` preflight operation can create a validated session; X-T5 `3.01` and
-`4.00` capability entries are regression/documentation fixtures. Firmware
-`4.31` currently verifies backup and RAW conversion operations, but not custom
-setting access or writes.
+`4.00` capability entries are regression/documentation fixtures, while current
+backup mutation support remains restricted to `4.31`. Custom-setting access is
+disabled because its still/movie namespace is ambiguous. RAW conversion is also
+disabled until the evidence validator and state-aware lossless codec exist and
+the 4.31 descriptor passes golden capture and HIL verification.
 
 ## Features
 

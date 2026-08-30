@@ -4,10 +4,35 @@ use proc_macro2::{Literal, TokenStream};
 use quote::quote;
 
 use crate::{
-    ast::{Camera, PreflightOperation, PreflightStatus},
+    ast::{
+        Camera, PreflightOperation, PreflightStatus, RawConversionCameraState,
+        RawConversionEvidenceStatus, RawConversionLayout,
+    },
     schema::capabilities::resolve_firmware_capabilities,
     util::ident::{safe_upper_camel_case_ident, safe_uppercase_ident},
 };
+
+fn generate_raw_conversion_layout(layout: &RawConversionLayout) -> TokenStream {
+    let profile_code = &layout.profile_code;
+    let header_padding = usize::try_from(layout.header_padding)
+        .map(Literal::usize_suffixed)
+        .expect("u32 header padding must fit usize");
+    let declared_field_count = Literal::u16_suffixed(layout.declared_field_count);
+    let total_length = usize::try_from(layout.total_length)
+        .map(Literal::usize_suffixed)
+        .expect("u32 RAW profile length must fit usize");
+    let fields = &layout.fields;
+
+    quote! {
+        CameraRawConversionLayout {
+            profile_code: #profile_code,
+            header_padding: #header_padding,
+            declared_field_count: #declared_field_count,
+            total_length: #total_length,
+            fields: &[#(#fields),*],
+        }
+    }
+}
 
 pub fn generate(cameras: &BTreeMap<String, Camera>) -> anyhow::Result<TokenStream> {
     let mut sorted: Vec<&Camera> = cameras.values().collect();
@@ -119,17 +144,56 @@ pub fn generate(cameras: &BTreeMap<String, Camera>) -> anyhow::Result<TokenStrea
             let firmware = profile.firmware;
             let raw_conversion = profile.raw_conversion.map_or_else(
                 || quote! { None },
-                |signature| {
-                    let profile_code = Literal::u32_suffixed(signature.profile_code);
-                    let header_padding = usize::try_from(signature.header_padding)
-                        .map(Literal::usize_suffixed)
-                        .expect("u32 header padding must fit usize");
-                    let fields = signature.fields;
+                |descriptor| {
+                    let id = descriptor.id;
+                    let evidence_status = match descriptor.evidence.status {
+                        RawConversionEvidenceStatus::Unverified => {
+                            quote! { CameraRawConversionEvidenceStatus::Unverified }
+                        }
+                        RawConversionEvidenceStatus::Observed => {
+                            quote! { CameraRawConversionEvidenceStatus::Observed }
+                        }
+                        RawConversionEvidenceStatus::ReadVerified => {
+                            quote! { CameraRawConversionEvidenceStatus::ReadVerified }
+                        }
+                        RawConversionEvidenceStatus::WriteVerified => {
+                            quote! { CameraRawConversionEvidenceStatus::WriteVerified }
+                        }
+                    };
+                    let manifests = descriptor.evidence.manifests;
+                    let usb_modes = descriptor
+                        .binding
+                        .usb_modes
+                        .into_iter()
+                        .map(Literal::u32_suffixed);
+                    let camera_state = descriptor.binding.camera_state.map_or_else(
+                        || quote! { None },
+                        |state| match state {
+                            RawConversionCameraState::Still => {
+                                quote! { Some(CameraRawConversionState::Still) }
+                            }
+                            RawConversionCameraState::Movie => {
+                                quote! { Some(CameraRawConversionState::Movie) }
+                            }
+                        },
+                    );
+                    let read = generate_raw_conversion_layout(&descriptor.read);
+                    let write = descriptor.write.as_ref().map_or_else(
+                        || quote! { None },
+                        |layout| {
+                            let layout = generate_raw_conversion_layout(layout);
+                            quote! { Some(#layout) }
+                        },
+                    );
                     quote! {
-                        Some(CameraRawConversionSignature {
-                            profile_code: #profile_code,
-                            header_padding: #header_padding,
-                            fields: &[#(#fields),*],
+                        Some(CameraRawConversionDescriptor {
+                            id: #id,
+                            evidence_status: #evidence_status,
+                            evidence_manifests: &[#(#manifests),*],
+                            usb_modes: &[#(#usb_modes),*],
+                            camera_state: #camera_state,
+                            read: #read,
+                            write: #write,
                         })
                     }
                 },
@@ -289,14 +353,41 @@ pub fn generate(cameras: &BTreeMap<String, Camera>) -> anyhow::Result<TokenStrea
         pub struct CameraFirmwareCapabilityProfile {
             pub firmware: &'static str,
             pub options: &'static [CameraOptionCapability],
-            pub raw_conversion: Option<CameraRawConversionSignature>,
+            pub raw_conversion: Option<CameraRawConversionDescriptor>,
         }
 
         #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-        pub struct CameraRawConversionSignature {
-            pub profile_code: u32,
+        pub enum CameraRawConversionEvidenceStatus {
+            Unverified,
+            Observed,
+            ReadVerified,
+            WriteVerified,
+        }
+
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        pub enum CameraRawConversionState {
+            Still,
+            Movie,
+        }
+
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        pub struct CameraRawConversionLayout {
+            pub profile_code: &'static str,
             pub header_padding: usize,
+            pub declared_field_count: u16,
+            pub total_length: usize,
             pub fields: &'static [&'static str],
+        }
+
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        pub struct CameraRawConversionDescriptor {
+            pub id: &'static str,
+            pub evidence_status: CameraRawConversionEvidenceStatus,
+            pub evidence_manifests: &'static [&'static str],
+            pub usb_modes: &'static [u32],
+            pub camera_state: Option<CameraRawConversionState>,
+            pub read: CameraRawConversionLayout,
+            pub write: Option<CameraRawConversionLayout>,
         }
 
         impl CameraFirmwareCapabilityProfile {
@@ -394,19 +485,77 @@ pub fn generate(cameras: &BTreeMap<String, Camera>) -> anyhow::Result<TokenStrea
                 profile_code: u32,
                 header_padding: usize,
                 fields: &[&str],
+                total_length: usize,
             ) -> anyhow::Result<()> {
-                let signature = self.raw_conversion.as_ref().ok_or_else(|| {
+                let descriptor = self.raw_conversion.as_ref().ok_or_else(|| {
                     anyhow::anyhow!(
-                        "firmware {} has no verified RAW conversion signature",
+                        "firmware {} has no RAW conversion descriptor",
                         self.firmware,
                     )
                 })?;
                 anyhow::ensure!(
-                    signature.profile_code == profile_code
-                        && signature.header_padding == header_padding
-                        && signature.fields == fields,
-                    "firmware {} RAW conversion signature does not match the generated codec",
+                    descriptor.evidence_status == CameraRawConversionEvidenceStatus::WriteVerified
+                        && !descriptor.evidence_manifests.is_empty(),
+                    "firmware {} RAW conversion descriptor {} is not write-verified",
                     self.firmware,
+                    descriptor.id,
+                );
+                anyhow::ensure!(
+                    descriptor.camera_state.is_none(),
+                    "firmware {} RAW conversion descriptor {} requires camera-state validation that this runtime cannot yet establish",
+                    self.firmware,
+                    descriptor.id,
+                );
+                let layout = descriptor.write.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "firmware {} RAW conversion descriptor {} has no write layout",
+                        self.firmware,
+                        descriptor.id,
+                    )
+                })?;
+                let profile_code_text = format!("{profile_code:x}");
+                anyhow::ensure!(
+                    layout.profile_code == profile_code_text
+                        && layout.header_padding == header_padding
+                        && usize::from(layout.declared_field_count) == fields.len()
+                        && layout.fields == fields
+                        && layout.total_length == total_length,
+                    "firmware {} RAW conversion write descriptor {} does not match the generated codec or candidate payload",
+                    self.firmware,
+                    descriptor.id,
+                );
+                Ok(())
+            }
+
+            pub fn validate_raw_conversion_read_fingerprint(
+                &self,
+                profile_code: u32,
+                header_padding: usize,
+                declared_field_count: u16,
+                fields: &[&str],
+                total_length: usize,
+            ) -> anyhow::Result<()> {
+                let descriptor = self.raw_conversion.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!("firmware {} has no RAW conversion descriptor", self.firmware)
+                })?;
+                anyhow::ensure!(
+                    descriptor.evidence_status == CameraRawConversionEvidenceStatus::WriteVerified
+                        && !descriptor.evidence_manifests.is_empty(),
+                    "firmware {} RAW conversion descriptor {} is not write-verified",
+                    self.firmware,
+                    descriptor.id,
+                );
+                let profile_code_text = format!("{profile_code:x}");
+                let layout = &descriptor.read;
+                anyhow::ensure!(
+                    layout.profile_code == profile_code_text
+                        && layout.header_padding == header_padding
+                        && layout.declared_field_count == declared_field_count
+                        && layout.fields == fields
+                        && layout.total_length == total_length,
+                    "firmware {} RAW conversion read fingerprint does not match descriptor {}",
+                    self.firmware,
+                    descriptor.id,
                 );
                 Ok(())
             }
@@ -537,24 +686,30 @@ mod tests {
     }
 
     #[test]
-    fn camera_registry_defines_raw_conversion_signature_contract() {
+    fn camera_registry_defines_raw_conversion_descriptor_contract() {
         let generated = generate(&BTreeMap::new()).unwrap().to_string();
 
-        assert!(generated.contains("pub struct CameraRawConversionSignature"));
+        assert!(generated.contains("pub struct CameraRawConversionDescriptor"));
+        assert!(generated.contains("pub struct CameraRawConversionLayout"));
+        assert!(generated.contains("CameraRawConversionEvidenceStatus"));
     }
 
     #[test]
-    fn firmware_capability_profile_owns_raw_conversion_signature() {
+    fn firmware_capability_profile_owns_raw_conversion_descriptor() {
         let generated = generate(&BTreeMap::new()).unwrap().to_string();
 
-        assert!(generated.contains("pub raw_conversion : Option < CameraRawConversionSignature >"));
+        assert!(
+            generated.contains("pub raw_conversion : Option < CameraRawConversionDescriptor >")
+        );
     }
 
     #[test]
-    fn firmware_profile_validates_raw_conversion_signature_exactly() {
+    fn firmware_profile_validates_raw_conversion_descriptor_exactly() {
         let generated = generate(&BTreeMap::new()).unwrap().to_string();
 
         assert!(generated.contains("validate_raw_conversion_signature"));
+        assert!(generated.contains("validate_raw_conversion_read_fingerprint"));
+        assert!(generated.contains("WriteVerified"));
     }
 
     #[test]

@@ -120,6 +120,7 @@ fn generate_one(
         &camera_struct_path,
         &renders_path,
         &render.fields,
+        n_props,
     );
 
     Ok(quote! {
@@ -662,8 +663,15 @@ fn generate_camera_render_manager_impl(
     camera_struct_path: &TokenStream,
     renders_path: &TokenStream,
     fields: &[Field],
+    n_props: i16,
 ) -> TokenStream {
     let field_ids = fields.iter().map(Field::id).collect::<Vec<_>>();
+    let read_field_ids = fields
+        .iter()
+        .filter(|field| !field.skip_read())
+        .map(Field::id)
+        .collect::<Vec<_>>();
+    let n_props = u16::try_from(n_props).expect("non-negative render field count");
     quote! {
         impl crate::features::render::CameraRenderManager for #camera_struct_path {
             fn render(
@@ -674,11 +682,6 @@ fn generate_camera_render_manager_impl(
                 draft: bool,
             ) -> ::anyhow::Result<crate::features::render::RenderOutcome> {
                 let firmware_profile = ptp.firmware_capability_profile()?;
-                firmware_profile.validate_raw_conversion_signature(
-                    #struct_ident::PROFILE_CODE,
-                    #struct_ident::HEADER_PADDING,
-                    &[#(#field_ids),*],
-                )?;
                 partial.validate_firmware_capabilities(firmware_profile)?;
                 let original_profile =
                     crate::features::render::manager::snapshot_raw_conversion_profile(ptp)?;
@@ -686,8 +689,21 @@ fn generate_camera_render_manager_impl(
                     &original_profile,
                     firmware_profile,
                 )?;
+                ptp.validate_raw_conversion_read_fingerprint(
+                    #struct_ident::PROFILE_CODE,
+                    #struct_ident::HEADER_PADDING,
+                    #n_props,
+                    &[#(#read_field_ids),*],
+                    &original_profile,
+                )?;
                 profile.try_update_from(partial)?;
                 let candidate_profile = profile.encode_for_firmware(firmware_profile)?;
+                firmware_profile.validate_raw_conversion_signature(
+                    #struct_ident::PROFILE_CODE,
+                    #struct_ident::HEADER_PADDING,
+                    &[#(#field_ids),*],
+                    candidate_profile.len(),
+                )?;
                 ptp.validate_raw_conversion_profile(
                     #struct_ident::PROFILE_CODE,
                     #struct_ident::HEADER_PADDING,
@@ -839,7 +855,7 @@ mod tests {
     }
 
     #[test]
-    fn generated_render_rejects_unsupported_values_before_profile_io() {
+    fn generated_render_validates_live_read_before_write_candidate_authorization() {
         let camera = serde_json::from_str::<Camera>(
             r#"{
                 "id": "fixture",
@@ -864,15 +880,29 @@ mod tests {
         let capability_validation = generated
             .find("validate_firmware_capabilities")
             .expect("generated render must validate firmware values");
-        let signature_validation = generated
-            .find("validate_raw_conversion_signature")
-            .expect("generated render must validate the exact firmware wire layout");
+        let read_fingerprint_validation = generated
+            .find("validate_raw_conversion_read_fingerprint")
+            .expect("generated render must validate the live read fingerprint");
         let profile_read = generated
             .find("snapshot_raw_conversion_profile")
             .expect("generated render must read the conversion profile");
+        let profile_decode = profile_read
+            + generated[profile_read..]
+                .find("decode_for_firmware")
+                .expect("generated render must decode the observed payload");
+        let profile_encode = profile_decode
+            + generated[profile_decode..]
+                .find("encode_for_firmware")
+                .expect("generated render must encode a write candidate");
+        let signature_validation = profile_encode
+            + generated[profile_encode..]
+                .find("validate_raw_conversion_signature")
+                .expect("generated render must validate the write descriptor");
 
         assert!(capability_validation < profile_read);
-        assert!(signature_validation < profile_read);
+        assert!(profile_read < profile_decode);
+        assert!(profile_decode < read_fingerprint_validation);
+        assert!(profile_encode < signature_validation);
     }
 
     #[test]

@@ -6,6 +6,8 @@ pub mod input;
 pub mod policy;
 pub mod preflight;
 pub mod ptp;
+#[cfg(feature = "reverse-tools")]
+pub mod reverse;
 
 #[cfg(test)]
 mod tests;
@@ -369,6 +371,45 @@ impl Camera {
     #[cfg(feature = "reverse-tools")]
     pub fn reverse_device_property(&mut self, code: u16) -> anyhow::Result<Vec<u8>> {
         self.ptp.get_prop_raw(code)
+    }
+
+    #[doc(hidden)]
+    #[cfg(feature = "reverse-tools")]
+    pub fn reverse_raw_profile_discovery(
+        &mut self,
+    ) -> anyhow::Result<crate::reverse::RawProfileDiscovery> {
+        const USB_MODE_PROPERTY: u16 = 0xD16E;
+        const RAW_PROFILE_PROPERTY: u16 = 0xD185;
+
+        let info = self.ptp.get_info()?;
+        let descriptor = self.ptp.get_prop_desc_raw(RAW_PROFILE_PROPERTY).ok();
+        let payload = self.ptp.get_prop_raw(RAW_PROFILE_PROPERTY)?;
+        let usb_mode = self
+            .ptp
+            .get_prop::<u16>(USB_MODE_PROPERTY)
+            .ok()
+            .map(u32::from);
+        let descriptor_summary = descriptor
+            .as_deref()
+            .and_then(|raw| ptp::DevicePropDesc::decode(raw).ok())
+            .filter(|parsed| parsed.property_code == RAW_PROFILE_PROPERTY)
+            .map(|parsed| {
+                (
+                    parsed.data_type.name().to_owned(),
+                    parsed.writable,
+                    parsed.form.name().to_owned(),
+                )
+            });
+
+        crate::reverse::RawProfileDiscovery::from_observation(
+            info.manufacturer,
+            info.model,
+            info.device_version,
+            usb_mode,
+            descriptor.as_deref(),
+            descriptor_summary,
+            &payload,
+        )
     }
 
     #[doc(hidden)]

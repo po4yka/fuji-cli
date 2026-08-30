@@ -21,6 +21,8 @@ pub enum DiscoverCommand {
     /// Read and validate the standard Fujifilm backup object
     #[command(subcommand)]
     Backup(BackupCommand),
+    /// Capture the exact D185 descriptor and payload without camera mutation
+    RenderProfile { output: NewOutput },
 }
 
 #[derive(Debug, Subcommand)]
@@ -101,12 +103,23 @@ fn backup(location: Location, output: &NewOutput) -> anyhow::Result<()> {
     output.write_all(&backup)
 }
 
+fn render_profile(location: Location, output: &NewOutput) -> anyhow::Result<()> {
+    let mut camera = open(location)?;
+    let discovery = camera.reverse_raw_profile_discovery()?;
+    let mut json = serde_json::to_vec_pretty(&discovery)?;
+    json.push(b'\n');
+    output.write_all(&json)
+}
+
 pub fn handle(command: Command, location: Location) -> anyhow::Result<()> {
     match command {
         Command::Discover(DiscoverCommand::Info) => info(location),
         Command::Discover(DiscoverCommand::Simulation) => simulation(location),
         Command::Discover(DiscoverCommand::Backup(BackupCommand::Export { output })) => {
             backup(location, &output)
+        }
+        Command::Discover(DiscoverCommand::RenderProfile { output }) => {
+            render_profile(location, &output)
         }
     }
 }

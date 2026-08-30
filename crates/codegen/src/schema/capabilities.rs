@@ -2,14 +2,15 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ast::{
     Camera, CameraCapabilities, CapabilitySet, CapabilityWireValue, Field, FujiOption,
-    PreflightOperation, PreflightStatus, RawConversionSignature, SpecKind,
+    PreflightOperation, PreflightStatus, RawConversionDescriptor, RawConversionEvidenceStatus,
+    RawConversionLayout, SpecKind,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FirmwareCapabilityProfile {
     pub firmware: String,
     pub options: BTreeMap<String, ResolvedOptionCapability>,
-    pub raw_conversion: Option<RawConversionSignature>,
+    pub raw_conversion: Option<RawConversionDescriptor>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -24,12 +25,6 @@ pub fn resolve_firmware_capabilities(
     let mut base = BTreeMap::new();
     merge_capability_set(&mut base, &capabilities.generation);
     merge_capability_set(&mut base, &capabilities.model);
-    let base_raw_conversion = capabilities
-        .model
-        .raw_conversion
-        .clone()
-        .or_else(|| capabilities.generation.raw_conversion.clone());
-
     let profiles = capabilities
         .firmware
         .iter()
@@ -40,10 +35,7 @@ pub fn resolve_firmware_capabilities(
             FirmwareCapabilityProfile {
                 firmware: firmware.clone(),
                 options,
-                raw_conversion: overrides
-                    .raw_conversion
-                    .clone()
-                    .or_else(|| base_raw_conversion.clone()),
+                raw_conversion: overrides.raw_conversion.clone(),
             }
         })
         .collect::<Vec<_>>();
@@ -110,11 +102,26 @@ pub fn validate_verified_profile_coverage(
                 );
             }
             if preflight.operation == PreflightOperation::RawConversion {
+                let descriptor = profile.raw_conversion.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "camera {} firmware {} verified RAW conversion lacks an exact wire descriptor",
+                        camera.id,
+                        preflight.firmware,
+                    )
+                })?;
                 anyhow::ensure!(
-                    profile.raw_conversion.is_some(),
-                    "camera {} firmware {} verified RAW conversion lacks an exact wire signature",
+                    descriptor.evidence.status == RawConversionEvidenceStatus::WriteVerified,
+                    "camera {} firmware {} verified RAW conversion descriptor {} lacks write-verified evidence",
                     camera.id,
                     preflight.firmware,
+                    descriptor.id,
+                );
+                anyhow::ensure!(
+                    descriptor.binding.usb_modes == preflight.allowed_usb_modes,
+                    "camera {} firmware {} RAW descriptor {} USB modes do not match preflight",
+                    camera.id,
+                    preflight.firmware,
+                    descriptor.id,
                 );
             }
         }
@@ -154,6 +161,9 @@ fn required_enum_options(camera: &Camera, operation: PreflightOperation) -> BTre
 }
 
 fn validate_profile(profile: &FirmwareCapabilityProfile) -> anyhow::Result<()> {
+    if let Some(descriptor) = &profile.raw_conversion {
+        validate_raw_conversion_descriptor(&profile.firmware, descriptor)?;
+    }
     for (option, capability) in &profile.options {
         let mut wire_owners = BTreeMap::<i32, &str>::new();
         for logical in &capability.allowed_values {
@@ -178,6 +188,74 @@ fn validate_profile(profile: &FirmwareCapabilityProfile) -> anyhow::Result<()> {
             }
         }
     }
+    Ok(())
+}
+
+fn validate_raw_conversion_descriptor(
+    firmware: &str,
+    descriptor: &RawConversionDescriptor,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !descriptor.id.trim().is_empty(),
+        "firmware {firmware} RAW conversion descriptor id is empty"
+    );
+    anyhow::ensure!(
+        !descriptor.binding.usb_modes.is_empty(),
+        "firmware {firmware} RAW conversion descriptor {} has no USB mode binding",
+        descriptor.id,
+    );
+    validate_raw_conversion_layout(firmware, &descriptor.id, "read", &descriptor.read)?;
+    if let Some(write) = &descriptor.write {
+        validate_raw_conversion_layout(firmware, &descriptor.id, "write", write)?;
+    }
+    if descriptor.evidence.status == RawConversionEvidenceStatus::WriteVerified {
+        anyhow::bail!(
+            "firmware {firmware} RAW conversion descriptor {} requests write_verified, but RAW writes remain unavailable until evidence manifests, camera state, and lossless wire preservation are machine-checked",
+            descriptor.id,
+        );
+    }
+    Ok(())
+}
+
+fn validate_raw_conversion_layout(
+    firmware: &str,
+    descriptor_id: &str,
+    direction: &str,
+    layout: &RawConversionLayout,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !layout.profile_code.is_empty()
+            && layout.profile_code.len() <= 8
+            && layout
+                .profile_code
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+        "firmware {firmware} RAW conversion descriptor {descriptor_id} {direction} profile code is not canonical lowercase hexadecimal text",
+    );
+    u32::from_str_radix(&layout.profile_code, 16).map_err(|error| {
+        anyhow::anyhow!(
+            "firmware {firmware} RAW conversion descriptor {descriptor_id} {direction} profile code cannot be represented by the generated u32 codec: {error}"
+        )
+    })?;
+    anyhow::ensure!(
+        layout.total_length > layout.header_padding,
+        "firmware {firmware} RAW conversion descriptor {descriptor_id} {direction} total length is invalid",
+    );
+    let unique = layout.fields.iter().collect::<BTreeSet<_>>();
+    anyhow::ensure!(
+        unique.len() == layout.fields.len(),
+        "firmware {firmware} RAW conversion descriptor {descriptor_id} {direction} has duplicate fields",
+    );
+    let expected_total_length = 2_u64
+        + 1
+        + u64::try_from(layout.profile_code.len())? * 2
+        + u64::from(layout.header_padding)
+        + u64::try_from(layout.fields.len())? * 4;
+    anyhow::ensure!(
+        u64::from(layout.total_length) == expected_total_length,
+        "firmware {firmware} RAW conversion descriptor {descriptor_id} {direction} total length {} does not match its exact layout length {expected_total_length}",
+        layout.total_length,
+    );
     Ok(())
 }
 
@@ -370,7 +448,6 @@ mod tests {
 
         assert!(error.to_string().contains("file_type"));
     }
-
     #[test]
     fn raw_conversion_requires_only_render_profile_enum_options() {
         let camera: Camera = serde_json::from_str(
@@ -399,5 +476,82 @@ mod tests {
             required_enum_options(&camera, PreflightOperation::RawConversion),
             BTreeSet::from(["render_format"]),
         );
+    }
+
+    #[test]
+    fn verified_raw_conversion_rejects_self_declared_signature_without_write_evidence() {
+        let camera: Camera = serde_json::from_str(
+            r#"{
+                "id": "fixture",
+                "spec": {
+                    "name": "Fixture", "generation": "fixture",
+                    "usb": { "vendor_id": 1227, "product_id": 1, "chunk_size_ceiling": 1024 },
+                    "preflight": [{
+                        "operation": "raw_conversion", "status": "verified", "firmware": "4.31",
+                        "minimum_battery_percent": 100, "allowed_usb_modes": [6],
+                        "required_operations": [4097], "required_properties": []
+                    }],
+                    "capabilities": {
+                        "generation": {}, "model": {},
+                        "firmware": { "4.31": { "raw_conversion": {
+                            "id": "self-declared",
+                            "evidence": { "status": "unverified", "manifests": [] },
+                            "binding": { "usb_modes": [6] },
+                            "read": {
+                                "profile_code": "1", "header_padding": 2,
+                                "declared_field_count": 1, "total_length": 11,
+                                "fields": ["opaque"]
+                            },
+                            "write": {
+                                "profile_code": "1", "header_padding": 2,
+                                "declared_field_count": 1, "total_length": 11,
+                                "fields": ["opaque"]
+                            }
+                        } } }
+                    },
+                    "features": { "render": {
+                        "profile_code": 1, "header_padding": 2, "fields": [{ "id": "opaque" }]
+                    } }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let validation = validate_verified_profile_coverage(
+            &BTreeMap::new(),
+            &BTreeMap::from([(camera.id.clone(), camera)]),
+        );
+
+        assert!(
+            validation.is_err(),
+            "a self-declared RAW signature without independent write evidence must not authorize a verified profile"
+        );
+    }
+
+    #[test]
+    fn write_verified_raw_descriptor_is_reserved_until_evidence_is_machine_checked() {
+        let descriptor: RawConversionDescriptor = serde_json::from_str(
+            r#"{
+                "id": "self-declared",
+                "evidence": { "status": "write_verified", "manifests": ["fixture.json"] },
+                "binding": { "usb_modes": [6], "camera_state": "still" },
+                "read": {
+                    "profile_code": "1", "header_padding": 2,
+                    "declared_field_count": 1, "total_length": 11,
+                    "fields": ["opaque"]
+                },
+                "write": {
+                    "profile_code": "1", "header_padding": 2,
+                    "declared_field_count": 1, "total_length": 11,
+                    "fields": ["opaque"]
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let error = validate_raw_conversion_descriptor("4.31", &descriptor)
+            .expect_err("a manifest path alone must never authorize RAW writes");
+
+        assert!(error.to_string().contains("machine-checked"));
     }
 }

@@ -502,9 +502,26 @@ cameras: {
 							allowed_values: _x_t5_post_reala_film_simulations
 						}]
 						raw_conversion: {
-							profile_code:   features.render.profile_code
-							header_padding: features.render.header_padding
-							fields: [for field in features.render.fields {field.id}]
+							id: "x_t5-4.31-raw-layout-unverified"
+							evidence: {
+								status:    "unverified"
+								manifests: []
+							}
+							binding: usb_modes: [0x6]
+							read: {
+								profile_code:         "ff179502"
+								header_padding:       0x1ee
+								declared_field_count: 29
+								total_length:         625
+								fields: [for field in features.render.fields if field.skip_read == _|_ {field.id}]
+							}
+							write: {
+								profile_code:         "ff179502"
+								header_padding:       0x1ee
+								declared_field_count: 29
+								total_length:         629
+								fields: [for field in features.render.fields if field.skip_write == _|_ {field.id}]
+							}
 						}
 					}
 				}
@@ -566,7 +583,7 @@ cameras: {
 				},
 				{
 					operation:               "raw_conversion"
-					status:                  "verified"
+					status:                  "unverified"
 					firmware:                "4.31"
 					minimum_battery_percent: 100
 					allowed_usb_modes: [0x6]

@@ -36,6 +36,7 @@ The current discovery surface is deliberately limited:
 | `discover info` | `GetDeviceInfo`, `GetDevicePropValue` | read-only |
 | `discover simulation` | `GetDevicePropValue` | read-only |
 | `discover backup export` | `GetObjectInfo`, `GetObject` | read-only |
+| `discover render-profile` | `GetDeviceInfo`, `GetDevicePropDesc`, `GetDevicePropValue` | read-only |
 
 There is no `SetDevicePropValue`, custom-slot selector, upload, restore, delete,
 or generic raw-send command. Other custom-setting slots must be selected
@@ -141,6 +142,24 @@ The high-level goal: discover the camera's `profile_code`, the number of fields,
 the order of fields, and any value-transformation aliases between the
 user-facing options and what the camera stores on the wire.
 
+Start with the built-in read-only capture before observing X RAW Studio:
+
+```sh
+cargo run --locked -p fujicli-dev --features reverse-tools -- \
+  --device BUS.ADDRESS discover render-profile \
+  /tmp/x-t5-4.31-profile.json -vvv
+```
+
+The command issues only `GetDeviceInfo`, best-effort reads USB mode and the raw
+`GetDevicePropDesc(D185)` bytes, and retrieves `GetDevicePropValue(D185)`. The
+JSON contains the exact descriptor and payload as lowercase hex with SHA-256,
+plus a best-effort descriptor summary and only envelope fields that can be
+parsed without assuming padding or field order. An unknown descriptor datatype
+therefore does not discard the payload. It intentionally records camera state
+as `unknown`. The artifact is privacy-sensitive and must be reviewed before it
+is shared. The command never uploads a RAF, changes a selector/property, or
+creates mutation authorization.
+
 ### Recommended Setup
 
 - **Windows VM (QEMU + USB pass-through)** - running Fujifilm's closed-source X
@@ -194,10 +213,23 @@ constraints (the apply pattern must be unique among transformations).
 
 ## Known Pitfalls
 
-- **X RAW Studio sometimes reads fewer conversion-profile fields than it writes
-  back.** Observed on the X-T5; root cause unknown. When reversing, prefer the
-  _write_ path as ground truth.
-- **Padding sizes vary or may not be constant.** The X-T5 uses `0x1ee` bytes
-  between the profile-code string and the field array. Record the observed
-  count as the camera's required `render.header_padding`; codegen deliberately
-  has no shared default.
+- **X RAW Studio may read fewer conversion-profile fields than it writes back.**
+  Historical X-T5 notes describe one extra 32-bit write value, commonly `0` or
+  `1`, but do not retain firmware/state/version metadata or wire bytes. Treat
+  read and write as separate layouts and capture both directions; neither is
+  ground truth for the other.
+- **Padding sizes vary or may not be constant.** `0x1ee` is the current X-T5
+  assumption, not retained capture evidence. Discovery must preserve the whole
+  payload and must not infer or zero padding. A write descriptor needs a golden
+  payload and a declared padding policy.
+
+Privacy-reviewed minimized payloads belong under
+`tests/wire/render_profiles/<model>/<firmware>/`; follow the manifest contract
+in that directory. Keep full PCAP/PCAPNG files in the private HIL evidence store
+and retain their SHA-256 in the committed manifest.
+
+`write_verified` is currently a reserved status: codegen rejects it even when a
+manifest path is present. Enabling it requires a machine-checked manifest/hash
+contract, live camera-state binding, and lossless preservation tests for
+padding and opaque fields. Until all three exist, captured evidence can improve
+read compatibility but cannot authorize RAW writes.

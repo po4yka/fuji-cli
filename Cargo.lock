@@ -481,6 +481,7 @@ dependencies = [
  "log",
  "log4rs",
  "rusb",
+ "serde_json",
  "tempfile",
 ]
 

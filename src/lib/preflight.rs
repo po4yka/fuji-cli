@@ -521,6 +521,8 @@ mod tests {
             .expect("X-T5 must be generated");
         let before = select_capability_profile(camera, "3.01").expect("3.01 profile must exist");
         let after = select_capability_profile(camera, "4.00").expect("4.00 profile must exist");
+        assert!(before.raw_conversion.is_none());
+        assert!(after.raw_conversion.is_none());
 
         assert!(
             before
@@ -537,12 +539,35 @@ mod tests {
         let current = select_capability_profile(camera, "4.31").expect("4.31 profile must exist");
         let raw = current
             .raw_conversion
-            .expect("verified 4.31 RAW conversion needs an exact signature");
-        assert_eq!(raw.profile_code, 0xff17_9502);
-        assert_eq!(raw.header_padding, 0x1ee);
-        assert_eq!(raw.fields.len(), 29);
-        assert_eq!(raw.fields.first(), Some(&"head_0"));
-        assert_eq!(raw.fields.last(), Some(&"tail_0"));
+            .expect("4.31 RAW assumptions must remain inspectable for discovery");
+        assert_eq!(
+            raw.evidence_status,
+            crate::generated::cameras::CameraRawConversionEvidenceStatus::Unverified
+        );
+        assert!(raw.evidence_manifests.is_empty());
+        assert_eq!(raw.read.profile_code, "ff179502");
+        assert_eq!(raw.read.header_padding, 0x1ee);
+        assert_eq!(raw.read.declared_field_count, 29);
+        assert_eq!(raw.read.total_length, 625);
+        assert_eq!(raw.read.fields.len(), 28);
+        assert_eq!(raw.read.fields.first(), Some(&"head_0"));
+        assert_eq!(raw.read.fields.last(), Some(&"teleconverter"));
+        let write = raw
+            .write
+            .expect("the assumed write shape must remain inspectable");
+        assert_eq!(write.declared_field_count, 29);
+        assert_eq!(write.total_length, 629);
+        assert_eq!(write.fields.len(), 29);
+        assert_eq!(write.fields.last(), Some(&"tail_0"));
+        let write_error = current
+            .validate_raw_conversion_signature(0xff17_9502, 0x1ee, write.fields, 629)
+            .expect_err("unverified 4.31 RAW assumptions must not authorize writes");
+        assert!(write_error.to_string().contains("not write-verified"));
+
+        let preflight_error =
+            select_profile(camera, CameraPreflightOperation::RawConversion, "4.31")
+                .expect_err("4.31 RAW conversion must stay disabled until HIL evidence exists");
+        assert!(preflight_error.to_string().contains("unverified"));
 
         // Missing entries here would break the selector and otherwise valid RAW
         // enum fields before any device I/O.

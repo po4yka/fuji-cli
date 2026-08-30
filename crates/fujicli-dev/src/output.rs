@@ -16,7 +16,7 @@ impl FromStr for NewOutput {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         if value == "-" {
-            bail!("backup discovery requires a new file path; stdout is not allowed");
+            bail!("discovery artifacts require a new file path; stdout is not allowed");
         }
         Ok(Self(PathBuf::from(value)))
     }
@@ -63,7 +63,7 @@ mod tests {
     use super::NewOutput;
 
     #[test]
-    fn private_backup_payload_cannot_be_sent_to_stdout() {
+    fn private_discovery_payload_cannot_be_sent_to_stdout() {
         let error = NewOutput::from_str("-").expect_err("stdout must be rejected");
 
         assert!(error.to_string().contains("stdout is not allowed"));

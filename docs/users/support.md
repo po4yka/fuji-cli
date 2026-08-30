@@ -30,7 +30,7 @@ physical or psychological - to your camera or equipment.
 | FUJIFILM X100VI | X-Trans V   | ?         |         |             |           |
 | FUJIFILM X-H2   | X-Trans V   | ?         |         |             |           |
 | FUJIFILM X-H2S  | X-Trans V   | ?         |         |             |           |
-| FUJIFILM X-T5   | X-Trans V   | Y         | Y       | N           | Y         |
+| FUJIFILM X-T5   | X-Trans V   | Y         | Y       | N           | R         |
 
 ## Legend
 
@@ -40,6 +40,8 @@ physical or psychological - to your camera or equipment.
   relevant PTP commands are present, but nobody has confirmed end-to-end
   behaviour.
 - **N** - Known not to work or deliberately unavailable for safety.
+- **R** - Read-only discovery/historical evidence exists, but writes are
+  intentionally disabled until the exact wire descriptor is verified.
 - Blank - Not implemented yet.
 
 A `?` in the "Base Info" column means `fujicli device info` should succeed. A
@@ -47,20 +49,22 @@ blank elsewhere means the FML spec for that camera does not yet declare the
 feature; see [adding a camera](../contributors/adding-cameras.md) to fill that
 in.
 
-The feature table records current supported command sets. Backup and RAW
-conversion mutations are enabled only for the Fujifilm X-T5 with exact PTP
-firmware `4.31`, USB mode `0x6`, and a fully charged battery. X-T5 simulation
-commands are deliberately unavailable because the PTP evidence does not yet
-identify whether custom-setting selector `0xD18C` addresses the separate still
-or movie C1-C7 namespace. Every other model, firmware, mode, or incomplete
-capability/descriptor set fails closed before a write. Adding a row requires
+The feature table records historical physical-device coverage; it is not the
+state-changing compatibility matrix. Backup mutations are enabled only for the
+Fujifilm X-T5 with exact PTP firmware `4.31`, USB mode `0x6`, and the required
+battery level. Simulation commands are deliberately unavailable because the
+PTP evidence does not identify whether selector `0xD18C` addresses the still or
+movie C1-C7 namespace. RAW rendering is also disabled even on 4.31:
+the retained code documents an unverified 28-slot read/29-slot write assumption,
+not a trace-backed descriptor. Every other model, firmware, mode, or incomplete
+capability/descriptor set also fails closed before a write. Adding a row requires
 captured device evidence and an explicit FML preflight profile; a nearby
 firmware version is never assumed compatible.
 
 The generated X-T5 capability matrix records Reala Ace as unavailable on
-firmware `3.01` and available from `4.00`. This records option availability only:
-it does not change the mutating support boundary above. Firmware `4.31` also
-pins the exact RAW conversion profile code, padding, and 29-field order.
+firmware `3.01` and available from `4.00`. This records option availability only.
+Firmware `4.31` retains the current RAW code/padding/order assumptions for
+read-only comparison, but they do not grant write authority.
 
 ## Emulation Mode
 

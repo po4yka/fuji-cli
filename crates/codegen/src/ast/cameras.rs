@@ -115,14 +115,56 @@ pub struct CameraCapabilities {
 #[serde(default, deny_unknown_fields)]
 pub struct CapabilitySet {
     pub option_overrides: Vec<OptionCapability>,
-    pub raw_conversion: Option<RawConversionSignature>,
+    pub raw_conversion: Option<RawConversionDescriptor>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct RawConversionSignature {
-    pub profile_code: u32,
+pub struct RawConversionDescriptor {
+    pub id: String,
+    pub evidence: RawConversionEvidence,
+    pub binding: RawConversionBinding,
+    pub read: RawConversionLayout,
+    pub write: Option<RawConversionLayout>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RawConversionEvidence {
+    pub status: RawConversionEvidenceStatus,
+    pub manifests: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RawConversionEvidenceStatus {
+    Unverified,
+    Observed,
+    ReadVerified,
+    WriteVerified,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RawConversionBinding {
+    pub usb_modes: Vec<u32>,
+    pub camera_state: Option<RawConversionCameraState>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RawConversionCameraState {
+    Still,
+    Movie,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RawConversionLayout {
+    pub profile_code: String,
     pub header_padding: u32,
+    pub declared_field_count: u16,
+    pub total_length: u32,
     pub fields: Vec<String>,
 }
 
@@ -530,17 +572,27 @@ mod tests {
     }
 
     #[test]
-    fn capability_set_accepts_exact_raw_conversion_signature() {
+    fn capability_set_accepts_directional_raw_conversion_descriptor() {
         let result = serde_json::from_str::<CapabilitySet>(
             r#"{
                 "raw_conversion": {
-                    "profile_code": 4279731458,
-                    "header_padding": 494,
-                    "fields": ["head_0", "film_simulation", "tail_0"]
+                    "id": "x-t5-4.31-still",
+                    "evidence": { "status": "write_verified", "manifests": ["capture.json"] },
+                    "binding": { "usb_modes": [6], "camera_state": "still" },
+                    "read": {
+                        "profile_code": "ff179502", "header_padding": 494,
+                        "declared_field_count": 3, "total_length": 527,
+                        "fields": ["head_0", "film_simulation"]
+                    },
+                    "write": {
+                        "profile_code": "ff179502", "header_padding": 494,
+                        "declared_field_count": 3, "total_length": 531,
+                        "fields": ["head_0", "film_simulation", "tail_0"]
+                    }
                 }
             }"#,
         );
 
-        assert!(result.is_ok(), "RAW signature must parse: {result:?}");
+        assert!(result.is_ok(), "RAW descriptor must parse: {result:?}");
     }
 }

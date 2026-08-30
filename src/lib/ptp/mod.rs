@@ -360,6 +360,7 @@ pub(crate) struct MutationAuthorization {
     operations: BTreeSet<u16>,
     properties: BTreeMap<u16, DevicePropDesc>,
     capability_profile: &'static crate::generated::cameras::CameraFirmwareCapabilityProfile,
+    raw_conversion_read_fingerprint_validated: bool,
     raw_conversion_profile_validated: bool,
 }
 
@@ -376,6 +377,7 @@ impl MutationAuthorization {
                 .map(|descriptor| (descriptor.property_code, descriptor))
                 .collect(),
             capability_profile,
+            raw_conversion_read_fingerprint_validated: false,
             raw_conversion_profile_validated: false,
         }
     }
@@ -431,12 +433,44 @@ impl MutationAuthorization {
             profile_code,
             header_padding,
             fields,
+            bytes.len(),
         )?;
+        ensure!(
+            self.raw_conversion_read_fingerprint_validated,
+            "RAW conversion write requires a matching live read fingerprint"
+        );
         self.validate_property_candidate(
             u16::from(DevicePropCode::FujiRawConversionProfile),
             bytes,
         )?;
         self.raw_conversion_profile_validated = true;
+        Ok(())
+    }
+
+    fn validate_raw_conversion_read_fingerprint(
+        &mut self,
+        profile_code: u32,
+        header_padding: usize,
+        declared_field_count: u16,
+        fields: &[&str],
+        bytes: &[u8],
+    ) -> anyhow::Result<()> {
+        self.capability_profile
+            .validate_raw_conversion_read_fingerprint(
+                profile_code,
+                header_padding,
+                declared_field_count,
+                fields,
+                bytes.len(),
+            )?;
+        validate_raw_conversion_live_envelope(
+            bytes,
+            profile_code,
+            header_padding,
+            declared_field_count,
+            fields.len(),
+        )?;
+        self.raw_conversion_read_fingerprint_validated = true;
         Ok(())
     }
 }
@@ -615,8 +649,7 @@ impl Ptp {
 
     pub(crate) fn get_prop_desc(&mut self, prop: impl Into<u16>) -> anyhow::Result<DevicePropDesc> {
         let prop = prop.into();
-        debug!("Getting device prop descriptor: 0x{prop:04x}");
-        let response = self.send(CommandCode::GetDevicePropDesc, &[u32::from(prop)], None)?;
+        let response = self.get_prop_desc_raw(prop)?;
         let descriptor = DevicePropDesc::decode(&response)
             .with_context(|| format!("decoding PTP device prop descriptor 0x{prop:04x}"))?;
         ensure!(
@@ -625,6 +658,12 @@ impl Ptp {
             descriptor.property_code
         );
         Ok(descriptor)
+    }
+
+    pub(crate) fn get_prop_desc_raw(&mut self, prop: impl Into<u16>) -> anyhow::Result<Vec<u8>> {
+        let prop = prop.into();
+        debug!("Getting device prop descriptor: 0x{prop:04x}");
+        self.send(CommandCode::GetDevicePropDesc, &[u32::from(prop)], None)
     }
 
     pub(crate) fn set_prop_raw(
@@ -743,6 +782,26 @@ impl Ptp {
         authorization.validate_raw_conversion_profile(profile_code, header_padding, fields, bytes)
     }
 
+    pub(crate) fn validate_raw_conversion_read_fingerprint(
+        &mut self,
+        profile_code: u32,
+        header_padding: usize,
+        declared_field_count: u16,
+        fields: &[&str],
+        bytes: &[u8],
+    ) -> anyhow::Result<()> {
+        let authorization = self.mutation_authorization.as_mut().ok_or_else(|| {
+            anyhow!("RAW conversion fingerprint validation requires camera preflight")
+        })?;
+        authorization.validate_raw_conversion_read_fingerprint(
+            profile_code,
+            header_padding,
+            declared_field_count,
+            fields,
+            bytes,
+        )
+    }
+
     fn validate_mutation(
         &self,
         code: CommandCode,
@@ -762,6 +821,43 @@ fn session_is_safe_to_close(
     camera_processing_active: bool,
 ) -> bool {
     !poisoned && transaction_id != u32::MAX && !camera_processing_active
+}
+
+fn validate_raw_conversion_live_envelope(
+    bytes: &[u8],
+    expected_profile_code: u32,
+    header_padding: usize,
+    expected_field_count: u16,
+    field_slots: usize,
+) -> anyhow::Result<()> {
+    let mut reader = Cursor::new(bytes);
+    let field_count = i16::read_options(&mut reader, Endian::Little, ())?;
+    ensure!(
+        field_count >= 0 && u16::try_from(field_count)? == expected_field_count,
+        "live RAW conversion field count does not match the firmware descriptor"
+    );
+    let profile_code = codec::PtpExactString::read_options(&mut reader, Endian::Little, ())?;
+    let parsed_profile_code = u32::from_str_radix(profile_code.as_str(), 16)
+        .context("decoding live RAW conversion profile code")?;
+    ensure!(
+        parsed_profile_code == expected_profile_code,
+        "live RAW conversion profile code does not match the firmware descriptor"
+    );
+    let remaining = bytes
+        .len()
+        .saturating_sub(usize::try_from(reader.position())?);
+    let expected_remaining = header_padding
+        .checked_add(
+            field_slots
+                .checked_mul(size_of::<i32>())
+                .ok_or_else(|| anyhow!("RAW conversion field geometry overflow"))?,
+        )
+        .ok_or_else(|| anyhow!("RAW conversion payload geometry overflow"))?;
+    ensure!(
+        remaining == expected_remaining,
+        "live RAW conversion payload geometry does not match the firmware descriptor"
+    );
+    Ok(())
 }
 
 const fn is_mutating_command(code: CommandCode) -> bool {
@@ -1429,7 +1525,8 @@ mod tests {
         read_container_with_deadline, send_with_transport, send_with_transport_and_clock,
         send_with_transport_and_read_state, send_with_transport_for_operation_and_clock,
         send_with_transport_until_and_clock, session_is_safe_to_close, validate_bulk_read_geometry,
-        validate_mutation_authorization, write_all_bulk, write_container,
+        validate_mutation_authorization, validate_raw_conversion_live_envelope, write_all_bulk,
+        write_container,
     };
 
     const EMPTY_CAPABILITY_PROFILE: crate::generated::cameras::CameraFirmwareCapabilityProfile =
@@ -1442,10 +1539,27 @@ mod tests {
         crate::generated::cameras::CameraFirmwareCapabilityProfile {
             firmware: "test",
             options: &[],
-            raw_conversion: Some(crate::generated::cameras::CameraRawConversionSignature {
-                profile_code: 1,
-                header_padding: 2,
-                fields: &["field"],
+            raw_conversion: Some(crate::generated::cameras::CameraRawConversionDescriptor {
+                id: "unverified-test",
+                evidence_status:
+                    crate::generated::cameras::CameraRawConversionEvidenceStatus::Unverified,
+                evidence_manifests: &[],
+                usb_modes: &[6],
+                camera_state: None,
+                read: crate::generated::cameras::CameraRawConversionLayout {
+                    profile_code: "1",
+                    header_padding: 2,
+                    declared_field_count: 1,
+                    total_length: 9,
+                    fields: &["field"],
+                },
+                write: Some(crate::generated::cameras::CameraRawConversionLayout {
+                    profile_code: "1",
+                    header_padding: 2,
+                    declared_field_count: 1,
+                    total_length: 9,
+                    fields: &["field"],
+                }),
             }),
         };
 
@@ -1530,6 +1644,72 @@ mod tests {
         .expect_err("selector validation must not authorize RAW upload");
 
         assert!(error.to_string().contains("profile"));
+    }
+
+    #[test]
+    fn static_raw_signature_cannot_authorize_upload_without_write_evidence() {
+        let descriptor = DevicePropDesc {
+            property_code: 0xD185,
+            data_type: DevicePropDataType::UInt16,
+            writable: true,
+            factory_default: DevicePropValue::UInt(1),
+            current: DevicePropValue::UInt(1),
+            form: DevicePropForm::None,
+        };
+        let mut authorization =
+            MutationAuthorization::new(&[0x900d], vec![descriptor], &RAW_CAPABILITY_PROFILE);
+        let descriptor_error = authorization
+            .validate_raw_conversion_profile(1, 2, &["field"], &1_u16.to_le_bytes())
+            .expect_err("an unverified descriptor must not authorize RAW mutation");
+        assert!(descriptor_error.to_string().contains("not write-verified"));
+
+        let result = validate_mutation_authorization(
+            Some(&authorization),
+            CommandCode::FujiSendObject,
+            &[],
+            Some(b"RAF"),
+        );
+
+        assert!(
+            result.is_err(),
+            "a static RAW signature must not authorize upload without independent write evidence"
+        );
+    }
+
+    #[test]
+    fn live_raw_fingerprint_is_derived_from_observed_payload_bytes() {
+        let mut payload = 1_i16.to_le_bytes().to_vec();
+        payload.push(1);
+        payload.extend_from_slice(&u16::from(b'1').to_le_bytes());
+        payload.extend_from_slice(&[0, 0]);
+        payload.extend_from_slice(&42_i32.to_le_bytes());
+
+        validate_raw_conversion_live_envelope(&payload, 1, 2, 1, 1)
+            .expect("matching live payload must satisfy the exact envelope");
+
+        payload[..2].copy_from_slice(&2_i16.to_le_bytes());
+        let error = validate_raw_conversion_live_envelope(&payload, 1, 2, 1, 1)
+            .expect_err("a mismatched live count must fail closed");
+        assert!(error.to_string().contains("field count"));
+    }
+
+    #[test]
+    fn live_raw_fingerprint_rejects_profile_code_and_geometry_drift() {
+        let mut payload = 1_i16.to_le_bytes().to_vec();
+        payload.push(1);
+        payload.extend_from_slice(&u16::from(b'2').to_le_bytes());
+        payload.extend_from_slice(&[0, 0]);
+        payload.extend_from_slice(&42_i32.to_le_bytes());
+
+        let code_error = validate_raw_conversion_live_envelope(&payload, 1, 2, 1, 1)
+            .expect_err("a mismatched live profile code must fail closed");
+        assert!(code_error.to_string().contains("profile code"));
+
+        payload[3..5].copy_from_slice(&u16::from(b'1').to_le_bytes());
+        payload.push(0);
+        let geometry_error = validate_raw_conversion_live_envelope(&payload, 1, 2, 1, 1)
+            .expect_err("trailing live bytes must fail closed");
+        assert!(geometry_error.to_string().contains("geometry"));
     }
 
     #[test]

@@ -16,8 +16,24 @@ generations: [string]: #Generation
 #CapabilitySet: {
 	option_overrides?: [...#OptionCapability]
 	raw_conversion?: {
-		profile_code:   uint32
-		header_padding: uint32
+		id: string
+		evidence: {
+			status: "unverified" | "observed" | "read_verified" | "write_verified"
+			manifests: [...string]
+		}
+		binding: {
+			usb_modes: [uint32, ...uint32]
+			camera_state?: "still" | "movie"
+		}
+		read: #RawConversionLayout
+		write?: #RawConversionLayout
+	}
+
+	#RawConversionLayout: {
+		profile_code:         string
+		header_padding:       uint32
+		declared_field_count: uint16
+		total_length:         uint32
 		fields: [string, ...string]
 
 		_validation: fields: list.UniqueItems & fields

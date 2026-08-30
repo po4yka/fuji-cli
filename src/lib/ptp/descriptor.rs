@@ -27,6 +27,35 @@ pub(crate) enum DevicePropDataType {
     String,
 }
 
+impl DevicePropDataType {
+    #[cfg(feature = "reverse-tools")]
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            Self::Int8 => "int8",
+            Self::UInt8 => "uint8",
+            Self::Int16 => "int16",
+            Self::UInt16 => "uint16",
+            Self::Int32 => "int32",
+            Self::UInt32 => "uint32",
+            Self::Int64 => "int64",
+            Self::UInt64 => "uint64",
+            Self::Int128 => "int128",
+            Self::UInt128 => "uint128",
+            Self::Int8Array => "int8_array",
+            Self::UInt8Array => "uint8_array",
+            Self::Int16Array => "int16_array",
+            Self::UInt16Array => "uint16_array",
+            Self::Int32Array => "int32_array",
+            Self::UInt32Array => "uint32_array",
+            Self::Int64Array => "int64_array",
+            Self::UInt64Array => "uint64_array",
+            Self::Int128Array => "int128_array",
+            Self::UInt128Array => "uint128_array",
+            Self::String => "string",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum DevicePropValue {
     Int(i128),
@@ -44,6 +73,17 @@ pub(crate) enum DevicePropForm {
         step: DevicePropValue,
     },
     Enumeration(Vec<DevicePropValue>),
+}
+
+impl DevicePropForm {
+    #[cfg(feature = "reverse-tools")]
+    pub(crate) const fn name(&self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Range { .. } => "range",
+            Self::Enumeration(_) => "enumeration",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

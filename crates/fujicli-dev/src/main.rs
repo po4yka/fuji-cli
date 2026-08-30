@@ -71,4 +71,28 @@ mod tests {
 
         assert_eq!(error.kind(), clap::error::ErrorKind::InvalidSubcommand);
     }
+
+    #[test]
+    fn raw_profile_discovery_requires_a_private_output_file() {
+        let parsed = Cli::try_parse_from([
+            "fujicli-dev",
+            "--device",
+            "1.2",
+            "discover",
+            "render-profile",
+            "profile.json",
+        ]);
+        assert!(parsed.is_ok(), "RAW discovery must parse: {parsed:?}");
+
+        let error = Cli::try_parse_from([
+            "fujicli-dev",
+            "--device",
+            "1.2",
+            "discover",
+            "render-profile",
+            "-",
+        ])
+        .expect_err("lossless wire artifacts must not be written to stdout");
+        assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+    }
 }

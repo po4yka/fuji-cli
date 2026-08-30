@@ -136,14 +136,20 @@ from the live `GetDeviceInfo` version. Simulation enum codecs use that profile's
 canonical/read wire mappings. Simulation and render inputs are checked against
 its logical-value allowlists before selector or object-upload mutations.
 
-RAW conversion has an additional two-stage gate: the firmware profile's exact
-profile code, padding, and ordered field ids must match the generated codec;
-then the live current profile is decoded and encoded through that exact
-firmware profile, updated, and validated
-against `GetDevicePropDesc`. Only after both checks does transport authorize
-`FujiSendObjectInfo`/`FujiSendObject`. A different per-firmware RAW enum wire
-mapping is therefore emitted explicitly rather than silently using a
-model/generation value.
+RAW conversion has an additional evidence gate. Each exact firmware profile may
+carry a direction-specific descriptor with an evidence status, manifests, USB
+mode binding, exact profile-code text, declared count, total length, padding,
+and ordered read/write fields. `write_verified` is reserved but rejected by
+codegen until manifests/hashes, live camera state, and lossless opaque bytes are
+machine-checked. Runtime also derives the read fingerprint from the successfully
+decoded live bytes before retaining it in transport authorization; static codec
+constants plus a matching length cannot set that flag. X-T5 4.31 is currently
+`unverified`, so preflight fails before the first mutation.
+
+The `reverse-tools` render-profile capture is deliberately read-only and emits
+a lossless JSON payload artifact without inferring padding or field semantics.
+Golden payloads plus exact model/firmware/state HIL evidence and the missing
+machine validators are required before `write_verified` may be accepted.
 
 The transport independently rejects `SetDevicePropValue`, object upload/delete,
 and Fuji vendor write operations unless the current authorization allows their
