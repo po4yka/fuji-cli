@@ -1,5 +1,8 @@
 use fujicli::{
-    features::simulation::SimulationListItem,
+    features::simulation::{
+        SimulationFailureState, SimulationListItem, SimulationTransactionError,
+        TemporarySimulationSelectorError, TemporarySimulationSelectorState,
+    },
     generated::{cli::SimulationArgs, options::CustomSetting, simulations::SimulationBase},
     policy::SerialFingerprint,
 };
@@ -7,11 +10,53 @@ use fujicli::{
 use super::common::file::{Input, Output, write_stdout_line};
 use crate::cli::{
     GlobalOptions,
-    common::{interrupt, usb},
+    common::{camera_state::CameraStateUnknown, interrupt, usb},
 };
 use clap::Subcommand;
 
 pub const MAX_SIMULATION_INPUT_BYTES: usize = 1024 * 1024;
+
+/// Convert a `SimulationTransactionError` from a simulation write into
+/// `anyhow::Error`, attaching the [`CameraStateUnknown`] marker when the
+/// transaction left the camera's property state unconfirmed. The marker is
+/// inserted underneath the error's own `Display` text via
+/// `.context(...)`, so the displayed message is unchanged from
+/// `SimulationTransactionError`'s own `Display` impl.
+fn tag_transaction_state_unknown<T>(
+    result: Result<T, SimulationTransactionError>,
+) -> anyhow::Result<T> {
+    result.map_err(|error| match error.state() {
+        SimulationFailureState::CameraStateUnknown => {
+            anyhow::Error::new(CameraStateUnknown).context(error)
+        }
+        SimulationFailureState::RejectedWithoutChange
+        | SimulationFailureState::RollbackVerified => anyhow::Error::new(error),
+    })
+}
+
+/// Attach the [`CameraStateUnknown`] marker to a simulation read failure
+/// caused by a `TemporarySimulationSelectorError` whose selector-restore
+/// outcome is unknown: a `get_simulation`/`get_simulations` call that
+/// succeeds but then fails to restore the previously selected slot leaves
+/// selector state unknown, exactly like a failed write. Any other error
+/// (including a selector failure the library already restored and
+/// verified) passes through unchanged. The marker is inserted underneath
+/// the error's own `Display` text, so the displayed message is unchanged.
+fn tag_selector_state_unknown<T>(result: anyhow::Result<T>) -> anyhow::Result<T> {
+    result.map_err(
+        |error| match error.downcast::<TemporarySimulationSelectorError>() {
+            Ok(selector_error) => match selector_error.state() {
+                TemporarySimulationSelectorState::Unknown => {
+                    anyhow::Error::new(CameraStateUnknown).context(selector_error)
+                }
+                TemporarySimulationSelectorState::RestoredAndVerified => {
+                    anyhow::Error::new(selector_error)
+                }
+            },
+            Err(other) => other,
+        },
+    )
+}
 
 #[derive(Subcommand, Debug)]
 pub enum SimulationCmd {
@@ -80,14 +125,14 @@ fn handle_list(options: GlobalOptions) -> anyhow::Result<()> {
     let mut camera = usb::get_native_camera(device, emulate)?;
     let slots = camera.custom_settings_slots()?;
     let mut session = camera.preflight_simulation_access()?;
-    let slots: Vec<SimulationListItem> = session
-        .get_simulations(&slots)?
-        .into_iter()
-        .map(|(slot, simulation)| {
-            let name = simulation.name();
-            SimulationListItem { slot, name }
-        })
-        .collect();
+    let slots: Vec<SimulationListItem> =
+        tag_selector_state_unknown(session.get_simulations(&slots))?
+            .into_iter()
+            .map(|(slot, simulation)| {
+                let name = simulation.name();
+                SimulationListItem { slot, name }
+            })
+            .collect();
 
     if json {
         write_stdout_line(format_args!("{}", serde_json::to_string_pretty(&slots)?))?;
@@ -114,7 +159,7 @@ fn handle_get(options: GlobalOptions, slot: CustomSetting) -> anyhow::Result<()>
 
     let mut camera = usb::get_native_camera(device, emulate)?;
     let mut session = camera.preflight_simulation_access()?;
-    let simulation = session.get_simulation(slot)?;
+    let simulation = tag_selector_state_unknown(session.get_simulation(slot))?;
 
     if json {
         write_stdout_line(format_args!(
@@ -148,7 +193,7 @@ fn handle_set(
     let partial: SimulationBase = simulation.into();
     let mut session = camera.preflight_simulation_write(&target_serial_sha256)?;
     interrupt::critical_camera_write("simulation update", || {
-        Ok(session.update_simulation(slot, partial)?)
+        tag_transaction_state_unknown(session.update_simulation(slot, partial))
     })?;
     Ok(())
 }
@@ -168,7 +213,7 @@ fn handle_export(
 
     let mut camera = usb::get_native_camera(device, emulate)?;
     let mut session = camera.preflight_simulation_access()?;
-    let simulation = session.get_simulation(slot)?;
+    let simulation = tag_selector_state_unknown(session.get_simulation(slot))?;
     drop(session);
     let simulation = camera.serialize_simulation(&*simulation)?;
     output.write_all(&simulation)?;
@@ -197,7 +242,7 @@ fn handle_import(
         .ok_or_else(|| anyhow::anyhow!("simulation write requires --target-serial-sha256"))?;
     let mut session = camera.preflight_simulation_write(&target_serial_sha256)?;
     interrupt::critical_camera_write("simulation write", || {
-        Ok(session.set_simulation(slot, &*simulation)?)
+        tag_transaction_state_unknown(session.set_simulation(slot, &*simulation))
     })?;
 
     Ok(())
