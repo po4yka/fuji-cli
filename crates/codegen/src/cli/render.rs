@@ -127,3 +127,196 @@ fn generate_from_impl(entries: &[Entry]) -> TokenStream {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ast::{CameraSpec, Features, FieldInline, FieldRef, Render, Usb};
+
+    fn field_ref(id: &str, r#ref: &str) -> Field {
+        Field::Ref(FieldRef {
+            id: id.to_string(),
+            r#ref: r#ref.to_string(),
+            skip_read: false,
+            skip_write: false,
+        })
+    }
+
+    fn field_inline(id: &str) -> Field {
+        Field::Inline(FieldInline {
+            id: id.to_string(),
+            skip_read: false,
+            skip_write: false,
+        })
+    }
+
+    fn camera_with_render_fields(id: &str, fields: Vec<Field>) -> Camera {
+        Camera {
+            id: id.to_string(),
+            spec: CameraSpec {
+                name: id.to_string(),
+                generation: "gen".to_string(),
+                usb: Usb {
+                    vendor_id: 1,
+                    product_id: 2,
+                    chunk_size_ceiling: 1024,
+                },
+                ptp: None,
+                preflight: Vec::new(),
+                capabilities: None,
+                features: Some(Features {
+                    backup: false,
+                    simulation: None,
+                    render: Some(Render {
+                        profile_code: 1,
+                        header_padding: 0,
+                        fields,
+                        transformations: Vec::new(),
+                        rules: Vec::new(),
+                    }),
+                }),
+            },
+        }
+    }
+
+    fn camera_without_features(id: &str) -> Camera {
+        Camera {
+            id: id.to_string(),
+            spec: CameraSpec {
+                name: id.to_string(),
+                generation: "gen".to_string(),
+                usb: Usb {
+                    vendor_id: 1,
+                    product_id: 2,
+                    chunk_size_ceiling: 1024,
+                },
+                ptp: None,
+                preflight: Vec::new(),
+                capabilities: None,
+                features: None,
+            },
+        }
+    }
+
+    fn camera_with_features_but_no_render(id: &str) -> Camera {
+        Camera {
+            id: id.to_string(),
+            spec: CameraSpec {
+                name: id.to_string(),
+                generation: "gen".to_string(),
+                usb: Usb {
+                    vendor_id: 1,
+                    product_id: 2,
+                    chunk_size_ceiling: 1024,
+                },
+                ptp: None,
+                preflight: Vec::new(),
+                capabilities: None,
+                features: Some(Features {
+                    backup: false,
+                    simulation: None,
+                    render: None,
+                }),
+            },
+        }
+    }
+
+    #[test]
+    fn collects_ref_ids_and_skips_inline_fields() {
+        let mut cameras = BTreeMap::new();
+        cameras.insert(
+            "demo".to_string(),
+            camera_with_render_fields(
+                "demo",
+                vec![
+                    field_ref("head_0", "image_size"),
+                    field_ref("head_1", "film_simulation"),
+                    field_inline("tail_0"),
+                ],
+            ),
+        );
+
+        let ref_ids = collect_render_option_ids(&cameras);
+
+        assert_eq!(
+            ref_ids,
+            BTreeSet::from(["film_simulation".to_string(), "image_size".to_string()])
+        );
+    }
+
+    #[test]
+    fn collects_inline_ids_and_skips_ref_fields() {
+        let mut cameras = BTreeMap::new();
+        cameras.insert(
+            "demo".to_string(),
+            camera_with_render_fields(
+                "demo",
+                vec![
+                    field_ref("head_0", "image_size"),
+                    field_inline("tail_0"),
+                    field_inline("tail_1"),
+                ],
+            ),
+        );
+
+        let inline_ids = collect_render_inline_ids(&cameras);
+
+        assert_eq!(
+            inline_ids,
+            BTreeSet::from(["tail_0".to_string(), "tail_1".to_string()])
+        );
+    }
+
+    #[test]
+    fn dedupes_ids_shared_across_cameras() {
+        let mut cameras = BTreeMap::new();
+        cameras.insert(
+            "camera_a".to_string(),
+            camera_with_render_fields(
+                "camera_a",
+                vec![field_ref("head_0", "image_size"), field_inline("tail_0")],
+            ),
+        );
+        cameras.insert(
+            "camera_b".to_string(),
+            camera_with_render_fields(
+                "camera_b",
+                vec![field_ref("head_0", "image_size"), field_inline("tail_0")],
+            ),
+        );
+
+        let ref_ids = collect_render_option_ids(&cameras);
+        let inline_ids = collect_render_inline_ids(&cameras);
+
+        assert_eq!(ref_ids, BTreeSet::from(["image_size".to_string()]));
+        assert_eq!(ref_ids.len(), 1);
+        assert_eq!(inline_ids, BTreeSet::from(["tail_0".to_string()]));
+        assert_eq!(inline_ids.len(), 1);
+    }
+
+    #[test]
+    fn skips_cameras_without_a_render_feature() {
+        let mut cameras = BTreeMap::new();
+        cameras.insert(
+            "no_features".to_string(),
+            camera_without_features("no_features"),
+        );
+        cameras.insert(
+            "features_no_render".to_string(),
+            camera_with_features_but_no_render("features_no_render"),
+        );
+        cameras.insert(
+            "normal".to_string(),
+            camera_with_render_fields(
+                "normal",
+                vec![field_ref("head_0", "image_size"), field_inline("tail_0")],
+            ),
+        );
+
+        let ref_ids = collect_render_option_ids(&cameras);
+        let inline_ids = collect_render_inline_ids(&cameras);
+
+        assert_eq!(ref_ids, BTreeSet::from(["image_size".to_string()]));
+        assert_eq!(inline_ids, BTreeSet::from(["tail_0".to_string()]));
+    }
+}
