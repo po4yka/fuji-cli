@@ -268,6 +268,8 @@ state and object handles:
 | Still and movie | `simulation list` | each C1-C7 selection | One outer restore; no partial CLI output; correct namespace identified |
 | Still and movie | selector lifecycle | disconnect/reconnect and power cycle | Determine whether D18C is active/persistent state rather than assuming query-only context |
 | Still | `image render` | upload, profile write/readback, trigger, every handle poll, `GetObjectInfo`, fetch | Original D185 bytes restored/read back; every observed new handle retained on failure |
+| Still | `backup import` | zero-byte USB timeout during payload; final response delayed beyond 10 seconds; disconnect after full payload | Same transaction resumes at the confirmed offset; no restore replay; delayed success is accepted; disconnect reports unknown state and skips close |
+| Still | `image render` | repeated `DeviceBusy`; processing beyond 10 seconds; five-minute poll expiry | Bounded increasing poll backoff; delayed result is fetched once; expiry retains handles and sends neither a second trigger nor `CloseSession` |
 | Still | local output | write, sync, rename | No `DeleteObject` until the final path is durable |
 | Still | `image recover` | fetch and optional cleanup | Default retains object; explicit cleanup occurs only after durable save and cleanup preflight |
 
@@ -295,14 +297,33 @@ The PTP wire boundary lives in
 struct, and enum mechanics; the local module retains PTP UTF-16 strings,
 u32-counted arrays, their allocation limit, and exact-buffer validation.
 
-Every PTP transaction uses one absolute deadline across all of its bulk reads
-and writes, capped at five minutes and shortened when its caller has an earlier
-deadline. The per-transfer USB timeout is capped at ten seconds or the remaining
-transaction time. A transport failure, malformed container, or
-transaction/operation mismatch poisons the session because the stream position
-is then ambiguous. Further commands fail without USB I/O, and `Camera::drop`
-skips `CloseSession`. A fully framed non-OK PTP response does not poison the
-session and the next transaction may proceed.
+PTP timing is split into independent limits:
+
+- a ten-second USB transfer slice bounds one `rusb` call;
+- command and data phases allow thirty seconds without confirmed byte progress;
+- ordinary responses allow thirty seconds, camera-processing responses five
+  minutes, and post-large-transfer responses ten minutes;
+- ordinary/camera-processing transactions have a five-minute hard cap, while
+  backup/RAF/JPEG transfers have a fifteen-minute hard cap;
+- render handle polling has its own five-minute absolute deadline and a
+  `DeviceBusy` backoff from 100 ms up to one second.
+
+The larger limits are conservative bootstrap values for the bounded 512 MiB
+input and the X-T5's roughly 16 MiB transfer chunk, not measured throughput or
+firmware guarantees. They must be calibrated with the physical acceptance
+matrix rather than copied to another camera as model facts.
+
+A zero-byte USB timeout does not by itself end a transaction. The transport
+continues the same bulk read or write, at the same confirmed offset, until the
+phase or hard deadline; confirmed progress refreshes only the data idle
+deadline. It never replays a PTP write command or a completed data prefix.
+Expiry after dispatch, disconnect, malformed framing, or transaction/operation
+mismatch poisons the session because the wire position or camera state is then
+ambiguous. Further commands fail without USB I/O, and `Camera::drop` skips
+`CloseSession`. RAW conversion also suppresses automatic `CloseSession` while a
+successfully triggered camera-side conversion has not produced stable object
+handles. A fully framed non-OK response does not poison the session;
+`DeviceBusy` is retried only by the bounded read-only render polling loop.
 
 ## Input Helpers
 

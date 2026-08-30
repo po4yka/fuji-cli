@@ -9,7 +9,7 @@ use log::debug;
 
 use crate::{
     features::{backup::artifact::BackupArtifact, base::CameraBase},
-    ptp::{CommandCode, ObjectFormat, ObjectInfo, Ptp},
+    ptp::{CommandCode, ObjectFormat, ObjectInfo, Ptp, PtpOperation},
 };
 
 pub const OBJECT_HANDLE: [u32; 1] = [0x0];
@@ -79,7 +79,8 @@ trait BackupExportTransport {
 
 impl BackupTransport for Ptp {
     fn send_object_info(&mut self, object_info: &[u8]) -> anyhow::Result<()> {
-        self.send(
+        self.send_for_operation(
+            PtpOperation::CameraProcessing,
             CommandCode::SendObjectInfo,
             &IMPORT_OBJECT_INFO_HANDLE,
             Some(object_info),
@@ -88,7 +89,12 @@ impl BackupTransport for Ptp {
     }
 
     fn send_object_data(&mut self, buffer: &[u8]) -> anyhow::Result<()> {
-        self.send(CommandCode::SendObject, &OBJECT_HANDLE, Some(buffer))?;
+        self.send_for_operation(
+            PtpOperation::LargeTransfer,
+            CommandCode::SendObject,
+            &OBJECT_HANDLE,
+            Some(buffer),
+        )?;
         Ok(())
     }
 }
@@ -99,7 +105,12 @@ impl BackupExportTransport for Ptp {
     }
 
     fn get_object_data(&mut self) -> anyhow::Result<Vec<u8>> {
-        self.send(CommandCode::GetObject, &OBJECT_HANDLE, None)
+        self.send_for_operation(
+            PtpOperation::LargeTransfer,
+            CommandCode::GetObject,
+            &OBJECT_HANDLE,
+            None,
+        )
     }
 }
 

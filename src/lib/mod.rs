@@ -226,6 +226,7 @@ impl Camera {
             transaction_id,
             chunk_size,
             poisoned: false,
+            camera_processing_active: false,
             mutation_authorization: None,
         };
 
@@ -287,7 +288,8 @@ impl Camera {
             &features::backup::EXPORT_OBJECT_INFO_HANDLE,
             None,
         )?;
-        self.ptp.send(
+        self.ptp.send_for_operation(
+            ptp::PtpOperation::LargeTransfer,
             ptp::CommandCode::GetObject,
             &features::backup::OBJECT_HANDLE,
             None,
@@ -295,9 +297,18 @@ impl Camera {
     }
 
     pub fn close(mut self) -> anyhow::Result<()> {
+        ensure_session_safe_to_close(self.ptp.is_healthy())?;
         self.session_open = false;
         self.ptp.close_session(SESSION)
     }
+}
+
+fn ensure_session_safe_to_close(is_healthy: bool) -> anyhow::Result<()> {
+    ensure!(
+        is_healthy,
+        "refusing CloseSession because the PTP stream or camera processing state is unsafe"
+    );
+    Ok(())
 }
 
 impl Drop for Camera {

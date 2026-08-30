@@ -3,7 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use super::{CameraMode, best_effort_close_session, resolve_camera};
+use super::{CameraMode, best_effort_close_session, ensure_session_safe_to_close, resolve_camera};
 use crate::policy::{
     EmulationAcknowledgement, LogicalCameraIdentity, ModelBindingKind, PhysicalUsbIdentity,
 };
@@ -39,6 +39,14 @@ fn explicitly_closed_camera_is_not_closed_again_by_drop() {
     });
 
     assert!(!close_called.into_inner());
+}
+
+#[test]
+fn explicit_close_is_rejected_while_the_ptp_session_is_unsafe() {
+    let error = ensure_session_safe_to_close(false)
+        .expect_err("CloseSession must not be sent while camera processing may still be active");
+
+    assert!(error.to_string().contains("refusing CloseSession"));
 }
 
 #[test]

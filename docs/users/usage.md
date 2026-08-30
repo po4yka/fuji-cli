@@ -120,6 +120,11 @@ error: the camera state is unknown. A successful command means that the PTP
 restore operation was accepted, not that post-reboot persistence was
 independently verified.
 
+Restore and export use large-transfer timing: byte progress may extend the
+data phase up to a fifteen-minute hard cap, and a fully uploaded restore may
+wait up to ten minutes for its final camera response. A ten-second USB slice is
+not reported as a failed restore while the operation-specific deadline remains.
+
 File exports are written to a temporary file in the destination directory,
 synced, and atomically renamed only after the complete output is available. If
 the process is forcibly interrupted, the previous destination remains intact;
@@ -225,6 +230,13 @@ fujicli image recover --delete-after-save \
 The render command always layers in this order: simulation source (slot or
 file), then any inline `--<field>` overrides. Fields your CLI flags don't set
 are pulled from the camera's current state.
+
+RAF upload and rendered-JPEG fetch use progress-aware large-transfer timing.
+After the conversion trigger, framed `DeviceBusy` responses from handle polling
+are retried with bounded backoff inside the five-minute render deadline. If that
+deadline expires before stable handles are observed, the camera may still be
+processing: the CLI retains every observed handle, suppresses automatic session
+close, and does not replay the trigger or delete a possible result.
 
 Before backup restore, simulation access/write, or RAW conversion, the CLI
 checks the physical USB identity, exact PTP identity and serial, firmware

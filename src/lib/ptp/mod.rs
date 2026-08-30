@@ -13,8 +13,10 @@ pub use structs::*;
 pub(crate) use descriptor::*;
 
 use std::{
+    cell::Cell,
     cmp::min,
     collections::{BTreeMap, BTreeSet},
+    fmt,
     io::Cursor,
     time::{Duration, Instant},
 };
@@ -26,8 +28,102 @@ use rusb::GlobalContext;
 
 const PTP_BULK_TIMEOUT: Duration = Duration::from_secs(10);
 const MIN_PTP_BULK_TIMEOUT: Duration = Duration::from_millis(1);
+const PTP_COMMAND_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+const PTP_DATA_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+const PTP_STANDARD_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
+const PTP_CAMERA_PROCESSING_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+const PTP_LARGE_TRANSFER_RESPONSE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const PTP_TRANSACTION_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+const PTP_LARGE_TRANSFER_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 pub const MAX_PTP_CONTAINER_PAYLOAD_BYTES: usize = 128 * 1024 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PtpOperation {
+    Standard,
+    LargeTransfer,
+    CameraProcessing,
+    Polling,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PtpDeadlinePhase {
+    Transaction,
+    CommandWrite,
+    DataTransfer,
+    Response,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PtpDeadlineKind {
+    Idle,
+    Hard,
+}
+
+#[derive(Debug)]
+struct PtpDeadlineExceeded {
+    phase: PtpDeadlinePhase,
+    kind: PtpDeadlineKind,
+}
+
+impl fmt::Display for PtpDeadlineExceeded {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let phase = match self.phase {
+            PtpDeadlinePhase::Transaction => "transaction",
+            PtpDeadlinePhase::CommandWrite => "command-write",
+            PtpDeadlinePhase::DataTransfer => "data-transfer",
+            PtpDeadlinePhase::Response => "response",
+        };
+        let kind = match self.kind {
+            PtpDeadlineKind::Idle => "idle",
+            PtpDeadlineKind::Hard => "hard",
+        };
+        write!(
+            formatter,
+            "PTP transaction deadline exceeded (phase={phase}, kind={kind})"
+        )
+    }
+}
+
+impl std::error::Error for PtpDeadlineExceeded {}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PtpTimeoutPolicy {
+    command_idle_timeout: Duration,
+    data_idle_timeout: Duration,
+    response_timeout: Duration,
+    transaction_timeout: Duration,
+}
+
+impl PtpOperation {
+    const fn timeout_policy(self) -> PtpTimeoutPolicy {
+        match self {
+            Self::Standard => PtpTimeoutPolicy {
+                command_idle_timeout: PTP_COMMAND_IDLE_TIMEOUT,
+                data_idle_timeout: PTP_DATA_IDLE_TIMEOUT,
+                response_timeout: PTP_STANDARD_RESPONSE_TIMEOUT,
+                transaction_timeout: PTP_TRANSACTION_TIMEOUT,
+            },
+            Self::LargeTransfer => PtpTimeoutPolicy {
+                command_idle_timeout: PTP_COMMAND_IDLE_TIMEOUT,
+                data_idle_timeout: PTP_DATA_IDLE_TIMEOUT,
+                response_timeout: PTP_LARGE_TRANSFER_RESPONSE_TIMEOUT,
+                transaction_timeout: PTP_LARGE_TRANSFER_TIMEOUT,
+            },
+            Self::CameraProcessing => PtpTimeoutPolicy {
+                command_idle_timeout: PTP_COMMAND_IDLE_TIMEOUT,
+                data_idle_timeout: PTP_DATA_IDLE_TIMEOUT,
+                response_timeout: PTP_CAMERA_PROCESSING_RESPONSE_TIMEOUT,
+                transaction_timeout: PTP_TRANSACTION_TIMEOUT,
+            },
+            Self::Polling => PtpTimeoutPolicy {
+                command_idle_timeout: PTP_COMMAND_IDLE_TIMEOUT,
+                data_idle_timeout: PTP_DATA_IDLE_TIMEOUT,
+                response_timeout: PTP_LARGE_TRANSFER_RESPONSE_TIMEOUT,
+                transaction_timeout: PTP_LARGE_TRANSFER_TIMEOUT,
+            },
+        }
+    }
+}
 
 trait BulkTransport {
     fn read_bulk(&self, endpoint: u8, buf: &mut [u8], timeout: Duration) -> rusb::Result<usize>;
@@ -49,7 +145,10 @@ impl Clock for SystemClock {
 
 struct Deadline<'a, C> {
     clock: &'a C,
-    expires_at: Instant,
+    expires_at: Cell<Instant>,
+    hard_expires_at: Instant,
+    progress_timeout: Option<Duration>,
+    phase: PtpDeadlinePhase,
 }
 
 impl<'a, C: Clock> Deadline<'a, C> {
@@ -58,26 +157,80 @@ impl<'a, C: Clock> Deadline<'a, C> {
             .now()
             .checked_add(timeout)
             .ok_or_else(|| anyhow!("PTP transaction deadline overflow"))?;
-        Ok(Self { clock, expires_at })
-    }
-
-    fn until(clock: &'a C, expires_at: Instant) -> anyhow::Result<Self> {
-        let transaction_expires_at = clock
-            .now()
-            .checked_add(PTP_TRANSACTION_TIMEOUT)
-            .ok_or_else(|| anyhow!("PTP transaction deadline overflow"))?;
         Ok(Self {
             clock,
-            expires_at: min(expires_at, transaction_expires_at),
+            expires_at: Cell::new(expires_at),
+            hard_expires_at: expires_at,
+            progress_timeout: None,
+            phase: PtpDeadlinePhase::Transaction,
         })
     }
 
+    fn until(clock: &'a C, expires_at: Instant) -> anyhow::Result<Self> {
+        Ok(Self {
+            clock,
+            expires_at: Cell::new(expires_at),
+            hard_expires_at: expires_at,
+            progress_timeout: None,
+            phase: PtpDeadlinePhase::Transaction,
+        })
+    }
+
+    fn with_idle_timeout(
+        clock: &'a C,
+        hard_expires_at: Instant,
+        idle_timeout: Duration,
+    ) -> anyhow::Result<Self> {
+        let expires_at = clock
+            .now()
+            .checked_add(idle_timeout)
+            .ok_or_else(|| anyhow!("PTP transfer idle deadline overflow"))?;
+        Ok(Self {
+            clock,
+            expires_at: Cell::new(min(expires_at, hard_expires_at)),
+            hard_expires_at,
+            progress_timeout: Some(idle_timeout),
+            phase: PtpDeadlinePhase::DataTransfer,
+        })
+    }
+
+    fn record_progress(&self) -> anyhow::Result<()> {
+        let Some(progress_timeout) = self.progress_timeout else {
+            return Ok(());
+        };
+        let expires_at = self
+            .clock
+            .now()
+            .checked_add(progress_timeout)
+            .ok_or_else(|| anyhow!("PTP transfer idle deadline overflow"))?;
+        self.expires_at.set(min(expires_at, self.hard_expires_at));
+        Ok(())
+    }
+
+    fn phase(&self, phase: PtpDeadlinePhase, idle_timeout: Duration) -> anyhow::Result<Self> {
+        let mut deadline = Self::with_idle_timeout(self.clock, self.hard_expires_at, idle_timeout)?;
+        deadline.phase = phase;
+        Ok(deadline)
+    }
+
     fn io_timeout(&self) -> anyhow::Result<Duration> {
-        let remaining = self.expires_at.saturating_duration_since(self.clock.now());
-        ensure!(
-            remaining >= MIN_PTP_BULK_TIMEOUT,
-            "PTP transaction deadline exceeded"
-        );
+        let now = self.clock.now();
+        let hard_remaining = self.hard_expires_at.saturating_duration_since(now);
+        if hard_remaining < MIN_PTP_BULK_TIMEOUT {
+            return Err(PtpDeadlineExceeded {
+                phase: self.phase,
+                kind: PtpDeadlineKind::Hard,
+            }
+            .into());
+        }
+        let remaining = self.expires_at.get().saturating_duration_since(now);
+        if remaining < MIN_PTP_BULK_TIMEOUT {
+            return Err(PtpDeadlineExceeded {
+                phase: self.phase,
+                kind: PtpDeadlineKind::Idle,
+            }
+            .into());
+        }
         Ok(min(PTP_BULK_TIMEOUT, remaining))
     }
 }
@@ -102,6 +255,7 @@ pub struct Ptp {
     pub(crate) transaction_id: u32,
     pub(crate) chunk_size: usize,
     pub(crate) poisoned: bool,
+    pub(crate) camera_processing_active: bool,
     pub(crate) mutation_authorization: Option<MutationAuthorization>,
 }
 
@@ -193,7 +347,19 @@ impl MutationAuthorization {
 
 impl Ptp {
     pub(crate) fn is_healthy(&self) -> bool {
-        !self.poisoned && self.transaction_id != u32::MAX
+        session_is_safe_to_close(
+            self.poisoned,
+            self.transaction_id,
+            self.camera_processing_active,
+        )
+    }
+
+    pub(crate) fn mark_camera_processing_active(&mut self) {
+        self.camera_processing_active = true;
+    }
+
+    pub(crate) fn mark_camera_processing_complete(&mut self) {
+        self.camera_processing_active = false;
     }
 
     pub(crate) fn send(
@@ -202,8 +368,18 @@ impl Ptp {
         params: &[u32],
         data: Option<&[u8]>,
     ) -> anyhow::Result<Vec<u8>> {
+        self.send_for_operation(PtpOperation::Standard, code, params, data)
+    }
+
+    pub(crate) fn send_for_operation(
+        &mut self,
+        operation: PtpOperation,
+        code: CommandCode,
+        params: &[u32],
+        data: Option<&[u8]>,
+    ) -> anyhow::Result<Vec<u8>> {
         self.validate_mutation(code, params, data)?;
-        let response = send_with_transport(
+        let response = send_with_transport_for_operation(
             &self.handle,
             self.bulk_in,
             self.bulk_out,
@@ -213,6 +389,7 @@ impl Ptp {
             code,
             params,
             data,
+            operation,
         )?;
         trace!("PTP tx complete with response length {}", response.len());
 
@@ -323,6 +500,26 @@ impl Ptp {
         Ok(())
     }
 
+    pub(crate) fn set_prop_for_operation<T>(
+        &mut self,
+        operation: PtpOperation,
+        code: impl Into<u16>,
+        value: &T,
+    ) -> anyhow::Result<()>
+    where
+        T: for<'a> BinWrite<Args<'a> = ()>,
+    {
+        let prop = code.into();
+        let bytes = codec::encode(value)?;
+        self.send_for_operation(
+            operation,
+            CommandCode::SetDevicePropValue,
+            &[u32::from(prop)],
+            Some(&bytes),
+        )?;
+        Ok(())
+    }
+
     pub(crate) fn authorize_mutations(
         &mut self,
         operations: &[u16],
@@ -399,6 +596,14 @@ impl Ptp {
     }
 }
 
+fn session_is_safe_to_close(
+    poisoned: bool,
+    transaction_id: u32,
+    camera_processing_active: bool,
+) -> bool {
+    !poisoned && transaction_id != u32::MAX && !camera_processing_active
+}
+
 const fn is_mutating_command(code: CommandCode) -> bool {
     matches!(
         code,
@@ -426,6 +631,7 @@ fn validate_mutation_authorization(
     clippy::too_many_arguments,
     reason = "the transport call mirrors the PTP endpoint and transaction tuple"
 )]
+#[cfg(test)]
 fn send_with_transport<T: BulkTransport>(
     transport: &T,
     bulk_in: u8,
@@ -453,8 +659,40 @@ fn send_with_transport<T: BulkTransport>(
 
 #[expect(
     clippy::too_many_arguments,
+    reason = "the transport call mirrors the PTP endpoint, transaction, and operation tuple"
+)]
+fn send_with_transport_for_operation<T: BulkTransport>(
+    transport: &T,
+    bulk_in: u8,
+    bulk_out: u8,
+    chunk_size: usize,
+    transaction_id: &mut u32,
+    poisoned: &mut bool,
+    code: CommandCode,
+    params: &[u32],
+    data: Option<&[u8]>,
+    operation: PtpOperation,
+) -> anyhow::Result<Vec<u8>> {
+    send_with_transport_for_operation_and_clock(
+        transport,
+        bulk_in,
+        bulk_out,
+        chunk_size,
+        transaction_id,
+        poisoned,
+        code,
+        params,
+        data,
+        operation,
+        &SystemClock,
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
     reason = "the transport call mirrors the PTP endpoint, transaction, and clock tuple"
 )]
+#[cfg(test)]
 fn send_with_transport_and_clock<T: BulkTransport, C: Clock>(
     transport: &T,
     bulk_in: u8,
@@ -467,7 +705,40 @@ fn send_with_transport_and_clock<T: BulkTransport, C: Clock>(
     data: Option<&[u8]>,
     clock: &C,
 ) -> anyhow::Result<Vec<u8>> {
-    let deadline = Deadline::new(clock, PTP_TRANSACTION_TIMEOUT)?;
+    send_with_transport_for_operation_and_clock(
+        transport,
+        bulk_in,
+        bulk_out,
+        chunk_size,
+        transaction_id,
+        poisoned,
+        code,
+        params,
+        data,
+        PtpOperation::Standard,
+        clock,
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the transport test seam keeps the operation class and PTP tuple explicit"
+)]
+fn send_with_transport_for_operation_and_clock<T: BulkTransport, C: Clock>(
+    transport: &T,
+    bulk_in: u8,
+    bulk_out: u8,
+    chunk_size: usize,
+    transaction_id: &mut u32,
+    poisoned: &mut bool,
+    code: CommandCode,
+    params: &[u32],
+    data: Option<&[u8]>,
+    operation: PtpOperation,
+    clock: &C,
+) -> anyhow::Result<Vec<u8>> {
+    let policy = operation.timeout_policy();
+    let deadline = Deadline::new(clock, policy.transaction_timeout)?;
     send_with_transport_and_deadline(
         transport,
         bulk_in,
@@ -479,6 +750,7 @@ fn send_with_transport_and_clock<T: BulkTransport, C: Clock>(
         params,
         data,
         deadline,
+        policy,
     )
 }
 
@@ -542,6 +814,7 @@ fn send_with_transport_until_and_clock<T: BulkTransport, C: Clock>(
         params,
         data,
         deadline,
+        PtpOperation::Polling.timeout_policy(),
     )
 }
 
@@ -560,6 +833,7 @@ fn send_with_transport_and_deadline<T: BulkTransport, C: Clock>(
     params: &[u32],
     data: Option<&[u8]>,
     deadline: Deadline<'_, C>,
+    policy: PtpTimeoutPolicy,
 ) -> anyhow::Result<Vec<u8>> {
     ensure!(
         !*poisoned,
@@ -578,7 +852,9 @@ fn send_with_transport_and_deadline<T: BulkTransport, C: Clock>(
 
     let payload = encode_command_params(params)?;
 
-    let mut command_write_attempted = false;
+    let mut command_dispatched_or_ambiguous = false;
+    let command_deadline =
+        deadline.phase(PtpDeadlinePhase::CommandWrite, policy.command_idle_timeout)?;
     let command_result = write_container(
         transport,
         bulk_out,
@@ -587,14 +863,14 @@ fn send_with_transport_and_deadline<T: BulkTransport, C: Clock>(
         code,
         &payload,
         current_transaction_id,
-        &deadline,
-        &mut command_write_attempted,
+        &command_deadline,
+        &mut command_dispatched_or_ambiguous,
     );
-    if command_write_attempted {
+    if command_dispatched_or_ambiguous {
         *transaction_id = current_transaction_id + 1;
     }
     if let Err(error) = command_result {
-        if command_write_attempted {
+        if command_dispatched_or_ambiguous {
             *poisoned = true;
         }
         let context =
@@ -602,8 +878,10 @@ fn send_with_transport_and_deadline<T: BulkTransport, C: Clock>(
         return Err(error).context(context);
     }
 
-    if let Some(data) = data
-        && let Err(error) = write_container(
+    if let Some(data) = data {
+        let data_deadline =
+            deadline.phase(PtpDeadlinePhase::DataTransfer, policy.data_idle_timeout)?;
+        if let Err(error) = write_container(
             transport,
             bulk_out,
             chunk_size,
@@ -611,21 +889,29 @@ fn send_with_transport_and_deadline<T: BulkTransport, C: Clock>(
             code,
             data,
             current_transaction_id,
-            &deadline,
-            &mut command_write_attempted,
-        )
-    {
-        *poisoned = true;
-        let context =
-            format!("PTP {code:?} tx={current_transaction_id} data write failed: {error}");
-        return Err(error).context(context);
+            &data_deadline,
+            &mut command_dispatched_or_ambiguous,
+        ) {
+            *poisoned = true;
+            let context =
+                format!("PTP {code:?} tx={current_transaction_id} data write failed: {error}");
+            return Err(error).context(context);
+        }
     }
 
     let result = (|| {
         let mut response = None;
         loop {
+            let response_deadline =
+                deadline.phase(PtpDeadlinePhase::Response, policy.response_timeout)?;
+            let data_deadline =
+                deadline.phase(PtpDeadlinePhase::DataTransfer, policy.data_idle_timeout)?;
             let (container, payload) = read_container_with_deadline(
-                transport, bulk_in, chunk_size, &deadline,
+                transport,
+                bulk_in,
+                chunk_size,
+                &response_deadline,
+                Some(&data_deadline),
             )
             .map_err(|error| {
                 let context = format!(
@@ -709,7 +995,7 @@ fn write_container<T: BulkTransport, C: Clock>(
     payload: &[u8],
     transaction_id: u32,
     deadline: &Deadline<'_, C>,
-    write_attempted: &mut bool,
+    dispatched_or_ambiguous: &mut bool,
 ) -> anyhow::Result<()> {
     ensure!(
         chunk_size > ContainerInfo::SIZE,
@@ -734,9 +1020,21 @@ fn write_container<T: BulkTransport, C: Clock>(
     let mut first_chunk = writer.into_inner();
     first_chunk.extend_from_slice(&payload[..first_payload_len]);
 
-    write_all_bulk(transport, bulk_out, &first_chunk, deadline, write_attempted)?;
+    write_all_bulk(
+        transport,
+        bulk_out,
+        &first_chunk,
+        deadline,
+        dispatched_or_ambiguous,
+    )?;
     for chunk in payload[first_payload_len..].chunks(chunk_size) {
-        write_all_bulk(transport, bulk_out, chunk, deadline, write_attempted)?;
+        write_all_bulk(
+            transport,
+            bulk_out,
+            chunk,
+            deadline,
+            dispatched_or_ambiguous,
+        )?;
     }
     Ok(())
 }
@@ -771,17 +1069,26 @@ fn write_all_bulk<T: BulkTransport, C: Clock>(
     bulk_out: u8,
     buffer: &[u8],
     deadline: &Deadline<'_, C>,
-    write_attempted: &mut bool,
+    dispatched_or_ambiguous: &mut bool,
 ) -> anyhow::Result<()> {
     let mut written = 0;
     while written < buffer.len() {
         let timeout = deadline.io_timeout()?;
-        *write_attempted = true;
-        let n = transport.write_bulk(bulk_out, &buffer[written..], timeout)?;
+        let n = match transport.write_bulk(bulk_out, &buffer[written..], timeout) {
+            Ok(n) => n,
+            // rusb reports Timeout as Err only when this call transferred zero bytes, so the
+            // same confirmed offset is safe to continue within the current PTP transaction.
+            Err(rusb::Error::Timeout) => continue,
+            Err(error) => {
+                *dispatched_or_ambiguous = true;
+                return Err(error.into());
+            }
+        };
         ensure!(
             n != 0,
             "PTP bulk write completed without transferring bytes"
         );
+        *dispatched_or_ambiguous = true;
         written = written
             .checked_add(n)
             .ok_or_else(|| anyhow!("PTP bulk write length overflow"))?;
@@ -789,6 +1096,7 @@ fn write_all_bulk<T: BulkTransport, C: Clock>(
             written <= buffer.len(),
             "PTP bulk write exceeded requested length"
         );
+        deadline.record_progress()?;
     }
     Ok(())
 }
@@ -800,7 +1108,7 @@ fn read_container<T: BulkTransport>(
     chunk_size: usize,
 ) -> anyhow::Result<(ContainerInfo, Vec<u8>)> {
     let deadline = Deadline::new(&SystemClock, PTP_TRANSACTION_TIMEOUT)?;
-    read_container_with_deadline(transport, bulk_in, chunk_size, &deadline)
+    read_container_with_deadline(transport, bulk_in, chunk_size, &deadline, None)
 }
 
 fn read_container_with_deadline<T: BulkTransport, C: Clock>(
@@ -808,6 +1116,7 @@ fn read_container_with_deadline<T: BulkTransport, C: Clock>(
     bulk_in: u8,
     chunk_size: usize,
     deadline: &Deadline<'_, C>,
+    payload_deadline: Option<&Deadline<'_, C>>,
 ) -> anyhow::Result<(ContainerInfo, Vec<u8>)> {
     ensure!(
         chunk_size >= ContainerInfo::SIZE,
@@ -820,9 +1129,14 @@ fn read_container_with_deadline<T: BulkTransport, C: Clock>(
     let mut initial = Vec::new();
     reserve_bytes(&mut initial, chunk_size, "PTP initial bulk read")?;
     while initial.len() < ContainerInfo::SIZE {
-        let n = transport.read_bulk(bulk_in, &mut chunk, deadline.io_timeout()?)?;
+        let n = match transport.read_bulk(bulk_in, &mut chunk, deadline.io_timeout()?) {
+            Ok(n) => n,
+            Err(rusb::Error::Timeout) => continue,
+            Err(error) => return Err(error.into()),
+        };
         ensure!(n != 0, "PTP container header is truncated");
         initial.extend_from_slice(&chunk[..n]);
+        deadline.record_progress()?;
     }
 
     let mut cur = Cursor::new(&initial[..ContainerInfo::SIZE]);
@@ -841,13 +1155,23 @@ fn read_container_with_deadline<T: BulkTransport, C: Clock>(
         "PTP payload exceeded its declared length"
     );
     payload.extend_from_slice(initial_payload);
+    let has_separate_payload_deadline = payload_deadline.is_some();
+    let payload_deadline = payload_deadline.unwrap_or(deadline);
+    if has_separate_payload_deadline && payload_len != 0 {
+        payload_deadline.record_progress()?;
+    }
 
     while payload.len() < payload_len {
         let remaining = payload_len - payload.len();
-        let n = transport.read_bulk(bulk_in, &mut chunk, deadline.io_timeout()?)?;
+        let n = match transport.read_bulk(bulk_in, &mut chunk, payload_deadline.io_timeout()?) {
+            Ok(n) => n,
+            Err(rusb::Error::Timeout) => continue,
+            Err(error) => return Err(error.into()),
+        };
         ensure!(n != 0, "PTP payload ended before its declared length");
         ensure!(n <= remaining, "PTP payload exceeded its declared length");
         payload.extend_from_slice(&chunk[..n]);
+        payload_deadline.record_progress()?;
     }
 
     Ok((container_info, payload))
@@ -873,10 +1197,12 @@ mod tests {
         BulkTransport, Clock, CommandCode, ContainerCode, ContainerInfo, ContainerType, Deadline,
         DevicePropDataType, DevicePropDesc, DevicePropForm, DevicePropValue,
         MAX_PTP_CONTAINER_PAYLOAD_BYTES, MutationAuthorization, PTP_BULK_TIMEOUT,
-        PTP_TRANSACTION_TIMEOUT, ResponseCode, encode_command_params, read_container,
+        PTP_DATA_IDLE_TIMEOUT, PTP_TRANSACTION_TIMEOUT, PtpDeadlineExceeded, PtpDeadlineKind,
+        PtpDeadlinePhase, PtpOperation, ResponseCode, encode_command_params, read_container,
         read_container_with_deadline, send_with_transport, send_with_transport_and_clock,
-        send_with_transport_until_and_clock, validate_bulk_read_geometry,
-        validate_mutation_authorization, write_container,
+        send_with_transport_for_operation_and_clock, send_with_transport_until_and_clock,
+        session_is_safe_to_close, validate_bulk_read_geometry, validate_mutation_authorization,
+        write_all_bulk, write_container,
     };
 
     const EMPTY_CAPABILITY_PROFILE: crate::generated::cameras::CameraFirmwareCapabilityProfile =
@@ -895,6 +1221,14 @@ mod tests {
                 fields: &["field"],
             }),
         };
+
+    #[test]
+    fn healthy_session_with_camera_processing_in_flight_is_not_safe_to_close() {
+        assert!(
+            !session_is_safe_to_close(false, 1, true),
+            "unfinished camera-side processing must suppress automatic CloseSession"
+        );
+    }
 
     #[test]
     fn state_changing_ptp_command_requires_preflight_authorization() {
@@ -1002,7 +1336,7 @@ mod tests {
 
     #[derive(Default)]
     struct FakeBulkTransport {
-        read_errors: RefCell<VecDeque<rusb::Error>>,
+        read_errors: RefCell<VecDeque<Option<rusb::Error>>>,
         reads: RefCell<VecDeque<Vec<u8>>>,
         write_errors: RefCell<VecDeque<Option<rusb::Error>>>,
         write_lengths: RefCell<VecDeque<usize>>,
@@ -1027,7 +1361,7 @@ mod tests {
             timeout: std::time::Duration,
         ) -> rusb::Result<usize> {
             self.timeouts.borrow_mut().push(timeout);
-            if let Some(error) = self.read_errors.borrow_mut().pop_front() {
+            if let Some(Some(error)) = self.read_errors.borrow_mut().pop_front() {
                 return Err(error);
             }
             let next = self.reads.borrow_mut().pop_front().unwrap_or_default();
@@ -1129,7 +1463,7 @@ mod tests {
                 FailurePhase::ResponseRead => transport
                     .read_errors
                     .borrow_mut()
-                    .push_back(rusb::Error::NoDevice),
+                    .push_back(Some(rusb::Error::NoDevice)),
             }
             let mut transaction_id = 29;
             let mut poisoned = false;
@@ -1163,6 +1497,44 @@ mod tests {
             failures.is_empty(),
             "PTP transport errors lacked safe operation context or exposed payload:\n{}",
             failures.join("\n")
+        );
+    }
+
+    #[test]
+    fn response_timeout_before_deadline_keeps_waiting_without_poisoning_session() {
+        let response = container(
+            ContainerType::Response,
+            ContainerCode::Response(ResponseCode::Ok),
+            0,
+            &[],
+        );
+        let transport = FakeBulkTransport::with_reads([response]);
+        transport
+            .read_errors
+            .borrow_mut()
+            .push_back(Some(rusb::Error::Timeout));
+        let mut transaction_id = 0;
+        let mut poisoned = false;
+
+        let result = send_with_transport(
+            &transport,
+            0x81,
+            0x02,
+            1024,
+            &mut transaction_id,
+            &mut poisoned,
+            CommandCode::GetDeviceInfo,
+            &[],
+            None,
+        );
+
+        assert!(
+            result.is_ok(),
+            "a zero-byte USB timeout before the response deadline must keep waiting: {result:?}"
+        );
+        assert!(
+            !poisoned,
+            "a recovered response wait must keep the session healthy"
         );
     }
 
@@ -1219,8 +1591,9 @@ mod tests {
             let deadline = Deadline::new(&clock, PTP_TRANSACTION_TIMEOUT)
                 .expect("test deadline must be representable");
 
-            let (header, payload) = read_container_with_deadline(&transport, 0x81, 1024, &deadline)
-                .expect("fragmented header must be assembled");
+            let (header, payload) =
+                read_container_with_deadline(&transport, 0x81, 1024, &deadline, None)
+                    .expect("fragmented header must be assembled");
 
             assert_eq!(header.transaction_id, 7, "split at {split_at}");
             assert!(payload.is_empty(), "split at {split_at}");
@@ -1466,6 +1839,12 @@ mod tests {
             start,
             start,
             start,
+            start,
+            start,
+            start,
+            start,
+            start,
+            start,
             start + PTP_TRANSACTION_TIMEOUT + Duration::from_millis(1),
         ]);
         let mut transaction_id = 0;
@@ -1503,7 +1882,14 @@ mod tests {
         );
         let transport = FakeBulkTransport::with_reads([response]);
         let start = Instant::now();
-        let clock = FakeClock::new([start, start, start + Duration::from_secs(2)]);
+        let clock = FakeClock::new([
+            start,
+            start,
+            start,
+            start,
+            start,
+            start + Duration::from_secs(2),
+        ]);
         let mut transaction_id = 0;
         let mut poisoned = false;
 
@@ -1525,6 +1911,97 @@ mod tests {
         assert!(error.to_string().contains("transaction deadline exceeded"));
         assert_eq!(transport.writes.borrow().len(), 1);
         assert!(poisoned);
+    }
+
+    #[test]
+    fn supplied_operation_deadline_later_than_default_remains_effective() {
+        let response = container(
+            ContainerType::Response,
+            ContainerCode::Response(ResponseCode::Ok),
+            0,
+            &[],
+        );
+        let transport = FakeBulkTransport::with_reads([response]);
+        let start = Instant::now();
+        let delayed_response = start + PTP_TRANSACTION_TIMEOUT + Duration::from_secs(1);
+        let clock = FakeClock::new([
+            start,
+            start,
+            start,
+            start,
+            start,
+            delayed_response,
+            delayed_response,
+        ]);
+        let mut transaction_id = 0;
+        let mut poisoned = false;
+
+        let result = send_with_transport_until_and_clock(
+            &transport,
+            0x81,
+            0x02,
+            1024,
+            &mut transaction_id,
+            &mut poisoned,
+            CommandCode::GetDeviceInfo,
+            &[],
+            None,
+            start + PTP_TRANSACTION_TIMEOUT + Duration::from_secs(60),
+            &clock,
+        );
+
+        assert!(
+            result.is_ok(),
+            "the supplied operation deadline must remain effective beyond the legacy default: {result:?}"
+        );
+        assert!(
+            !poisoned,
+            "a response before the operation deadline must keep the session healthy"
+        );
+    }
+
+    #[test]
+    fn large_transfer_accepts_response_after_legacy_transaction_deadline() {
+        let response = container(
+            ContainerType::Response,
+            ContainerCode::Response(ResponseCode::Ok),
+            0,
+            &[],
+        );
+        let transport = FakeBulkTransport::with_reads([response]);
+        let start = Instant::now();
+        let delayed_response = start + PTP_TRANSACTION_TIMEOUT + Duration::from_secs(1);
+        let clock = FakeClock::new([
+            start,
+            start,
+            start,
+            start,
+            start,
+            start,
+            delayed_response,
+            delayed_response,
+        ]);
+        let mut transaction_id = 0;
+        let mut poisoned = false;
+
+        let result = send_with_transport_for_operation_and_clock(
+            &transport,
+            0x81,
+            0x02,
+            1024,
+            &mut transaction_id,
+            &mut poisoned,
+            CommandCode::GetDeviceInfo,
+            &[],
+            None,
+            PtpOperation::LargeTransfer,
+            &clock,
+        );
+
+        assert!(
+            result.is_ok(),
+            "LargeTransfer must keep waiting beyond the legacy transaction deadline: {result:?}"
+        );
     }
 
     #[test]
@@ -1668,6 +2145,199 @@ mod tests {
                 .borrow()
                 .iter()
                 .all(|timeout| *timeout == PTP_BULK_TIMEOUT)
+        );
+    }
+
+    #[test]
+    fn zero_byte_write_timeout_before_idle_deadline_retries_same_offset() {
+        let response = container(
+            ContainerType::Response,
+            ContainerCode::Response(ResponseCode::Ok),
+            0,
+            &[],
+        );
+        let transport = FakeBulkTransport::with_reads([response]);
+        transport
+            .write_errors
+            .borrow_mut()
+            .extend([Some(rusb::Error::Timeout), None]);
+        let mut transaction_id = 0;
+        let mut poisoned = false;
+
+        let result = send_with_transport(
+            &transport,
+            0x81,
+            0x02,
+            1024,
+            &mut transaction_id,
+            &mut poisoned,
+            CommandCode::GetDeviceInfo,
+            &[],
+            None,
+        );
+
+        assert!(
+            result.is_ok(),
+            "a zero-byte write timeout before the idle deadline must retry the same offset: {result:?}"
+        );
+        assert_eq!(transaction_id, 1);
+        assert_eq!(
+            transport.writes.borrow().len(),
+            1,
+            "the PTP command must not be replayed after a zero-byte timeout"
+        );
+        assert!(!poisoned);
+    }
+
+    #[test]
+    fn zero_byte_write_timeouts_until_idle_deadline_remain_pre_dispatch() {
+        let transport = FakeBulkTransport::default();
+        transport
+            .write_errors
+            .borrow_mut()
+            .push_back(Some(rusb::Error::Timeout));
+        let start = Instant::now();
+        let clock = FakeClock::new([start, start, start + Duration::from_secs(11)]);
+        let deadline = Deadline::with_idle_timeout(
+            &clock,
+            start + Duration::from_secs(30),
+            Duration::from_secs(10),
+        )
+        .expect("idle deadline must be representable");
+        let mut dispatched_or_ambiguous = false;
+
+        let error = write_all_bulk(
+            &transport,
+            0x02,
+            &[0xAA],
+            &deadline,
+            &mut dispatched_or_ambiguous,
+        )
+        .expect_err("a run of zero-byte timeouts must stop at the idle deadline");
+
+        assert!(error.to_string().contains("deadline exceeded"));
+        assert!(
+            !dispatched_or_ambiguous,
+            "rusb Timeout confirms that this write call transferred zero bytes"
+        );
+    }
+
+    #[test]
+    fn idle_deadline_error_identifies_transfer_phase_and_kind() {
+        let start = Instant::now();
+        let clock = FakeClock::new([start, start + Duration::from_secs(11)]);
+        let deadline = Deadline::with_idle_timeout(
+            &clock,
+            start + Duration::from_secs(30),
+            Duration::from_secs(10),
+        )
+        .expect("idle deadline must be representable");
+
+        let error = deadline
+            .io_timeout()
+            .expect_err("expired idle deadline must be classified");
+        let deadline_error = error
+            .downcast_ref::<PtpDeadlineExceeded>()
+            .expect("deadline expiry must retain a typed cause");
+
+        assert_eq!(deadline_error.phase, PtpDeadlinePhase::DataTransfer);
+        assert_eq!(deadline_error.kind, PtpDeadlineKind::Idle);
+    }
+
+    #[test]
+    fn partial_write_progress_refreshes_idle_deadline_before_next_write() {
+        let transport = FakeBulkTransport::default();
+        transport.write_lengths.borrow_mut().extend([3, 3]);
+        let start = Instant::now();
+        let clock = FakeClock::new([
+            start,
+            start + Duration::from_secs(9),
+            start + Duration::from_secs(11),
+            start + Duration::from_secs(12),
+            start + Duration::from_secs(12),
+        ]);
+        let deadline = Deadline::with_idle_timeout(
+            &clock,
+            start + Duration::from_secs(30),
+            Duration::from_secs(10),
+        )
+        .expect("idle deadline must be representable");
+        let mut write_attempted = false;
+
+        let result = write_all_bulk(
+            &transport,
+            0x02,
+            &[0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF],
+            &deadline,
+            &mut write_attempted,
+        );
+
+        assert!(
+            result.is_ok(),
+            "confirmed partial-write progress must refresh the idle deadline: {result:?}"
+        );
+    }
+
+    #[test]
+    fn large_inbound_payload_stops_after_data_idle_deadline_without_progress() {
+        let data = container(
+            ContainerType::Data,
+            ContainerCode::Command(CommandCode::GetObject),
+            0,
+            &[0xAA],
+        );
+        let response = container(
+            ContainerType::Response,
+            ContainerCode::Response(ResponseCode::Ok),
+            0,
+            &[],
+        );
+        let transport = FakeBulkTransport::with_reads([
+            data[..ContainerInfo::SIZE].to_vec(),
+            data[ContainerInfo::SIZE..].to_vec(),
+            response,
+        ]);
+        transport
+            .read_errors
+            .borrow_mut()
+            .extend([None, Some(rusb::Error::Timeout)]);
+        let start = Instant::now();
+        let stalled = start + PTP_DATA_IDLE_TIMEOUT + Duration::from_secs(1);
+        let clock = FakeClock::new([
+            start,
+            start,
+            start,
+            start,
+            start,
+            start,
+            start,
+            start,
+            start,
+            start + Duration::from_secs(1),
+            stalled,
+        ]);
+        let mut transaction_id = 0;
+        let mut poisoned = false;
+
+        let error = send_with_transport_for_operation_and_clock(
+            &transport,
+            0x81,
+            0x02,
+            1024,
+            &mut transaction_id,
+            &mut poisoned,
+            CommandCode::GetObject,
+            &[1],
+            None,
+            PtpOperation::LargeTransfer,
+            &clock,
+        )
+        .expect_err("an inbound payload with no byte progress must hit the data idle deadline");
+
+        assert!(error.to_string().contains("deadline exceeded"));
+        assert!(
+            poisoned,
+            "an interrupted inbound container must poison the session"
         );
     }
 

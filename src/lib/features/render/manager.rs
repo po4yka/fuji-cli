@@ -6,7 +6,7 @@ use std::{
 use crate::{
     features::base::CameraBase,
     generated::renders::RenderBase,
-    ptp::{CommandCode, DevicePropCode, ObjectFormat, ObjectInfo, Ptp},
+    ptp::{CommandCode, DevicePropCode, ObjectFormat, ObjectInfo, Ptp, PtpOperation},
 };
 use log::debug;
 
@@ -319,6 +319,8 @@ pub fn finish_render_cleanup(
 trait RenderIo {
     fn start_render(&mut self, draft: bool) -> anyhow::Result<()>;
     fn object_handles(&mut self, deadline: Instant) -> anyhow::Result<Vec<u32>>;
+
+    fn mark_processing_complete(&mut self) {}
 }
 
 trait RawProfileIo {
@@ -360,7 +362,13 @@ fn write_profile_verified(io: &mut impl RawProfileIo, value: &[u8]) -> anyhow::R
 
 impl RenderIo for Ptp {
     fn start_render(&mut self, draft: bool) -> anyhow::Result<()> {
-        self.set_prop(DevicePropCode::FujiRawConversionRun, &u16::from(!draft))
+        self.set_prop_for_operation(
+            PtpOperation::CameraProcessing,
+            DevicePropCode::FujiRawConversionRun,
+            &u16::from(!draft),
+        )?;
+        self.mark_camera_processing_active();
+        Ok(())
     }
 
     fn object_handles(&mut self, deadline: Instant) -> anyhow::Result<Vec<u32>> {
@@ -374,6 +382,10 @@ impl RenderIo for Ptp {
             crate::ptp::codec::decode_exact::<crate::ptp::codec::PtpArray<u32>>(&response)?
                 .into_inner(),
         )
+    }
+
+    fn mark_processing_complete(&mut self) {
+        self.mark_camera_processing_complete();
     }
 }
 
@@ -390,7 +402,8 @@ trait RenderUploadIo {
 
 impl RenderUploadIo for Ptp {
     fn send_object_info(&mut self, data: &[u8]) -> anyhow::Result<()> {
-        self.send(
+        self.send_for_operation(
+            PtpOperation::CameraProcessing,
             CommandCode::FujiSendObjectInfo,
             &OUTGOING_OBJECT_HANDLE,
             Some(data),
@@ -399,7 +412,12 @@ impl RenderUploadIo for Ptp {
     }
 
     fn send_object(&mut self, data: &[u8]) -> anyhow::Result<()> {
-        self.send(CommandCode::FujiSendObject, &[], Some(data))?;
+        self.send_for_operation(
+            PtpOperation::LargeTransfer,
+            CommandCode::FujiSendObject,
+            &[],
+            Some(data),
+        )?;
         Ok(())
     }
 }
@@ -424,7 +442,12 @@ impl RenderObjectIo for Ptp {
     }
 
     fn fetch_object(&mut self, handle: u32) -> anyhow::Result<Vec<u8>> {
-        self.send(CommandCode::GetObject, &[handle], None)
+        self.send_for_operation(
+            PtpOperation::LargeTransfer,
+            CommandCode::GetObject,
+            &[handle],
+            None,
+        )
     }
 
     fn delete_object(&mut self, handle: u32) -> anyhow::Result<()> {
@@ -583,6 +606,7 @@ where
         .map_err(|cause| RenderHandleDiscoveryError::new(Vec::new(), cause))?;
 
     let mut previous: Option<Vec<u32>> = None;
+    let mut busy_backoff = Duration::from_millis(100);
     loop {
         let remaining = deadline.saturating_duration_since(now());
         if remaining.is_zero() {
@@ -593,9 +617,28 @@ where
             .into());
         }
 
-        let current = io.object_handles(deadline).map_err(|cause| {
-            RenderHandleDiscoveryError::new(previous.clone().unwrap_or_default(), cause)
-        })?;
+        let current = match io.object_handles(deadline) {
+            Ok(current) => current,
+            Err(cause) if is_device_busy(&cause) => {
+                let remaining = deadline.saturating_duration_since(now());
+                if remaining.is_zero() {
+                    return Err(RenderHandleDiscoveryError::new(
+                        previous.unwrap_or_default(),
+                        anyhow::anyhow!("render deadline exceeded while camera remained busy"),
+                    )
+                    .into());
+                }
+                sleep_between_polls(remaining.min(busy_backoff));
+                busy_backoff = busy_backoff.saturating_mul(2).min(Duration::from_secs(1));
+                continue;
+            }
+            Err(cause) => {
+                return Err(
+                    RenderHandleDiscoveryError::new(previous.unwrap_or_default(), cause).into(),
+                );
+            }
+        };
+        busy_backoff = Duration::from_millis(100);
         let mut delta = current
             .into_iter()
             .filter(|handle| !baseline.contains(handle))
@@ -604,6 +647,7 @@ where
         delta.dedup();
 
         if !delta.is_empty() && previous.as_ref() == Some(&delta) {
+            io.mark_processing_complete();
             return Ok(delta);
         }
         previous = Some(delta);
@@ -618,6 +662,16 @@ where
         }
         sleep_between_polls(remaining.min(Duration::from_millis(100)));
     }
+}
+
+fn is_device_busy(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<crate::ptp::error::Error>(),
+            Some(crate::ptp::error::Error::Response(code))
+                if *code == u16::from(crate::ptp::ResponseCode::DeviceBusy)
+        )
+    })
 }
 
 // NOTE: Naively assuming that all cameras render in a similar way.
@@ -693,6 +747,7 @@ mod tests {
     enum RenderIoCall {
         Start,
         Handles,
+        MarkProcessingComplete,
     }
 
     struct FakeRenderIo {
@@ -744,6 +799,10 @@ mod tests {
             self.handles
                 .pop_front()
                 .ok_or_else(|| anyhow!("test handle queue exhausted"))?
+        }
+
+        fn mark_processing_complete(&mut self) {
+            self.calls.push(RenderIoCall::MarkProcessingComplete);
         }
     }
 
@@ -1033,6 +1092,127 @@ mod tests {
         .expect("stable rendered handles should be returned");
 
         assert_eq!(handles, [42, 43]);
+    }
+
+    #[test]
+    fn marks_processing_complete_once_after_two_stable_non_empty_handle_polls() {
+        let start = Instant::now();
+        let mut instants = VecDeque::from([start; 12]);
+        let mut io = FakeRenderIo {
+            handles: VecDeque::from([Ok(vec![7]), Ok(vec![7, 42]), Ok(vec![7, 42])]),
+            calls: Vec::new(),
+        };
+
+        let handles = start_and_wait_for_stable_new_handles(
+            &mut io,
+            false,
+            |_| {},
+            || instants.pop_front().expect("test clock exhausted"),
+            RENDER_TIMEOUT,
+        )
+        .expect("stable rendered handles should mark camera processing complete");
+
+        assert_eq!(handles, [42]);
+        assert_eq!(
+            io.calls,
+            [
+                RenderIoCall::Handles,
+                RenderIoCall::Start,
+                RenderIoCall::Handles,
+                RenderIoCall::Handles,
+                RenderIoCall::MarkProcessingComplete,
+            ]
+        );
+    }
+
+    #[test]
+    fn well_framed_device_busy_during_handle_polling_is_retried_within_deadline() {
+        let start = Instant::now();
+        let mut instants = VecDeque::from([start; 12]);
+        let mut io = FakeRenderIo {
+            handles: VecDeque::from([
+                Ok(vec![7]),
+                Err(anyhow!(crate::ptp::error::Error::Response(
+                    crate::ptp::ResponseCode::DeviceBusy.into(),
+                ))),
+                Ok(vec![7, 42]),
+                Ok(vec![7, 42]),
+            ]),
+            calls: Vec::new(),
+        };
+
+        let handles = start_and_wait_for_stable_new_handles(
+            &mut io,
+            false,
+            |_| {},
+            || instants.pop_front().expect("test clock exhausted"),
+            RENDER_TIMEOUT,
+        )
+        .expect("well-framed DeviceBusy should be retried within the polling deadline");
+
+        assert_eq!(handles, [42]);
+        assert_eq!(
+            io.calls,
+            [
+                RenderIoCall::Handles,
+                RenderIoCall::Start,
+                RenderIoCall::Handles,
+                RenderIoCall::Handles,
+                RenderIoCall::Handles,
+                RenderIoCall::MarkProcessingComplete,
+            ]
+        );
+    }
+
+    #[test]
+    fn repeated_device_busy_uses_bounded_increasing_backoff_within_render_deadline() {
+        let start = Instant::now();
+        let timeout = std::time::Duration::from_millis(500);
+        let mut instants = VecDeque::from([
+            start,
+            start,
+            start,
+            start + std::time::Duration::from_millis(100),
+            start + std::time::Duration::from_millis(100),
+            start + std::time::Duration::from_millis(300),
+            start + std::time::Duration::from_millis(300),
+            start + std::time::Duration::from_millis(400),
+        ]);
+        let mut sleeps = Vec::new();
+        let mut io = FakeRenderIo {
+            handles: VecDeque::from([
+                Ok(vec![7]),
+                Err(anyhow!(crate::ptp::error::Error::Response(
+                    crate::ptp::ResponseCode::DeviceBusy.into(),
+                ))),
+                Err(anyhow!(crate::ptp::error::Error::Response(
+                    crate::ptp::ResponseCode::DeviceBusy.into(),
+                ))),
+                Ok(vec![7, 42]),
+                Ok(vec![7, 42]),
+            ]),
+            calls: Vec::new(),
+        };
+
+        let handles = start_and_wait_for_stable_new_handles(
+            &mut io,
+            false,
+            |duration| sleeps.push(duration),
+            || instants.pop_front().expect("test clock exhausted"),
+            timeout,
+        )
+        .expect("bounded DeviceBusy retries should still discover the stable rendered handle");
+
+        assert_eq!(handles, [42]);
+        assert_eq!(
+            sleeps,
+            [
+                std::time::Duration::from_millis(100),
+                std::time::Duration::from_millis(200),
+                std::time::Duration::from_millis(100),
+            ]
+        );
+        assert!(sleeps.into_iter().sum::<std::time::Duration>() <= timeout);
     }
 
     #[test]
