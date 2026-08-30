@@ -121,10 +121,6 @@ impl ValidatedCameraSession<'_, BackupRestore> {
 }
 
 impl ValidatedCameraSession<'_, RawConversion> {
-    pub fn get_simulation(&mut self, slot: CustomSetting) -> anyhow::Result<Box<dyn Simulation>> {
-        self.camera.get_simulation_unchecked(slot)
-    }
-
     pub fn render(
         &mut self,
         image: &[u8],

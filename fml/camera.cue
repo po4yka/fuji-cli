@@ -528,12 +528,8 @@ cameras: {
 					{code: options[setting.ref].spec.encoding.prop_code, writable: false}
 				}],
 			])
-			_preflight_render_slot_properties: list.Concat([
+			_preflight_raw_conversion_properties: list.Concat([
 				_preflight_common_properties,
-				[{code: 0xD18C, data_type: 0x0004, writable: true}],
-				[for setting in features.simulation.settings {
-					{code: options[setting.ref].spec.encoding.prop_code, writable: false}
-				}],
 				[
 					{code: 0xD183, data_type: 0x0004, writable: true},
 					{code: 0xD185, writable: true},
@@ -552,7 +548,7 @@ cameras: {
 				},
 				{
 					operation:               "simulation_access"
-					status:                  "verified"
+					status:                  "unverified"
 					firmware:                "4.31"
 					minimum_battery_percent: 100
 					allowed_usb_modes: [0x6]
@@ -561,7 +557,7 @@ cameras: {
 				},
 				{
 					operation:               "simulation_write"
-					status:                  "verified"
+					status:                  "unverified"
 					firmware:                "4.31"
 					minimum_battery_percent: 100
 					allowed_usb_modes: [0x6]
@@ -575,7 +571,7 @@ cameras: {
 					minimum_battery_percent: 100
 					allowed_usb_modes: [0x6]
 					required_operations: [0x1001, 0x1007, 0x1008, 0x1009, 0x100B, 0x1014, 0x1015, 0x1016, 0x900C, 0x900D]
-					required_properties: _preflight_render_slot_properties
+					required_properties: _preflight_raw_conversion_properties
 				},
 				{
 					operation:               "raw_recovery_fetch"

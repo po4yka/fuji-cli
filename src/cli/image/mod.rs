@@ -1,8 +1,6 @@
 use fujicli::{
     features::render::{RenderSaveError, finish_render_cleanup, raf::validate_xt5_raf},
-    generated::{
-        cli::RenderArgs, options::CustomSetting, renders::RenderBase, simulations::SimulationBase,
-    },
+    generated::{cli::RenderArgs, renders::RenderBase},
     policy::{EmulationAcknowledgement, SerialFingerprint},
 };
 
@@ -61,12 +59,8 @@ pub enum ImageCmd {
         #[arg(long, required_unless_present = "emulate")]
         target_serial_sha256: Option<SerialFingerprint>,
 
-        /// Simulation slot number
-        #[arg(long, conflicts_with = "simulation_file")]
-        slot: Option<CustomSetting>,
-
         /// Path to exported simulation file
-        #[arg(long, conflicts_with = "slot")]
+        #[arg(long)]
         simulation_file: Option<Input>,
 
         /// Render a lower-quality (faster) preview
@@ -103,7 +97,6 @@ pub enum ImageCmd {
 
 struct RenderRequest {
     target_serial_sha256: Option<SerialFingerprint>,
-    slot: Option<CustomSetting>,
     simulation_file: Option<Input>,
     draft: bool,
     render: RenderArgs,
@@ -118,7 +111,6 @@ struct RenderRequest {
 fn handle_render(options: GlobalOptions, request: RenderRequest) -> anyhow::Result<()> {
     let RenderRequest {
         target_serial_sha256,
-        slot,
         simulation_file,
         draft,
         render,
@@ -151,14 +143,9 @@ fn handle_render(options: GlobalOptions, request: RenderRequest) -> anyhow::Resu
     let target_serial_sha256 = target_serial_sha256
         .ok_or_else(|| anyhow::anyhow!("RAW conversion requires --target-serial-sha256"))?;
     let mut session = camera.preflight_raw_conversion(&target_serial_sha256)?;
-    let simulation_base: Option<SimulationBase> = if let Some(slot) = slot {
-        Some(session.get_simulation(slot)?.to_base())
-    } else {
-        simulation_from_file
-    };
 
     let mut base = RenderBase::default();
-    if let Some(sim) = simulation_base {
+    if let Some(sim) = simulation_from_file {
         base.try_update_from(&sim);
     }
     base.merge(render.into());
@@ -220,7 +207,6 @@ pub fn handle(cmd: ImageCmd, options: GlobalOptions) -> anyhow::Result<()> {
     match cmd {
         ImageCmd::Render {
             target_serial_sha256,
-            slot,
             simulation_file,
             draft,
             render,
@@ -230,7 +216,6 @@ pub fn handle(cmd: ImageCmd, options: GlobalOptions) -> anyhow::Result<()> {
             options,
             RenderRequest {
                 target_serial_sha256,
-                slot,
                 simulation_file,
                 draft,
                 render,

@@ -127,9 +127,7 @@ fn required_enum_options(camera: &Camera, operation: PreflightOperation) -> BTre
     let features = camera.spec.features.as_ref();
     if matches!(
         operation,
-        PreflightOperation::SimulationAccess
-            | PreflightOperation::SimulationWrite
-            | PreflightOperation::RawConversion
+        PreflightOperation::SimulationAccess | PreflightOperation::SimulationWrite
     ) && features
         .and_then(|features| features.simulation.as_ref())
         .is_some()
@@ -371,5 +369,35 @@ mod tests {
         .expect_err("verified paths must not fall back for an unprofiled enum");
 
         assert!(error.to_string().contains("file_type"));
+    }
+
+    #[test]
+    fn raw_conversion_requires_only_render_profile_enum_options() {
+        let camera: Camera = serde_json::from_str(
+            r#"{
+                "id": "fixture",
+                "spec": {
+                    "name": "Fixture", "generation": "fixture",
+                    "usb": { "vendor_id": 1227, "product_id": 1, "chunk_size": 1024 },
+                    "features": {
+                        "simulation": {
+                            "slots": 1,
+                            "settings": [{ "id": "simulation_only", "ref": "simulation_only" }]
+                        },
+                        "render": {
+                            "profile_code": 1,
+                            "header_padding": 2,
+                            "fields": [{ "id": "render_format", "ref": "render_format" }]
+                        }
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            required_enum_options(&camera, PreflightOperation::RawConversion),
+            BTreeSet::from(["render_format"]),
+        );
     }
 }

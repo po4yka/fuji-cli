@@ -47,7 +47,7 @@ ptp: {
 }
 preflight: [{
     operation:               "simulation_access"
-    status:                  "verified"
+    status:                  "unverified"
     firmware:                "4.31"
     minimum_battery_percent: 100
     allowed_usb_modes:       [0x6]
@@ -61,10 +61,12 @@ preflight: [{
 
 Temporary simulation reads and persistent simulation writes use separate
 profiles: access needs a writable selector but only readable setting
-properties. RAW recovery likewise separates read-only object fetch from the
-optional destructive cleanup profile. The runtime requires an exact firmware
-string and a `verified` profile. Each operation/property must also be advertised
-by `GetDeviceInfo`; every property is inspected with `GetDevicePropDesc`.
+properties. X-T5 keeps both profiles unverified until physical evidence binds
+`0xD18C` to its still/movie custom-setting domain. RAW recovery likewise
+separates read-only object fetch from the optional destructive cleanup profile.
+The runtime requires an exact firmware string and a `verified` profile. Each
+operation/property must also be advertised by `GetDeviceInfo`; every property
+is inspected with `GetDevicePropDesc`.
 Optional `data_type` pins the PTP type, while `writable: true` requires a
 writable descriptor (`false` permits either because some read paths share a
 property with a write profile). Do not copy a profile to another firmware or
@@ -112,8 +114,9 @@ no implicit global encoding fallback.
 
 Documented capability presence does not authorize writes. Only a matching
 `verified` preflight operation can create a validated session; X-T5 `3.01` and
-`4.00` capability entries are regression/documentation fixtures, while current
-mutating support remains restricted to `4.31`.
+`4.00` capability entries are regression/documentation fixtures. Firmware
+`4.31` currently verifies backup and RAW conversion operations, but not custom
+setting access or writes.
 
 ## Features
 

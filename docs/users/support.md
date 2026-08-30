@@ -30,7 +30,7 @@ physical or psychological - to your camera or equipment.
 | FUJIFILM X100VI | X-Trans V   | ?         |         |             |           |
 | FUJIFILM X-H2   | X-Trans V   | ?         |         |             |           |
 | FUJIFILM X-H2S  | X-Trans V   | ?         |         |             |           |
-| FUJIFILM X-T5   | X-Trans V   | Y         | Y       | Y           | Y         |
+| FUJIFILM X-T5   | X-Trans V   | Y         | Y       | N           | Y         |
 
 ## Legend
 
@@ -39,7 +39,7 @@ physical or psychological - to your camera or equipment.
 - **?** - Untested but likely works. The camera is recognised over USB and the
   relevant PTP commands are present, but nobody has confirmed end-to-end
   behaviour.
-- **N** - Known not to work.
+- **N** - Known not to work or deliberately unavailable for safety.
 - Blank - Not implemented yet.
 
 A `?` in the "Base Info" column means `fujicli device info` should succeed. A
@@ -47,10 +47,12 @@ blank elsewhere means the FML spec for that camera does not yet declare the
 feature; see [adding a camera](../contributors/adding-cameras.md) to fill that
 in.
 
-The feature table records historical physical-device coverage; it is not the
-state-changing compatibility matrix. Mutating commands are currently enabled
-only for the Fujifilm X-T5 with exact PTP firmware `4.31`, USB mode `0x6`, and a
-fully charged battery. Every other model, firmware, mode, or incomplete
+The feature table records current supported command sets. Backup and RAW
+conversion mutations are enabled only for the Fujifilm X-T5 with exact PTP
+firmware `4.31`, USB mode `0x6`, and a fully charged battery. X-T5 simulation
+commands are deliberately unavailable because the PTP evidence does not yet
+identify whether custom-setting selector `0xD18C` addresses the separate still
+or movie C1-C7 namespace. Every other model, firmware, mode, or incomplete
 capability/descriptor set fails closed before a write. Adding a row requires
 captured device evidence and an explicit FML preflight profile; a nearby
 firmware version is never assumed compatible.

@@ -79,6 +79,29 @@ fn raw_conversion_requires_exact_serial_binding_before_file_or_usb_access() {
 }
 
 #[test]
+fn raw_conversion_rejects_simulation_slot_before_file_or_usb_access() {
+    let output = run(&[
+        "image",
+        "render",
+        "--slot",
+        "c1",
+        "--target-serial-sha256",
+        "0000000000000000000000000000000000000000000000000000000000000000",
+        "/definitely/missing.raf",
+        "/tmp/unused.jpg",
+        "--device",
+        "255.255",
+    ]);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("unexpected argument '--slot'"));
+    assert!(!stderr.contains("No such file or directory"));
+    assert!(!stderr.contains("No USB device found"));
+}
+
+#[test]
 fn raw_recovery_requires_exact_serial_binding_before_output_or_usb_access() {
     let output = run(&[
         "image",

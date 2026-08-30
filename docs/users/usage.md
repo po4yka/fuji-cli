@@ -136,6 +136,13 @@ no `fujicli` process is still writing there, that temporary file can be removed.
 A _simulation_ is one of the camera's custom-setting slots (e.g. C1-C7). The
 number of slots is per-camera (`SLOTS` in the generated code).
 
+X-T5 simulation access is currently disabled. The camera has separate still
+and movie C1-C7 namespaces, while available PTP evidence does not establish
+which namespace selector `0xD18C` addresses. Consequently `list`, `get`,
+`export`, `set`, and `import` fail during preflight before the selector or any
+profile property is written. The command grammar below remains the intended
+interface for a future firmware profile backed by physical domain evidence.
+
 ```sh
 # List slots with their assigned names.
 fujicli simulation list
@@ -170,18 +177,11 @@ both `--white-balance auto` and `--white-balance Auto` parse to the same
 variant, and most options accept short forms (e.g. `mono` for `monochrome`).
 Pass `--json` for machine-readable output on `get`/`list`.
 
-`get`, `export`, and `list` are reads with a temporary camera mutation. The
-CLI snapshots Fujifilm's custom-setting selector, verifies every slot selection
-by readback, and restores and verifies the original raw selector value before
-publishing output. `list` uses one snapshot and one restore around the complete
-C1-C7 batch. A read or transport failure produces no partial output; if restore
-cannot be verified, the command fails and reports that selector state is
-unknown.
-
-The guard does not change the physical still/movie mode. Still and movie custom
-settings are separate camera namespaces; their D18C behavior and persistence
-across disconnect or power-cycle remain hardware-validation boundaries rather
-than claims made by a local build.
+`get`, `export`, and `list` are not wire-level reads: selecting a stored profile
+would temporarily write `0xD18C`. They therefore share the same fail-closed
+domain requirement as `set` and `import`. Re-enabling them requires a physical
+still/movie matrix that identifies the selected namespace and verifies selector
+restoration and persistence across reconnect and power-cycle.
 
 `set` and `import` require the lowercase SHA-256 fingerprint of the connected
 camera's PTP serial. Obtain it from `fujicli device info`; the binding prevents
@@ -195,18 +195,13 @@ fujicli image render \
   --target-serial-sha256 SHA256_FROM_DEVICE_INFO \
   input.raf out.jpg
 
-# Render using slot C1's settings.
-fujicli image render --slot c1 \
-  --target-serial-sha256 SHA256_FROM_DEVICE_INFO \
-  input.raf out.jpg
-
 # Render using a previously-exported simulation.
 fujicli image render --simulation-file c1.json \
   --target-serial-sha256 SHA256_FROM_DEVICE_INFO \
   input.raf out.jpg
 
-# Override individual fields on top of any of the above.
-fujicli image render --slot c1 \
+# Override individual fields on top of the active or file-provided profile.
+fujicli image render \
   --target-serial-sha256 SHA256_FROM_DEVICE_INFO \
   --film-simulation classic-chrome \
   --grain-effect off \
@@ -227,9 +222,10 @@ fujicli image recover --delete-after-save \
   424242 recovered.jpg
 ```
 
-The render command always layers in this order: simulation source (slot or
-file), then any inline `--<field>` overrides. Fields your CLI flags don't set
-are pulled from the camera's current state.
+The render command layers a simulation file, when supplied, and then any inline
+`--<field>` overrides. Fields neither source sets are pulled from the camera's
+current RAW conversion profile. Direct slot selection is unavailable until the
+still/movie selector domain is physically verified.
 
 RAF upload and rendered-JPEG fetch use progress-aware large-transfer timing.
 After the conversion trigger, framed `DeviceBusy` responses from handle polling
