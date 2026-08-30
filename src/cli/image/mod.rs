@@ -12,8 +12,18 @@ use clap::Subcommand;
 
 const MAX_IMAGE_INPUT_BYTES: usize = 512 * 1024 * 1024;
 
-fn save_rendered_object(
-    mut output: OutputTransaction,
+trait RenderOutput: std::io::Write {
+    fn commit(self) -> anyhow::Result<()>;
+}
+
+impl RenderOutput for OutputTransaction {
+    fn commit(self) -> anyhow::Result<()> {
+        self.commit()
+    }
+}
+
+fn save_rendered_object<Output: RenderOutput>(
+    mut output: Output,
     handle: u32,
     data: &[u8],
     profile_restore_error: Option<anyhow::Error>,
@@ -245,14 +255,36 @@ pub fn handle(cmd: ImageCmd, options: GlobalOptions) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::Cell, fs};
+    use std::{cell::Cell, fs, io};
 
     use anyhow::anyhow;
     use fujicli::features::render::RenderSaveError;
     use tempfile::tempdir;
 
-    use super::{Output, handle_recover, save_rendered_object};
+    use super::{Output, RenderOutput, handle_recover, save_rendered_object};
     use crate::cli::GlobalOptions;
+
+    #[derive(Default)]
+    struct FailingCommitOutput {
+        bytes: Vec<u8>,
+    }
+
+    impl io::Write for FailingCommitOutput {
+        fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+            self.bytes.extend_from_slice(buffer);
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl RenderOutput for FailingCommitOutput {
+        fn commit(self) -> anyhow::Result<()> {
+            Err(anyhow!("simulated local output commit failure"))
+        }
+    }
 
     #[test]
     fn saves_rendered_image_before_returning_camera_cleanup_failure() -> anyhow::Result<()> {
@@ -281,15 +313,9 @@ mod tests {
     }
 
     #[test]
-    fn does_not_delete_camera_object_when_local_output_commit_fails() -> anyhow::Result<()> {
-        let directory = tempdir()?;
-        let original_directory = directory.path().join("original");
-        let moved_directory = directory.path().join("moved");
-        fs::create_dir(&original_directory)?;
-        let destination = original_directory.join("rendered.jpg");
+    fn does_not_delete_camera_object_when_local_output_commit_fails() {
         let rendered = b"rendered JPEG".to_vec();
-        let output = Output::Path(destination).begin_write()?;
-        fs::rename(&original_directory, &moved_directory)?;
+        let output = FailingCommitOutput::default();
         let cleanup_called = Cell::new(false);
 
         let error = save_rendered_object(
@@ -315,7 +341,6 @@ mod tests {
             save.profile_restore_error().map(ToString::to_string),
             Some("simulated profile restore failure".to_owned())
         );
-        Ok(())
     }
 
     #[test]
