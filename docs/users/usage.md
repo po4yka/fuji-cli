@@ -282,3 +282,16 @@ reverse` commands, `-vvv` reports PTP operation metadata and response lengths,
 but never response payloads, camera serial numbers, backup contents, or
 custom-setting names. Privacy-review diagnostics before attaching them to a bug
 report.
+
+## Exit Codes
+
+Exit status is a public contract for scripts and wrappers, alongside stdout,
+stderr, and JSON shape. `0` means success. `1` means failure in a state that
+is safe to retry after investigating -- a bad argument that clap did not
+already catch, a missing file, no camera found, or a preflight rejection
+before any camera write. `2` means clap rejected the command line itself
+(an invalid subcommand, a missing required argument, or similar). `3` means
+a state-changing operation was already sent to the camera and its outcome
+could not be confirmed afterward -- do not retry automatically; verify the
+camera's actual state first. `130` means the process was interrupted
+(Ctrl-C) outside of a camera write.

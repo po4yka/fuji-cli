@@ -5,7 +5,7 @@ use clap::{Args, Subcommand};
 use fujicli::{
     features::backup::{
         BACKUP_ARTIFACT_FORMAT_VERSION, BackupArtifact, BackupIdentity, BackupPurpose,
-        MAX_BACKUP_ARTIFACT_BYTES,
+        BackupRestoreAccepted, MAX_BACKUP_ARTIFACT_BYTES,
     },
     policy::SerialFingerprint,
 };
@@ -13,12 +13,34 @@ use log::warn;
 
 use crate::cli::{
     GlobalOptions,
-    common::{interrupt, usb},
+    common::{camera_state::CameraStateUnknown, interrupt, usb},
 };
 
 use super::common::file::{Input, Output, write_stdout_line};
 
 const BACKUP_RECONNECT_TIMEOUT: Duration = Duration::from_mins(2);
+
+/// Attach the [`CameraStateUnknown`] marker to `result`'s error, if any,
+/// alongside the given human-readable explanation. Used after a
+/// state-changing camera write whose outcome could not be confirmed; the
+/// `message` text is unchanged from the plain `.context(message)` this
+/// replaces, only the marker is new.
+fn context_state_unknown<T>(result: anyhow::Result<T>, message: &'static str) -> anyhow::Result<T> {
+    result
+        .map_err(|error| error.context(CameraStateUnknown))
+        .context(message)
+}
+
+/// Fail with the [`CameraStateUnknown`] marker plus `message` unless
+/// `condition` holds. Used after a state-changing camera write whose
+/// outcome could not be confirmed.
+fn ensure_state_known(condition: bool, message: &'static str) -> anyhow::Result<()> {
+    if condition {
+        Ok(())
+    } else {
+        Err(anyhow::Error::new(CameraStateUnknown).context(message))
+    }
+}
 
 fn ensure_import_confirmation(yes: bool, dry_run: bool, emulated: bool) -> anyhow::Result<()> {
     ensure!(
@@ -332,20 +354,45 @@ fn handle_import(options: GlobalOptions, args: BackupImportArgs) -> anyhow::Resu
     drop(session);
     drop(camera);
 
+    verify_restore_persisted(
+        &binding,
+        camera_name,
+        &target,
+        target_serial_sha256.as_deref(),
+        &backup,
+        accepted,
+    )
+}
+
+/// After a PTP restore is accepted, reconnect to the target camera in a
+/// fresh session and confirm the restore actually persisted. Every failure
+/// path here means the write was already sent and its outcome is
+/// unconfirmed, so each one carries the [`CameraStateUnknown`] marker.
+fn verify_restore_persisted(
+    binding: &SerialFingerprint,
+    camera_name: &str,
+    target: &BackupIdentity,
+    target_serial_sha256: Option<&str>,
+    backup: &BackupArtifact,
+    accepted: BackupRestoreAccepted,
+) -> anyhow::Result<()> {
     warn!(
         "PTP restore was accepted by {camera_name}; waiting for a fresh camera session to verify restored state"
     );
-    let mut camera = usb::reconnect_camera_by_serial(&binding, BACKUP_RECONNECT_TIMEOUT)
-        .context("backup restore was accepted, but the target camera did not reconnect for persistence verification; camera state is unknown and the restore must not be retried automatically")?;
-    let observed = camera
-        .export_backup(BackupPurpose::Recovery)
-        .context("backup restore was accepted, but exporting a fresh-session verification backup failed; camera state is unknown and the restore must not be retried automatically")?;
-    backup.validate_target(&observed.manifest().source, target_serial_sha256.as_deref())?;
-    anyhow::ensure!(
-        observed.manifest().source == target,
-        "fresh-session backup identity changed after restore; camera state is unknown"
-    );
-    let verified = accepted.verify_post_restore_export(&backup, &observed)?;
+    let mut camera = context_state_unknown(
+        usb::reconnect_camera_by_serial(binding, BACKUP_RECONNECT_TIMEOUT),
+        "backup restore was accepted, but the target camera did not reconnect for persistence verification; camera state is unknown and the restore must not be retried automatically",
+    )?;
+    let observed = context_state_unknown(
+        camera.export_backup(BackupPurpose::Recovery),
+        "backup restore was accepted, but exporting a fresh-session verification backup failed; camera state is unknown and the restore must not be retried automatically",
+    )?;
+    backup.validate_target(&observed.manifest().source, target_serial_sha256)?;
+    ensure_state_known(
+        observed.manifest().source == *target,
+        "fresh-session backup identity changed after restore; camera state is unknown",
+    )?;
+    let verified = accepted.verify_post_restore_export(backup, &observed)?;
     warn!(
         "Backup restore was semantically verified and persisted across a fresh camera session (payload SHA-256 {})",
         verified.payload_sha256()

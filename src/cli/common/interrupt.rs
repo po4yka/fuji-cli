@@ -1,7 +1,8 @@
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
-use anyhow::bail;
 use log::warn;
+
+use super::camera_state::CameraStateUnknown;
 
 /// Set while a `critical_camera_write` operation is in flight. The Ctrl-C
 /// handler consults this to decide whether to latch the interrupt or exit
@@ -79,9 +80,9 @@ pub fn critical_camera_write<T>(
         warn!(
             "{description} completed, but an interrupt was requested during the write; camera state must be verified before any further camera work. DO NOT RETRY AUTOMATICALLY"
         );
-        bail!(
+        return Err(anyhow::Error::new(CameraStateUnknown).context(format!(
             "{description} completed, but an interrupt was requested; stopping before any further camera work"
-        );
+        )));
     }
 
     Ok(value)

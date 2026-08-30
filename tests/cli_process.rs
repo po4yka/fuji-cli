@@ -153,7 +153,9 @@ fn emulated_simulation_set_rejects_persistent_write_before_usb_lookup() {
         "255.255",
     ]);
 
-    assert!(!output.status.success());
+    // A preflight rejection before any camera write is safe to retry after
+    // investigating, so it must exit `1`, not the state-unknown code `3`.
+    assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("emulated camera access cannot write persistent settings"));
