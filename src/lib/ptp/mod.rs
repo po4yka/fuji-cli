@@ -109,16 +109,24 @@ pub struct Ptp {
 pub(crate) struct MutationAuthorization {
     operations: BTreeSet<u16>,
     properties: BTreeMap<u16, DevicePropDesc>,
+    capability_profile: &'static crate::generated::cameras::CameraFirmwareCapabilityProfile,
+    raw_conversion_profile_validated: bool,
 }
 
 impl MutationAuthorization {
-    fn new(operations: &[u16], properties: Vec<DevicePropDesc>) -> Self {
+    fn new(
+        operations: &[u16],
+        properties: Vec<DevicePropDesc>,
+        capability_profile: &'static crate::generated::cameras::CameraFirmwareCapabilityProfile,
+    ) -> Self {
         Self {
             operations: operations.iter().copied().collect(),
             properties: properties
                 .into_iter()
                 .map(|descriptor| (descriptor.property_code, descriptor))
                 .collect(),
+            capability_profile,
+            raw_conversion_profile_validated: false,
         }
     }
 
@@ -133,18 +141,52 @@ impl MutationAuthorization {
             self.operations.contains(&operation),
             "PTP mutation 0x{operation:04x} is not authorized by the validated preflight profile"
         );
+        if matches!(
+            code,
+            CommandCode::FujiSendObjectInfo | CommandCode::FujiSendObject
+        ) {
+            ensure!(
+                self.raw_conversion_profile_validated,
+                "RAW image upload requires a validated firmware conversion profile"
+            );
+        }
         if code == CommandCode::SetDevicePropValue {
             let property = params
                 .first()
                 .and_then(|value| u16::try_from(*value).ok())
                 .ok_or_else(|| anyhow!("SetDevicePropValue requires one u16 property code"))?;
-            let descriptor = self.properties.get(&property).ok_or_else(|| {
-                anyhow!("PTP property 0x{property:04x} was not validated by preflight")
-            })?;
-            descriptor.validate_serialized_candidate(
+            self.validate_property_candidate(
+                property,
                 data.ok_or_else(|| anyhow!("SetDevicePropValue requires serialized data"))?,
             )?;
         }
+        Ok(())
+    }
+
+    fn validate_property_candidate(&self, property: u16, data: &[u8]) -> anyhow::Result<()> {
+        let descriptor = self.properties.get(&property).ok_or_else(|| {
+            anyhow!("PTP property 0x{property:04x} was not validated by preflight")
+        })?;
+        descriptor.validate_serialized_candidate(data)
+    }
+
+    fn validate_raw_conversion_profile(
+        &mut self,
+        profile_code: u32,
+        header_padding: usize,
+        fields: &[&str],
+        bytes: &[u8],
+    ) -> anyhow::Result<()> {
+        self.capability_profile.validate_raw_conversion_signature(
+            profile_code,
+            header_padding,
+            fields,
+        )?;
+        self.validate_property_candidate(
+            u16::from(DevicePropCode::FujiRawConversionProfile),
+            bytes,
+        )?;
+        self.raw_conversion_profile_validated = true;
         Ok(())
     }
 }
@@ -285,12 +327,63 @@ impl Ptp {
         &mut self,
         operations: &[u16],
         properties: Vec<DevicePropDesc>,
+        capability_profile: &'static crate::generated::cameras::CameraFirmwareCapabilityProfile,
     ) {
-        self.mutation_authorization = Some(MutationAuthorization::new(operations, properties));
+        self.mutation_authorization = Some(MutationAuthorization::new(
+            operations,
+            properties,
+            capability_profile,
+        ));
     }
 
     pub(crate) fn clear_mutation_authorization(&mut self) {
         self.mutation_authorization = None;
+    }
+
+    pub(crate) fn firmware_option_write_value(
+        &self,
+        option: &str,
+        logical_value: &str,
+    ) -> anyhow::Result<i32> {
+        self.mutation_authorization
+            .as_ref()
+            .ok_or_else(|| anyhow!("firmware option encoding requires camera preflight"))?
+            .capability_profile
+            .write_wire_value(option, logical_value)
+    }
+
+    pub(crate) fn firmware_capability_profile(
+        &self,
+    ) -> anyhow::Result<&'static crate::generated::cameras::CameraFirmwareCapabilityProfile> {
+        self.mutation_authorization
+            .as_ref()
+            .map(|authorization| authorization.capability_profile)
+            .ok_or_else(|| anyhow!("firmware capability validation requires camera preflight"))
+    }
+
+    pub(crate) fn firmware_option_read_logical_value(
+        &self,
+        option: &str,
+        wire_value: i32,
+    ) -> anyhow::Result<&'static str> {
+        self.mutation_authorization
+            .as_ref()
+            .ok_or_else(|| anyhow!("firmware option decoding requires camera preflight"))?
+            .capability_profile
+            .read_logical_value(option, wire_value)
+    }
+
+    pub(crate) fn validate_raw_conversion_profile(
+        &mut self,
+        profile_code: u32,
+        header_padding: usize,
+        fields: &[&str],
+        bytes: &[u8],
+    ) -> anyhow::Result<()> {
+        let authorization = self.mutation_authorization.as_mut().ok_or_else(|| {
+            anyhow!("RAW conversion profile validation requires camera preflight")
+        })?;
+        authorization.validate_raw_conversion_profile(profile_code, header_padding, fields, bytes)
     }
 
     fn validate_mutation(
@@ -786,6 +879,23 @@ mod tests {
         validate_mutation_authorization, write_container,
     };
 
+    const EMPTY_CAPABILITY_PROFILE: crate::generated::cameras::CameraFirmwareCapabilityProfile =
+        crate::generated::cameras::CameraFirmwareCapabilityProfile {
+            firmware: "test",
+            options: &[],
+            raw_conversion: None,
+        };
+    const RAW_CAPABILITY_PROFILE: crate::generated::cameras::CameraFirmwareCapabilityProfile =
+        crate::generated::cameras::CameraFirmwareCapabilityProfile {
+            firmware: "test",
+            options: &[],
+            raw_conversion: Some(crate::generated::cameras::CameraRawConversionSignature {
+                profile_code: 1,
+                header_padding: 2,
+                fields: &["field"],
+            }),
+        };
+
     #[test]
     fn state_changing_ptp_command_requires_preflight_authorization() {
         let error =
@@ -805,7 +915,8 @@ mod tests {
             current: DevicePropValue::UInt(1),
             form: DevicePropForm::Enumeration(vec![DevicePropValue::UInt(1)]),
         };
-        let authorization = MutationAuthorization::new(&[0x1016], vec![descriptor]);
+        let authorization =
+            MutationAuthorization::new(&[0x1016], vec![descriptor], &EMPTY_CAPABILITY_PROFILE);
 
         let result = validate_mutation_authorization(
             Some(&authorization),
@@ -815,6 +926,49 @@ mod tests {
         );
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn raw_image_upload_requires_validated_conversion_profile() {
+        let authorization =
+            MutationAuthorization::new(&[0x900d], vec![], &EMPTY_CAPABILITY_PROFILE);
+
+        let error = validate_mutation_authorization(
+            Some(&authorization),
+            CommandCode::FujiSendObject,
+            &[],
+            Some(b"RAF"),
+        )
+        .expect_err("RAW image upload must wait until the conversion profile is validated");
+
+        assert!(error.to_string().contains("profile"));
+    }
+
+    #[test]
+    fn unrelated_property_validation_cannot_authorize_raw_upload() {
+        let selector = DevicePropDesc {
+            property_code: 0xD18C,
+            data_type: DevicePropDataType::UInt16,
+            writable: true,
+            factory_default: DevicePropValue::UInt(1),
+            current: DevicePropValue::UInt(1),
+            form: DevicePropForm::None,
+        };
+        let mut authorization =
+            MutationAuthorization::new(&[0x900d], vec![selector], &RAW_CAPABILITY_PROFILE);
+
+        authorization
+            .validate_raw_conversion_profile(1, 2, &["field"], &1_u16.to_le_bytes())
+            .expect_err("only the RAW conversion profile descriptor can unlock upload");
+        let error = validate_mutation_authorization(
+            Some(&authorization),
+            CommandCode::FujiSendObject,
+            &[],
+            Some(b"RAF"),
+        )
+        .expect_err("selector validation must not authorize RAW upload");
+
+        assert!(error.to_string().contains("profile"));
     }
 
     #[test]

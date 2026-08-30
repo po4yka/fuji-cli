@@ -430,10 +430,7 @@ fn generate_transaction_profile_impl(
             let type_path = info.type_path();
 
             let read_call = quote! {
-                Some(crate::features::simulation::SimulationPropertyIo::get_prop(
-                    io,
-                    <#type_path as crate::ptp::option::SimulationSetting>::prop_code(),
-                )?)
+                Some(<#type_path as crate::ptp::option::SimulationSetting>::try_pull_from(io)?)
             };
 
             let body = if let Some(dnf) = presence_conditions.get(id) {
@@ -486,11 +483,7 @@ fn generate_transaction_profile_impl(
                         ::anyhow::anyhow!(#missing),
                     )
                 })?;
-                crate::features::simulation::SimulationPropertyIo::set_prop(
-                        io,
-                        <#type_path as crate::ptp::option::SimulationSetting>::prop_code(),
-                        value,
-                    )
+                <#type_path as crate::ptp::option::SimulationSetting>::try_push_to(value, io)
                     .map_err(|error| error.context(#context))
             }
         }
@@ -631,6 +624,18 @@ fn generate_manager_impl(
                 crate::features::simulation::SimulationTransactionSuccess,
                 crate::features::simulation::SimulationTransactionError,
             > {
+                let firmware_profile = ptp.firmware_capability_profile().map_err(|error| {
+                    crate::features::simulation::SimulationTransactionError::preparation(
+                        ptp.is_healthy(),
+                        error,
+                    )
+                })?;
+                partial.validate_firmware_capabilities(firmware_profile).map_err(|error| {
+                    crate::features::simulation::SimulationTransactionError::preparation(
+                        ptp.is_healthy(),
+                        error,
+                    )
+                })?;
                 let mut io = crate::features::simulation::SelectedSimulationIo::new(ptp, slot);
                 let original =
                     <#struct_ident as crate::features::simulation::SimulationTransactionProfile>::pull_from(&mut io)
@@ -647,6 +652,14 @@ fn generate_manager_impl(
                         error,
                     )
                 })?;
+                crate::generated::simulations::SimulationBase::from(&candidate)
+                    .validate_firmware_capabilities(firmware_profile)
+                    .map_err(|error| {
+                        crate::features::simulation::SimulationTransactionError::preparation(
+                            crate::features::simulation::SimulationPropertyIo::is_healthy(&io),
+                            error,
+                        )
+                    })?;
                 crate::features::simulation::execute_simulation_transaction(
                     &mut io,
                     &original,
@@ -669,6 +682,20 @@ fn generate_manager_impl(
                     .ok_or_else(|| ::anyhow::anyhow!(
                         "Simulation type mismatch: expected {}", #struct_name
                     ))
+                    .map_err(|error| {
+                        crate::features::simulation::SimulationTransactionError::preparation(
+                            ptp.is_healthy(),
+                            error,
+                        )
+                    })?;
+                let firmware_profile = ptp.firmware_capability_profile().map_err(|error| {
+                    crate::features::simulation::SimulationTransactionError::preparation(
+                        ptp.is_healthy(),
+                        error,
+                    )
+                })?;
+                crate::generated::simulations::SimulationBase::from(sim)
+                    .validate_firmware_capabilities(firmware_profile)
                     .map_err(|error| {
                         crate::features::simulation::SimulationTransactionError::preparation(
                             ptp.is_healthy(),
@@ -767,6 +794,27 @@ mod tests {
     }
 
     #[test]
+    fn generated_writes_validate_firmware_values_before_selecting_slot() {
+        let (options, cameras) = fixture();
+        let generated = generate(&options, &cameras).unwrap().to_string();
+        let update = generated
+            .find("fn update_simulation")
+            .expect("generated manager must implement simulation updates");
+        let update_path = &generated[update..];
+        let validation = update_path
+            .find("validate_firmware_capabilities")
+            .expect("generated write path must validate firmware values");
+        let slot_write = update_path
+            .find("SelectedSimulationIo :: new (ptp , slot)")
+            .expect("generated write path must prepare selected-slot I/O");
+
+        assert!(
+            validation < slot_write,
+            "unsupported values must fail before the first selector mutation: {generated}"
+        );
+    }
+
+    #[test]
     fn generated_manager_delegates_journaled_transactions_to_runtime() {
         let (options, cameras) = fixture();
         let generated = generate(&options, &cameras).unwrap().to_string();
@@ -774,6 +822,11 @@ mod tests {
         assert!(
             generated.contains("SimulationTransactionProfile for DemoSimulation"),
             "generated cameras must expose their ordered property adapter:\n{generated}",
+        );
+        assert!(
+            generated.contains("SimulationSetting > :: try_pull_from (io)")
+                && generated.contains("SimulationSetting > :: try_push_to (value , io)"),
+            "transactional property I/O must preserve firmware-aware setting codecs:\n{generated}",
         );
         assert!(
             generated.contains("SelectedSimulationIo :: new (ptp , slot)")

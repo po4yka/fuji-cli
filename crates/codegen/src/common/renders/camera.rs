@@ -106,14 +106,28 @@ fn generate_one(
         &render.transformations,
         &convert_order,
     )?;
-    let trait_impl =
-        generate_camera_render_manager_impl(&struct_ident, &camera_struct_path, &renders_path);
+    let firmware_codec_impl = generate_firmware_profile_codec_impl(
+        &settings,
+        &render.fields,
+        &struct_ident,
+        n_props,
+        &presence_info.conditions,
+        &render.transformations,
+        &convert_order,
+    )?;
+    let trait_impl = generate_camera_render_manager_impl(
+        &struct_ident,
+        &camera_struct_path,
+        &renders_path,
+        &render.fields,
+    );
 
     Ok(quote! {
         #struct_def
         #inherent_impl
         #serialize_impl
         #deserialize_impl
+        #firmware_codec_impl
         #trait_impl
     })
 }
@@ -300,6 +314,155 @@ fn generate_write_one(settings: &BTreeMap<&str, SettingInfo<'_>>, field: &Field)
     }
 }
 
+fn generate_write_one_for_firmware(
+    settings: &BTreeMap<&str, SettingInfo<'_>>,
+    field: &Field,
+) -> TokenStream {
+    if field.skip_write() {
+        return quote! {};
+    }
+    let info = settings.get(field.id()).expect("settings indexed");
+    let ident = info.field_ident();
+    let type_path = info.type_path();
+    if let Some(option) = info.option {
+        let option_id = &option.id;
+        quote! {
+            match self.#ident.as_ref() {
+                Some(value) => {
+                    <#type_path as crate::ptp::option::ConversionProfileField>
+                        ::write_conversion_profile_field_for_firmware(
+                            value,
+                            &mut writer,
+                            endian,
+                            firmware_profile,
+                            #option_id,
+                        )?;
+                }
+                None => {
+                    <i32 as ::binrw::BinWrite>::write_options(
+                        &0i32, &mut writer, endian, (),
+                    )?;
+                }
+            }
+        }
+    } else {
+        quote! {
+            let value: i32 = self.#ident.unwrap_or(0);
+            <i32 as ::binrw::BinWrite>::write_options(&value, &mut writer, endian, ())?;
+        }
+    }
+}
+
+fn generate_firmware_profile_codec_impl(
+    settings: &BTreeMap<&str, SettingInfo<'_>>,
+    fields: &[Field],
+    struct_ident: &Ident,
+    n_props: i16,
+    presence_conditions: &BTreeMap<String, Dnf>,
+    transformations: &[Transformation],
+    convert_order: &[String],
+) -> anyhow::Result<TokenStream> {
+    let n_props_lit = Literal::i16_suffixed(n_props);
+    let writes = fields
+        .iter()
+        .map(|field| generate_write_one_for_firmware(settings, field));
+    let raw_reads = fields
+        .iter()
+        .filter(|field| !field.skip_read())
+        .map(|field| {
+            let info = settings.get(field.id()).expect("settings indexed");
+            let raw_ident = raw_local_ident(&info.field_ident());
+            quote! {
+                let #raw_ident = <i32 as ::binrw::BinRead>::read_options(
+                    &mut reader, endian, (),
+                )?;
+            }
+        });
+    let conversions = convert_order
+        .iter()
+        .map(|id| {
+            let field = fields
+                .iter()
+                .find(|field| field.id() == id)
+                .expect("convert order references known field");
+            generate_convert_one_for_firmware(settings, field, presence_conditions)
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let inverses = generate_inverses(settings, transformations, &quote! { camera_profile })?;
+
+    Ok(quote! {
+        impl #struct_ident {
+            pub(crate) fn encode_for_firmware(
+                &self,
+                firmware_profile: &crate::generated::cameras::CameraFirmwareCapabilityProfile,
+            ) -> ::anyhow::Result<Vec<u8>> {
+                let mut writer = ::std::io::Cursor::new(Vec::new());
+                let endian = ::binrw::Endian::Little;
+                <i16 as ::binrw::BinWrite>::write_options(
+                    &#n_props_lit, &mut writer, endian, (),
+                )?;
+                let profile_code_text = format!("{:x}", Self::PROFILE_CODE);
+                let profile_code = crate::ptp::codec::PtpExactString::from(
+                    profile_code_text.as_str(),
+                );
+                <crate::ptp::codec::PtpExactString as ::binrw::BinWrite>::write_options(
+                    &profile_code, &mut writer, endian, (),
+                )?;
+                crate::ptp::codec::write_zero_padding(&mut writer, Self::HEADER_PADDING)?;
+                #(#writes)*
+                Ok(writer.into_inner())
+            }
+
+            #[allow(
+                clippy::field_reassign_with_default,
+                reason = "generated field decoding assigns options in wire order"
+            )]
+            pub(crate) fn decode_for_firmware(
+                bytes: &[u8],
+                firmware_profile: &crate::generated::cameras::CameraFirmwareCapabilityProfile,
+            ) -> ::anyhow::Result<Self> {
+                let mut reader = ::std::io::Cursor::new(bytes);
+                let endian = ::binrw::Endian::Little;
+                let n_props = <i16 as ::binrw::BinRead>::read_options(
+                    &mut reader, endian, (),
+                )?;
+                ::anyhow::ensure!(
+                    n_props == #n_props_lit,
+                    "{}: expected {} props on the wire, got {}",
+                    stringify!(#struct_ident),
+                    #n_props_lit,
+                    n_props,
+                );
+                let profile_code_str =
+                    <crate::ptp::codec::PtpExactString as ::binrw::BinRead>
+                        ::read_options(&mut reader, endian, ())?;
+                let parsed = u32::from_str_radix(profile_code_str.as_str(), 16)?;
+                ::anyhow::ensure!(
+                    parsed == Self::PROFILE_CODE,
+                    "{}: expected profile code {:#x}, got {:#x}",
+                    stringify!(#struct_ident),
+                    Self::PROFILE_CODE,
+                    parsed,
+                );
+                crate::ptp::codec::consume_padding(&mut reader, Self::HEADER_PADDING)?;
+                #(#raw_reads)*
+
+                let mut camera_profile = Self::default();
+                #(#conversions)*
+                #inverses
+
+                ::anyhow::ensure!(
+                    reader.position() == bytes.len() as u64,
+                    "{} firmware profile has {} trailing bytes",
+                    stringify!(#struct_ident),
+                    bytes.len() as u64 - reader.position(),
+                );
+                Ok(camera_profile)
+            }
+        }
+    })
+}
+
 fn generate_ptp_deserialize_impl(
     settings: &BTreeMap<&str, SettingInfo<'_>>,
     fields: &[Field],
@@ -446,6 +609,50 @@ fn generate_convert_one(
     }
 }
 
+fn generate_convert_one_for_firmware(
+    settings: &BTreeMap<&str, SettingInfo<'_>>,
+    field: &Field,
+    presence_conditions: &BTreeMap<String, Dnf>,
+) -> anyhow::Result<TokenStream> {
+    if field.skip_read() {
+        return Ok(quote! {});
+    }
+
+    let info = settings.get(field.id()).expect("settings indexed");
+    let ident = info.field_ident();
+    let type_path = info.type_path();
+    let raw_ident = raw_local_ident(&ident);
+    let convert = if let Some(option) = info.option {
+        let option_id = &option.id;
+        quote! {
+            let mut raw_reader = ::std::io::Cursor::new(#raw_ident.to_le_bytes());
+            camera_profile.#ident = Some(
+                <#type_path as crate::ptp::option::ConversionProfileField>
+                    ::read_conversion_profile_field_for_firmware(
+                        &mut raw_reader,
+                        ::binrw::Endian::Little,
+                        firmware_profile,
+                        #option_id,
+                    )?,
+            );
+        }
+    } else {
+        quote! { camera_profile.#ident = Some(#raw_ident); }
+    };
+
+    if let Some(condition) = presence_conditions.get(field.id()) {
+        let profile_accessor = quote! { camera_profile };
+        let cond = generate_dnf(settings, condition, Scopes::new(&profile_accessor))?;
+        Ok(quote! {
+            if #cond {
+                #convert
+            }
+        })
+    } else {
+        Ok(convert)
+    }
+}
+
 fn raw_local_ident(ident: &Ident) -> Ident {
     format_ident!("raw_{}", ident)
 }
@@ -454,7 +661,9 @@ fn generate_camera_render_manager_impl(
     struct_ident: &Ident,
     camera_struct_path: &TokenStream,
     renders_path: &TokenStream,
+    fields: &[Field],
 ) -> TokenStream {
+    let field_ids = fields.iter().map(Field::id).collect::<Vec<_>>();
     quote! {
         impl crate::features::render::CameraRenderManager for #camera_struct_path {
             fn render(
@@ -464,12 +673,27 @@ fn generate_camera_render_manager_impl(
                 partial: #renders_path::RenderBase,
                 draft: bool,
             ) -> ::anyhow::Result<crate::features::render::RenderOutcome> {
+                let firmware_profile = ptp.firmware_capability_profile()?;
+                firmware_profile.validate_raw_conversion_signature(
+                    #struct_ident::PROFILE_CODE,
+                    #struct_ident::HEADER_PADDING,
+                    &[#(#field_ids),*],
+                )?;
+                partial.validate_firmware_capabilities(firmware_profile)?;
                 let original_profile =
                     crate::features::render::manager::snapshot_raw_conversion_profile(ptp)?;
-                let mut profile: #struct_ident =
-                    crate::ptp::codec::decode_exact(&original_profile)?;
+                let mut profile = #struct_ident::decode_for_firmware(
+                    &original_profile,
+                    firmware_profile,
+                )?;
                 profile.try_update_from(partial)?;
-                let candidate_profile = crate::ptp::codec::encode(&profile)?;
+                let candidate_profile = profile.encode_for_firmware(firmware_profile)?;
+                ptp.validate_raw_conversion_profile(
+                    #struct_ident::PROFILE_CODE,
+                    #struct_ident::HEADER_PADDING,
+                    &[#(#field_ids),*],
+                    &candidate_profile,
+                )?;
 
                 <Self as crate::features::render::CameraRenderManager>::send_image(
                     self, ptp, image,
@@ -573,6 +797,85 @@ mod tests {
     }
 
     #[test]
+    fn generated_render_validates_profile_before_uploading_image() {
+        let camera = serde_json::from_str::<Camera>(
+            r#"{
+                "id": "fixture",
+                "spec": {
+                    "name": "Fixture",
+                    "generation": "fixture",
+                    "usb": { "vendor_id": 1227, "product_id": 1, "chunk_size": 1024 },
+                    "features": {
+                        "render": { "profile_code": 1, "header_padding": 0, "fields": [] }
+                    }
+                }
+            }"#,
+        )
+        .expect("render fixture must parse");
+        let generated = generate(
+            &BTreeMap::new(),
+            &BTreeMap::from([(camera.id.clone(), camera)]),
+        )
+        .expect("render fixture must generate")
+        .to_string();
+
+        let profile_read = generated
+            .find("snapshot_raw_conversion_profile")
+            .expect("generated render must read the conversion profile");
+        let upload = generated
+            .find("CameraRenderManager > :: send_image")
+            .expect("generated render must upload the image");
+
+        assert!(
+            profile_read < upload,
+            "conversion profile must be validated before RAF upload: {generated}"
+        );
+        assert!(
+            generated.contains("decode_for_firmware")
+                && generated.contains("encode_for_firmware")
+                && generated.contains("validate_raw_conversion_profile"),
+            "RAW conversion must use the exact firmware codec and upload gate: {generated}"
+        );
+    }
+
+    #[test]
+    fn generated_render_rejects_unsupported_values_before_profile_io() {
+        let camera = serde_json::from_str::<Camera>(
+            r#"{
+                "id": "fixture",
+                "spec": {
+                    "name": "Fixture",
+                    "generation": "fixture",
+                    "usb": { "vendor_id": 1227, "product_id": 1, "chunk_size": 1024 },
+                    "features": {
+                        "render": { "profile_code": 1, "header_padding": 0, "fields": [] }
+                    }
+                }
+            }"#,
+        )
+        .expect("render fixture must parse");
+        let generated = generate(
+            &BTreeMap::new(),
+            &BTreeMap::from([(camera.id.clone(), camera)]),
+        )
+        .expect("render fixture must generate")
+        .to_string();
+
+        let capability_validation = generated
+            .find("validate_firmware_capabilities")
+            .expect("generated render must validate firmware values");
+        let signature_validation = generated
+            .find("validate_raw_conversion_signature")
+            .expect("generated render must validate the exact firmware wire layout");
+        let profile_read = generated
+            .find("snapshot_raw_conversion_profile")
+            .expect("generated render must read the conversion profile");
+
+        assert!(capability_validation < profile_read);
+        assert!(signature_validation < profile_read);
+    }
+
+    #[test]
     fn render_header_padding_is_required_and_drives_both_wire_directions() {
         let parsed = serde_json::from_str::<Camera>(
             r#"{
@@ -612,8 +915,8 @@ mod tests {
         );
         assert_eq!(
             generated.matches("Self :: HEADER_PADDING").count(),
-            2,
-            "serializer and deserializer must use the same camera-specific padding: {generated}"
+            4,
+            "global and firmware codecs must use the same camera-specific padding: {generated}"
         );
         assert!(
             generated.contains("write_zero_padding (writer , Self :: HEADER_PADDING)"),

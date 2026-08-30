@@ -344,6 +344,8 @@ pub struct SupportedCamera {
     pub product: u16,
     pub ptp_identity: Option<generated::cameras::CameraPtpIdentity>,
     pub preflight_profiles: &'static [generated::cameras::CameraPreflightProfile],
+    pub firmware_capability_profiles:
+        &'static [generated::cameras::CameraFirmwareCapabilityProfile],
     pub camera_factory: CameraFactory,
 }
 

@@ -55,6 +55,11 @@ capability/descriptor set fails closed before a write. Adding a row requires
 captured device evidence and an explicit FML preflight profile; a nearby
 firmware version is never assumed compatible.
 
+The generated X-T5 capability matrix records Reala Ace as unavailable on
+firmware `3.01` and available from `4.00`. This records option availability only:
+it does not change the mutating support boundary above. Firmware `4.31` also
+pins the exact RAW conversion profile code, padding, and 29-field order.
+
 ## Emulation Mode
 
 The `--emulate VENDOR:PRODUCT` flag selects a different generated logical model.

@@ -106,6 +106,20 @@ the command is sent.
 
 Success returns `ValidatedCameraSession<Operation>`. Only that typestate exposes
 the relevant mutation, and dropping it removes the PTP mutation authorization.
+The session also pins the exact generated firmware capability profile selected
+from the live `GetDeviceInfo` version. Simulation enum codecs use that profile's
+canonical/read wire mappings. Simulation and render inputs are checked against
+its logical-value allowlists before selector or object-upload mutations.
+
+RAW conversion has an additional two-stage gate: the firmware profile's exact
+profile code, padding, and ordered field ids must match the generated codec;
+then the live current profile is decoded and encoded through that exact
+firmware profile, updated, and validated
+against `GetDevicePropDesc`. Only after both checks does transport authorize
+`FujiSendObjectInfo`/`FujiSendObject`. A different per-firmware RAW enum wire
+mapping is therefore emitted explicitly rather than silently using a
+model/generation value.
+
 The transport independently rejects `SetDevicePropValue`, object upload/delete,
 and Fuji vendor write operations unless the current authorization allows their
 operation code. This makes bypassing preflight from another high-level caller a

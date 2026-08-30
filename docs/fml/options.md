@@ -116,6 +116,13 @@ encoding: {
   canonical wire value (used when serializing); the rest are alternates accepted
   at deserialization (older firmwares, undocumented spellings).
 
+This global lookup is the generation/model default, not sufficient authority
+for a camera write. Camera firmware profiles narrow allowed logical values and
+may replace canonical/read wire values. A validated session pins the exact
+profile; simulation and RAW conversion codecs consult it for both directions.
+For a wire-value list, writes use the first value and reads accept every listed
+alias.
+
 Wire values must collectively fit in either `i16` or `u16`. Codegen picks `i16`
 if any value is negative, `u16` otherwise, and bails if the range spans both
 (e.g. `[-1, 40000]`).

@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -20,6 +22,7 @@ pub struct CameraSpec {
     pub ptp: Option<PtpIdentity>,
     #[serde(default)]
     pub preflight: Vec<PreflightProfile>,
+    pub capabilities: Option<CameraCapabilities>,
     pub features: Option<Features>,
 }
 
@@ -98,6 +101,45 @@ pub struct PreflightProperty {
     pub code: u16,
     pub data_type: Option<u16>,
     pub writable: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CameraCapabilities {
+    pub generation: CapabilitySet,
+    pub model: CapabilitySet,
+    pub firmware: BTreeMap<String, CapabilitySet>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CapabilitySet {
+    pub option_overrides: Vec<OptionCapability>,
+    pub raw_conversion: Option<RawConversionSignature>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RawConversionSignature {
+    pub profile_code: u32,
+    pub header_padding: u32,
+    pub fields: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OptionCapability {
+    pub r#ref: String,
+    pub allowed_values: Option<Vec<String>>,
+    #[serde(default)]
+    pub wire_values: BTreeMap<String, CapabilityWireValue>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum CapabilityWireValue {
+    Single(i32),
+    Multi(Vec<i32>),
 }
 
 #[derive(Debug, Deserialize)]
@@ -430,5 +472,55 @@ mod tests {
         );
 
         assert!(result.is_ok(), "PTP identity must parse: {result:?}");
+    }
+
+    #[test]
+    fn camera_spec_accepts_layered_firmware_capabilities() {
+        let result = serde_json::from_str::<CameraSpec>(
+            r#"{
+                "name": "Demo",
+                "generation": "gen_a",
+                "usb": { "vendor_id": 1227, "product_id": 764, "chunk_size": 1024 },
+                "capabilities": {
+                    "generation": { "option_overrides": [{
+                            "ref": "film_simulation",
+                            "allowed_values": ["provia"],
+                            "wire_values": { "provia": 1 }
+                    }] },
+                    "model": { "option_overrides": [{
+                        "ref": "film_simulation",
+                        "wire_values": { "reala_ace": 20 }
+                    }] },
+                    "firmware": {
+                        "3.00": {},
+                        "4.00": { "option_overrides": [{
+                                "ref": "film_simulation",
+                                "allowed_values": ["provia", "reala_ace"],
+                                "wire_values": { "reala_ace": [20, 21] }
+                        }] }
+                    }
+                }
+            }"#,
+        );
+
+        assert!(
+            result.is_ok(),
+            "layered capabilities must parse: {result:?}"
+        );
+    }
+
+    #[test]
+    fn capability_set_accepts_exact_raw_conversion_signature() {
+        let result = serde_json::from_str::<CapabilitySet>(
+            r#"{
+                "raw_conversion": {
+                    "profile_code": 4279731458,
+                    "header_padding": 494,
+                    "fields": ["head_0", "film_simulation", "tail_0"]
+                }
+            }"#,
+        );
+
+        assert!(result.is_ok(), "RAW signature must parse: {result:?}");
     }
 }

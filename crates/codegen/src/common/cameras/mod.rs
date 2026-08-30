@@ -5,6 +5,7 @@ use quote::quote;
 
 use crate::{
     ast::{Camera, PreflightOperation, PreflightStatus},
+    schema::capabilities::resolve_firmware_capabilities,
     util::ident::{safe_upper_camel_case_ident, safe_uppercase_ident},
 };
 
@@ -108,6 +109,64 @@ pub fn generate(cameras: &BTreeMap<String, Camera>) -> anyhow::Result<TokenStrea
                 }
             }
         });
+        let firmware_capability_profiles = match camera.spec.capabilities.as_ref() {
+            Some(capabilities) => resolve_firmware_capabilities(capabilities)?,
+            None => Vec::new(),
+        }
+        .into_iter()
+        .map(|profile| {
+            let firmware = profile.firmware;
+            let raw_conversion = profile.raw_conversion.map_or_else(
+                || quote! { None },
+                |signature| {
+                    let profile_code = Literal::u32_suffixed(signature.profile_code);
+                    let header_padding = usize::try_from(signature.header_padding)
+                        .map(Literal::usize_suffixed)
+                        .expect("u32 header padding must fit usize");
+                    let fields = signature.fields;
+                    quote! {
+                        Some(CameraRawConversionSignature {
+                            profile_code: #profile_code,
+                            header_padding: #header_padding,
+                            fields: &[#(#fields),*],
+                        })
+                    }
+                },
+            );
+            let options = profile.options.into_iter().map(|(option, capability)| {
+                let allowed_values = capability.allowed_values;
+                let wire_values =
+                    capability
+                        .wire_values
+                        .into_iter()
+                        .map(|(logical_value, wire_values)| {
+                            let wire_values = wire_values.into_iter().map(Literal::i32_suffixed);
+
+                            quote! {
+                                CameraOptionWireValue {
+                                    logical_value: #logical_value,
+                                    wire_values: &[#(#wire_values),*],
+                                }
+                            }
+                        });
+
+                quote! {
+                    CameraOptionCapability {
+                        option: #option,
+                        allowed_values: &[#(#allowed_values),*],
+                        wire_values: &[#(#wire_values),*],
+                    }
+                }
+            });
+
+            quote! {
+                    CameraFirmwareCapabilityProfile {
+                        firmware: #firmware,
+                        options: &[#(#options),*],
+                        raw_conversion: #raw_conversion,
+                    }
+            }
+        });
 
         let features = camera.spec.features.as_ref();
         let backup_override = features.is_some_and(|f| f.backup).then(|| {
@@ -153,6 +212,7 @@ pub fn generate(cameras: &BTreeMap<String, Camera>) -> anyhow::Result<TokenStrea
                 product: #product,
                 ptp_identity: #ptp_identity,
                 preflight_profiles: &[#(#preflight_profiles),*],
+                firmware_capability_profiles: &[#(#firmware_capability_profiles),*],
                 camera_factory: || Box::new(#struct_name),
             };
 
@@ -224,6 +284,146 @@ pub fn generate(cameras: &BTreeMap<String, Camera>) -> anyhow::Result<TokenStrea
             pub required_properties: &'static [CameraPreflightProperty],
         }
 
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        pub struct CameraFirmwareCapabilityProfile {
+            pub firmware: &'static str,
+            pub options: &'static [CameraOptionCapability],
+            pub raw_conversion: Option<CameraRawConversionSignature>,
+        }
+
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        pub struct CameraRawConversionSignature {
+            pub profile_code: u32,
+            pub header_padding: usize,
+            pub fields: &'static [&'static str],
+        }
+
+        impl CameraFirmwareCapabilityProfile {
+            pub fn find_exact<'a>(
+                profiles: &'a [Self],
+                firmware: &str,
+            ) -> Option<&'a Self> {
+                profiles
+                    .iter()
+                    .find(|profile| profile.firmware == firmware)
+            }
+
+            pub fn option(&self, name: &str) -> Option<&'static CameraOptionCapability> {
+                self.options
+                    .iter()
+                    .find(|capability| capability.option == name)
+            }
+
+            pub fn validate_option_value(
+                &self,
+                option: &str,
+                logical: &str,
+            ) -> anyhow::Result<()> {
+                let capability = self.option(option).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "firmware {} has no capability profile for option {option}",
+                        self.firmware,
+                    )
+                })?;
+                if !capability.allowed_values.contains(&logical) {
+                    anyhow::bail!(
+                        "firmware {} does not allow {option}={logical}",
+                        self.firmware,
+                    );
+                }
+
+                Ok(())
+            }
+
+            pub fn write_wire_value(
+                &self,
+                option: &str,
+                logical: &str,
+            ) -> anyhow::Result<i32> {
+                self.validate_option_value(option, logical)?;
+                let capability = self.option(option).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "firmware {} has no capability profile for option {option}",
+                        self.firmware,
+                    )
+                })?;
+                capability
+                    .wire_values
+                    .iter()
+                    .find(|value| value.logical_value == logical)
+                    .and_then(|value| value.wire_values.first())
+                    .copied()
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "firmware {} has no wire value for {option}={logical}",
+                            self.firmware,
+                        )
+                    })
+            }
+
+            pub fn read_logical_value(
+                &self,
+                option: &str,
+                wire: i32,
+            ) -> anyhow::Result<&'static str> {
+                let capability = self.option(option).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "firmware {} has no capability profile for option {option}",
+                        self.firmware,
+                    )
+                })?;
+                capability
+                    .wire_values
+                    .iter()
+                    .find(|value| {
+                        capability.allowed_values.contains(&value.logical_value)
+                            && value.wire_values.contains(&wire)
+                    })
+                    .map(|value| value.logical_value)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "firmware {} has no allowed logical value for {option} wire value {wire}",
+                            self.firmware,
+                        )
+                    })
+            }
+
+            pub fn validate_raw_conversion_signature(
+                &self,
+                profile_code: u32,
+                header_padding: usize,
+                fields: &[&str],
+            ) -> anyhow::Result<()> {
+                let signature = self.raw_conversion.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "firmware {} has no verified RAW conversion signature",
+                        self.firmware,
+                    )
+                })?;
+                anyhow::ensure!(
+                    signature.profile_code == profile_code
+                        && signature.header_padding == header_padding
+                        && signature.fields == fields,
+                    "firmware {} RAW conversion signature does not match the generated codec",
+                    self.firmware,
+                );
+                Ok(())
+            }
+        }
+
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        pub struct CameraOptionCapability {
+            pub option: &'static str,
+            pub allowed_values: &'static [&'static str],
+            pub wire_values: &'static [CameraOptionWireValue],
+        }
+
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        pub struct CameraOptionWireValue {
+            pub logical_value: &'static str,
+            pub wire_values: &'static [i32],
+        }
+
         #(#defs)*
 
         pub const SUPPORTED: &[crate::SupportedCamera] = &[
@@ -257,7 +457,26 @@ mod tests {
                         "allowed_usb_modes": [6],
                         "required_operations": [4097, 4116, 4117],
                         "required_properties": [{ "code": 53635, "data_type": 4, "writable": true }]
-                    }]
+                    }],
+                    "capabilities": {
+                        "generation": { "option_overrides": [{
+                            "ref": "film_simulation",
+                                "allowed_values": ["provia"],
+                                "wire_values": { "provia": 1 }
+                        }] },
+                        "model": { "option_overrides": [{
+                            "ref": "film_simulation",
+                            "wire_values": { "reala_ace": 20 }
+                        }] },
+                        "firmware": {
+                            "3.00": {},
+                            "4.00": { "option_overrides": [{
+                                    "ref": "film_simulation",
+                                    "allowed_values": ["provia", "reala_ace"],
+                                    "wire_values": { "reala_ace": [20, 21] }
+                            }] }
+                        }
+                    }
                 }
             }"#,
         )
@@ -296,5 +515,62 @@ mod tests {
             .to_string();
 
         assert!(generated.contains("ptp_identity : Some (CameraPtpIdentity"));
+    }
+
+    #[test]
+    fn camera_registry_defines_exact_firmware_capability_contract() {
+        let generated = generate(&BTreeMap::new()).unwrap().to_string();
+
+        assert!(generated.contains("pub struct CameraFirmwareCapabilityProfile"));
+    }
+
+    #[test]
+    fn camera_registry_defines_raw_conversion_signature_contract() {
+        let generated = generate(&BTreeMap::new()).unwrap().to_string();
+
+        assert!(generated.contains("pub struct CameraRawConversionSignature"));
+    }
+
+    #[test]
+    fn firmware_capability_profile_owns_raw_conversion_signature() {
+        let generated = generate(&BTreeMap::new()).unwrap().to_string();
+
+        assert!(generated.contains("pub raw_conversion : Option < CameraRawConversionSignature >"));
+    }
+
+    #[test]
+    fn firmware_profile_validates_raw_conversion_signature_exactly() {
+        let generated = generate(&BTreeMap::new()).unwrap().to_string();
+
+        assert!(generated.contains("validate_raw_conversion_signature"));
+    }
+
+    #[test]
+    fn camera_registry_emits_only_exact_resolved_firmware_profiles() {
+        let camera = camera_with_preflight();
+        let generated = generate(&BTreeMap::from([(camera.id.clone(), camera)]))
+            .unwrap()
+            .to_string();
+
+        assert!(
+            generated.contains("firmware_capability_profiles : & [CameraFirmwareCapabilityProfile")
+        );
+    }
+
+    #[test]
+    fn firmware_capability_lookup_is_exact() {
+        let generated = generate(&BTreeMap::new()).unwrap().to_string();
+
+        assert!(generated.contains("profile . firmware == firmware"));
+    }
+
+    #[test]
+    fn firmware_capability_profile_exposes_fail_closed_option_codec() {
+        let generated = generate(&BTreeMap::new()).unwrap().to_string();
+
+        assert!(generated.contains("pub fn option"));
+        assert!(generated.contains("pub fn validate_option_value"));
+        assert!(generated.contains("pub fn write_wire_value"));
+        assert!(generated.contains("pub fn read_logical_value"));
     }
 }

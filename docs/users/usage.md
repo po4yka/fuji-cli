@@ -233,6 +233,11 @@ property descriptors. Unknown firmware and unverified matrix entries fail
 closed; normal commands have no experimental override. The current X-T5 policy
 requires firmware `4.31`, USB mode `0x6`, and 100% battery. The battery value is
 a deliberately conservative project threshold, not a claimed Fujifilm minimum.
+Film-simulation values are additionally checked against the exact firmware
+capability profile before any selector or upload mutation. In particular,
+Reala Ace is absent from the X-T5 `3.01` profile and present from `4.00`; those
+documented profiles do not themselves enable writes, which remain verified only
+for `4.31`.
 
 Use `-` in place of any input or output filename to read from stdin or write to
 stdout. RAF input is limited to 512 MiB; simulation JSON remains limited to

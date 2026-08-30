@@ -4,13 +4,15 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
 use crate::{
-    ast::{Camera, FujiOption},
+    ast::{Camera, FujiOption, SpecKind},
     schema::grammar::build_settings,
 };
 
 struct UnionEntry {
     id: String,
     type_path: TokenStream,
+    option_id: Option<String>,
+    kind: SpecKind,
 }
 
 pub fn generate(
@@ -40,6 +42,8 @@ fn build_union(
                     by_id.entry(id.clone()).or_insert_with(|| UnionEntry {
                         id,
                         type_path: info.type_path(),
+                        option_id: info.option.map(|option| option.id.clone()),
+                        kind: info.kind,
                     });
                 });
                 Ok(by_id)
@@ -57,6 +61,18 @@ fn generate_struct_def(union: &[UnionEntry]) -> TokenStream {
             pub #ident: Option<#ty>,
         }
     });
+    let capability_validations = union.iter().filter_map(|entry| {
+        if entry.kind != SpecKind::Enum {
+            return None;
+        }
+        let option_id = entry.option_id.as_ref()?;
+        let ident = format_ident!("{}", entry.id);
+        Some(quote! {
+            if let Some(value) = self.#ident.as_ref() {
+                profile.validate_option_value(#option_id, value.capability_value_id())?;
+            }
+        })
+    });
 
     quote! {
         #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -64,12 +80,26 @@ fn generate_struct_def(union: &[UnionEntry]) -> TokenStream {
         pub struct SimulationBase {
             #( #base_fields )*
         }
+
+        impl SimulationBase {
+            pub(crate) fn validate_firmware_capabilities(
+                &self,
+                profile: &crate::generated::cameras::CameraFirmwareCapabilityProfile,
+            ) -> ::anyhow::Result<()> {
+                #(#capability_validations)*
+                Ok(())
+            }
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::generate_struct_def;
+    use proc_macro2::TokenStream;
+
+    use crate::ast::SpecKind;
+
+    use super::{UnionEntry, generate_struct_def};
 
     #[test]
     fn simulation_base_rejects_unknown_json_fields() {
@@ -78,6 +108,35 @@ mod tests {
         assert!(
             generated.contains("deny_unknown_fields"),
             "generated SimulationBase must reject misspelled fields:\n{generated}",
+        );
+    }
+
+    #[test]
+    fn simulation_base_exposes_firmware_capability_validation() {
+        let generated = generate_struct_def(&[]).to_string();
+
+        assert!(
+            generated.contains("validate_firmware_capabilities"),
+            "all simulation inputs need a pre-mutation firmware validation seam: {generated}"
+        );
+    }
+
+    #[test]
+    fn simulation_base_validates_enum_values_against_firmware_profile() {
+        let generated = generate_struct_def(&[UnionEntry {
+            id: "film_simulation".to_owned(),
+            type_path: "crate::generated::options::FilmSimulation"
+                .parse::<TokenStream>()
+                .expect("type path must parse"),
+            option_id: Some("film_simulation".to_owned()),
+            kind: SpecKind::Enum,
+        }])
+        .to_string();
+
+        assert!(
+            generated.contains("validate_option_value")
+                && generated.contains("capability_value_id"),
+            "enum logical values must be checked against exact firmware: {generated}"
         );
     }
 }

@@ -35,6 +35,9 @@ pub fn generate(json: &str, out_dir: &Path) -> anyhow::Result<()> {
 }
 
 fn generate_into(fml: &ast::Fml, out_dir: &Path) -> anyhow::Result<()> {
+    schema::capabilities::validate_verified_profile_coverage(&fml.options, &fml.cameras)
+        .context("validating verified firmware capability coverage")?;
+
     let options = common::options::generate(&fml.options).context("generating option types")?;
     write(out_dir, "options", options)?;
 

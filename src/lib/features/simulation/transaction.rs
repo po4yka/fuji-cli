@@ -129,6 +129,26 @@ pub(crate) trait SimulationPropertyIo {
     fn set_prop<T>(&mut self, code: u16, value: &T) -> Result<(), SimulationPropertyWriteError>
     where
         T: for<'a> BinWrite<Args<'a> = ()>;
+
+    fn firmware_option_write_value(
+        &self,
+        option: &str,
+        logical_value: &str,
+    ) -> anyhow::Result<i32> {
+        anyhow::bail!(
+            "simulation I/O has no firmware write capability for {option}={logical_value}"
+        )
+    }
+
+    fn firmware_option_read_logical_value(
+        &self,
+        option: &str,
+        wire_value: i32,
+    ) -> anyhow::Result<&'static str> {
+        anyhow::bail!(
+            "simulation I/O has no firmware read capability for {option} wire value {wire_value}"
+        )
+    }
 }
 
 #[derive(Debug)]
@@ -161,6 +181,10 @@ impl SimulationPropertyWriteError {
             ..self
         }
     }
+
+    pub(crate) fn into_cause(self) -> anyhow::Error {
+        self.cause
+    }
 }
 
 impl SimulationPropertyIo for crate::ptp::Ptp {
@@ -181,6 +205,22 @@ impl SimulationPropertyIo for crate::ptp::Ptp {
     {
         crate::ptp::Ptp::set_prop(self, code, value)
             .map_err(SimulationPropertyWriteError::unconfirmed)
+    }
+
+    fn firmware_option_write_value(
+        &self,
+        option: &str,
+        logical_value: &str,
+    ) -> anyhow::Result<i32> {
+        crate::ptp::Ptp::firmware_option_write_value(self, option, logical_value)
+    }
+
+    fn firmware_option_read_logical_value(
+        &self,
+        option: &str,
+        wire_value: i32,
+    ) -> anyhow::Result<&'static str> {
+        crate::ptp::Ptp::firmware_option_read_logical_value(self, option, wire_value)
     }
 }
 
@@ -379,6 +419,23 @@ where
         self.verify_selector()
             .map_err(SimulationPropertyWriteError::confirmed_with_uncertain_binding)
     }
+
+    fn firmware_option_write_value(
+        &self,
+        option: &str,
+        logical_value: &str,
+    ) -> anyhow::Result<i32> {
+        self.io.firmware_option_write_value(option, logical_value)
+    }
+
+    fn firmware_option_read_logical_value(
+        &self,
+        option: &str,
+        wire_value: i32,
+    ) -> anyhow::Result<&'static str> {
+        self.io
+            .firmware_option_read_logical_value(option, wire_value)
+    }
 }
 
 impl<IO, Selector> SelectedSimulationIo<'_, IO, Selector>
@@ -387,14 +444,13 @@ where
     Selector: crate::ptp::option::SimulationSetting + PartialEq,
 {
     fn select_and_verify(&mut self) -> anyhow::Result<()> {
-        self.io
-            .set_prop(Selector::prop_code(), &self.selector)
-            .map_err(|error| error.cause)?;
+        Selector::try_push_to(&self.selector, self.io)
+            .map_err(SimulationPropertyWriteError::into_cause)?;
         self.verify_selector()
     }
 
     fn verify_selector(&mut self) -> anyhow::Result<()> {
-        let selected: Selector = self.io.get_prop(Selector::prop_code())?;
+        let selected = Selector::try_pull_from(self.io)?;
         anyhow::ensure!(
             selected == self.selector,
             "selected simulation slot changed during profile property access"

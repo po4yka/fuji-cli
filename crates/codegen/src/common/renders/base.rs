@@ -13,6 +13,8 @@ struct UnionEntry {
     id: String,
     type_path: TokenStream,
     is_copy: bool,
+    option_id: Option<String>,
+    kind: SpecKind,
 }
 
 pub fn generate(
@@ -54,6 +56,8 @@ fn build_union(
                         id,
                         type_path: info.type_path(),
                         is_copy: !matches!(info.kind, SpecKind::String),
+                        option_id: info.option.map(|option| option.id.clone()),
+                        kind: info.kind,
                     });
                 });
                 Ok(by_id)
@@ -79,12 +83,36 @@ fn generate_struct_def(union: &[UnionEntry]) -> TokenStream {
             pub #ident: Option<#ty>,
         }
     });
+    let capability_validations = union.iter().filter_map(|entry| {
+        if entry.kind != SpecKind::Enum {
+            return None;
+        }
+        let option_id = entry.option_id.as_ref()?;
+        let ident = format_ident!("{}", entry.id);
+        Some(quote! {
+            if let Some(value) = self.#ident.as_ref() {
+                let logical = value.capability_value_id();
+                profile.validate_option_value(#option_id, logical)?;
+                profile.write_wire_value(#option_id, logical)?;
+            }
+        })
+    });
 
     quote! {
         #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
         #[serde(default, rename_all = "camelCase")]
         pub struct RenderBase {
             #( #fields )*
+        }
+
+        impl RenderBase {
+            pub(crate) fn validate_firmware_capabilities(
+                &self,
+                profile: &crate::generated::cameras::CameraFirmwareCapabilityProfile,
+            ) -> ::anyhow::Result<()> {
+                #(#capability_validations)*
+                Ok(())
+            }
         }
     }
 }
@@ -140,5 +168,61 @@ fn generate_apply_simulation_impl(
                 #( #assigns )*
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use proc_macro2::TokenStream;
+
+    use crate::ast::SpecKind;
+
+    use super::{UnionEntry, generate_struct_def};
+
+    #[test]
+    fn render_base_exposes_firmware_capability_validation() {
+        let generated = generate_struct_def(&[]).to_string();
+
+        assert!(
+            generated.contains("validate_firmware_capabilities"),
+            "render input needs a pre-upload firmware validation seam: {generated}"
+        );
+    }
+
+    #[test]
+    fn render_base_validates_enum_values_against_firmware_profile() {
+        let generated = generate_struct_def(&[UnionEntry {
+            id: "film_simulation".to_owned(),
+            type_path: "crate::generated::options::FilmSimulation"
+                .parse::<TokenStream>()
+                .expect("type path must parse"),
+            is_copy: true,
+            option_id: Some("film_simulation".to_owned()),
+            kind: SpecKind::Enum,
+        }])
+        .to_string();
+
+        assert!(
+            generated.contains("validate_option_value")
+                && generated.contains("capability_value_id"),
+            "render enum values must be checked against exact firmware: {generated}"
+        );
+    }
+
+    #[test]
+    fn render_base_accepts_firmware_scoped_wire_encoding() {
+        let generated = generate_struct_def(&[UnionEntry {
+            id: "film_simulation".to_owned(),
+            type_path: "crate::generated::options::FilmSimulation"
+                .parse::<TokenStream>()
+                .expect("type path must parse"),
+            is_copy: true,
+            option_id: Some("film_simulation".to_owned()),
+            kind: SpecKind::Enum,
+        }])
+        .to_string();
+
+        assert!(generated.contains("write_wire_value"));
+        assert!(!generated.contains("capability_global_wire_value"));
     }
 }

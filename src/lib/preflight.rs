@@ -10,8 +10,8 @@ use crate::{
     },
     generated::{
         cameras::{
-            CameraPreflightDataType, CameraPreflightOperation, CameraPreflightProfile,
-            CameraPreflightProfileStatus,
+            CameraFirmwareCapabilityProfile, CameraPreflightDataType, CameraPreflightOperation,
+            CameraPreflightProfile, CameraPreflightProfileStatus,
         },
         options::CustomSetting,
         renders::RenderBase,
@@ -55,6 +55,7 @@ pub struct PreflightEvidence {
 pub struct ValidatedCameraSession<'camera, Operation> {
     pub(crate) camera: &'camera mut Camera,
     evidence: PreflightEvidence,
+    capability_profile: &'static CameraFirmwareCapabilityProfile,
     operation: PhantomData<Operation>,
 }
 
@@ -89,6 +90,10 @@ impl OperationMarker for SimulationWrite {
 impl<Operation> ValidatedCameraSession<'_, Operation> {
     pub fn evidence(&self) -> &PreflightEvidence {
         &self.evidence
+    }
+
+    pub(crate) const fn capability_profile(&self) -> &'static CameraFirmwareCapabilityProfile {
+        self.capability_profile
     }
 }
 
@@ -126,6 +131,7 @@ impl ValidatedCameraSession<'_, RawConversion> {
         partial: RenderBase,
         draft: bool,
     ) -> anyhow::Result<crate::features::render::RenderOutcome> {
+        partial.validate_firmware_capabilities(self.capability_profile())?;
         self.camera.render_unchecked(image, partial, draft)
     }
 
@@ -172,6 +178,11 @@ impl ValidatedCameraSession<'_, SimulationWrite> {
         slot: CustomSetting,
         partial: SimulationBase,
     ) -> Result<SimulationTransactionSuccess, SimulationTransactionError> {
+        partial
+            .validate_firmware_capabilities(self.capability_profile())
+            .map_err(|error| {
+                SimulationTransactionError::preparation(self.camera.ptp.is_healthy(), error)
+            })?;
         self.camera.update_simulation_unchecked(slot, partial)
     }
 
@@ -180,6 +191,12 @@ impl ValidatedCameraSession<'_, SimulationWrite> {
         slot: CustomSetting,
         simulation: &dyn Simulation,
     ) -> Result<SimulationTransactionSuccess, SimulationTransactionError> {
+        simulation
+            .to_base()
+            .validate_firmware_capabilities(self.capability_profile())
+            .map_err(|error| {
+                SimulationTransactionError::preparation(self.camera.ptp.is_healthy(), error)
+            })?;
         self.camera.set_simulation_unchecked(slot, simulation)
     }
 }
@@ -204,6 +221,7 @@ pub(crate) fn run<'camera, Operation: OperationMarker>(
     validate_physical_identity(definition, camera.physical_identity)?;
     let info = camera.ptp.get_info()?;
     let profile = select_profile(definition, Operation::KIND, &info.device_version)?;
+    let capability_profile = select_capability_profile(definition, &info.device_version)?;
     validate_device_info(definition, profile, &info)?;
 
     let usb_mode = u32::from(camera.ptp.get_prop::<u16>(0xD16E_u16)?);
@@ -216,7 +234,7 @@ pub(crate) fn run<'camera, Operation: OperationMarker>(
     let descriptors = read_and_validate_descriptors(&mut camera.ptp, profile)?;
     camera
         .ptp
-        .authorize_mutations(profile.required_operations, descriptors);
+        .authorize_mutations(profile.required_operations, descriptors, capability_profile);
 
     let evidence = PreflightEvidence {
         camera_name: definition.name,
@@ -233,6 +251,7 @@ pub(crate) fn run<'camera, Operation: OperationMarker>(
     Ok(ValidatedCameraSession {
         camera,
         evidence,
+        capability_profile,
         operation: PhantomData,
     })
 }
@@ -274,6 +293,19 @@ fn select_profile(
         "firmware {firmware} has only an unverified {operation:?} profile"
     );
     Ok(profile)
+}
+
+fn select_capability_profile(
+    camera: &'static SupportedCamera,
+    firmware: &str,
+) -> anyhow::Result<&'static CameraFirmwareCapabilityProfile> {
+    CameraFirmwareCapabilityProfile::find_exact(camera.firmware_capability_profiles, firmware)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "firmware {firmware} has no exact capability profile for {}",
+                camera.name
+            )
+        })
 }
 
 fn validate_physical_identity(
@@ -421,14 +453,15 @@ mod tests {
     use crate::{
         SupportedCamera,
         generated::cameras::{
-            CameraPreflightDataType, CameraPreflightOperation, CameraPreflightProfile,
-            CameraPreflightProfileStatus, CameraPreflightProperty, CameraPtpIdentity,
+            CameraFirmwareCapabilityProfile, CameraPreflightDataType, CameraPreflightOperation,
+            CameraPreflightProfile, CameraPreflightProfileStatus, CameraPreflightProperty,
+            CameraPtpIdentity,
         },
         policy::{PhysicalUsbIdentity, SerialFingerprint},
     };
 
     use super::{
-        select_profile, validate_device_info, validate_mode_and_battery,
+        select_capability_profile, select_profile, validate_device_info, validate_mode_and_battery,
         validate_physical_identity, validate_serial_binding,
     };
 
@@ -455,8 +488,66 @@ mod tests {
             model: "X-T5",
         }),
         preflight_profiles: &[PROFILE],
+        firmware_capability_profiles: &[],
         camera_factory: crate::features::base::UNKNOWN_CAMERA.camera_factory,
     };
+
+    #[test]
+    fn firmware_capability_selection_does_not_fall_back_to_another_version() {
+        const CAPABILITIES: [CameraFirmwareCapabilityProfile; 1] =
+            [CameraFirmwareCapabilityProfile {
+                firmware: "4.31",
+                options: &[],
+                raw_conversion: None,
+            }];
+        const CAPABILITY_CAMERA: SupportedCamera = SupportedCamera {
+            firmware_capability_profiles: &CAPABILITIES,
+            ..CAMERA
+        };
+
+        let error = select_capability_profile(&CAPABILITY_CAMERA, "4.32")
+            .expect_err("unknown firmware must not inherit another capability profile");
+
+        assert!(error.to_string().contains("4.32"));
+    }
+
+    #[test]
+    fn x_t5_reala_ace_capability_starts_at_firmware_4_00() {
+        let camera = crate::generated::cameras::SUPPORTED
+            .iter()
+            .find(|camera| camera.name == "FUJIFILM X-T5")
+            .expect("X-T5 must be generated");
+        let before = select_capability_profile(camera, "3.01").expect("3.01 profile must exist");
+        let after = select_capability_profile(camera, "4.00").expect("4.00 profile must exist");
+
+        assert!(
+            before
+                .validate_option_value("film_simulation", "reala_ace")
+                .is_err()
+        );
+        assert_eq!(
+            after
+                .write_wire_value("film_simulation", "reala_ace")
+                .expect("Reala Ace must have an exact post-4.00 wire value"),
+            0x14
+        );
+
+        let current = select_capability_profile(camera, "4.31").expect("4.31 profile must exist");
+        let raw = current
+            .raw_conversion
+            .expect("verified 4.31 RAW conversion needs an exact signature");
+        assert_eq!(raw.profile_code, 0xff17_9502);
+        assert_eq!(raw.header_padding, 0x1ee);
+        assert_eq!(raw.fields.len(), 29);
+        assert_eq!(raw.fields.first(), Some(&"head_0"));
+        assert_eq!(raw.fields.last(), Some(&"tail_0"));
+
+        // Missing entries here would break the selector and otherwise valid RAW
+        // enum fields before any device I/O.
+        assert_eq!(current.write_wire_value("custom_setting", "c1").unwrap(), 1);
+        assert!(current.write_wire_value("file_type", "jpeg").is_ok());
+        assert!(current.write_wire_value("dynamic_range", "hdr100").is_ok());
+    }
 
     #[test]
     fn unknown_firmware_fails_closed() {

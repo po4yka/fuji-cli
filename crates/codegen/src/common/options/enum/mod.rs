@@ -85,15 +85,19 @@ pub(crate) fn generate(
         .with_context(|| format!("generating Display impl for enum option `{id}`"))?;
     let from_str_impl = generate_from_str_impl(&safe_upper_camel_case_ident(id), &resolved)
         .with_context(|| format!("generating FromStr impl for enum option `{id}`"))?;
+    let capability_value_impl =
+        generate_capability_value_impl(&safe_upper_camel_case_ident(id), &resolved);
 
     let (ptp_serde_impl, simulation_setting_impl) = if let Some(prop_code) = prop_code {
         let serde = generate_ptp_serde_impl(&safe_upper_camel_case_ident(id), &repr_type)
             .with_context(|| format!("generating binrw codec impls for enum option `{id}`"))?;
-        let setting =
-            generate_simulation_setting_impl(&safe_upper_camel_case_ident(id), *prop_code)
-                .with_context(|| {
-                    format!("generating SimulationSetting impl for enum option `{id}`")
-                })?;
+        let setting = generate_simulation_setting_impl(
+            id,
+            &safe_upper_camel_case_ident(id),
+            &repr_type,
+            *prop_code,
+        )
+        .with_context(|| format!("generating SimulationSetting impl for enum option `{id}`"))?;
         (serde, setting)
     } else {
         (quote! {}, quote! {})
@@ -111,6 +115,7 @@ pub(crate) fn generate(
         #try_from_wire_impl
         #display_impl
         #from_str_impl
+        #capability_value_impl
         #ptp_serde_impl
         #simulation_setting_impl
         #conversion_profile_impl
@@ -221,6 +226,58 @@ fn generate_from_str_impl(
     })
 }
 
+fn generate_capability_value_impl(type_name: &Ident, resolved: &[Resolved<'_>]) -> TokenStream {
+    let value_arms = resolved.iter().map(|resolved| {
+        let variant = safe_upper_camel_case_ident(&resolved.variant.id);
+        let id = &resolved.variant.id;
+        quote! { Self::#variant => #id, }
+    });
+    let wire_arms = resolved.iter().map(|resolved| {
+        let variant = safe_upper_camel_case_ident(&resolved.variant.id);
+        let canonical = resolved.canonical;
+        quote! { Self::#variant => #canonical, }
+    });
+    let parse_arms = resolved.iter().map(|resolved| {
+        let variant = safe_upper_camel_case_ident(&resolved.variant.id);
+        let id = &resolved.variant.id;
+        quote! { #id => Ok(Self::#variant), }
+    });
+
+    let parser = quote! {
+        pub(crate) fn try_from_capability_value_id(value: &str) -> ::anyhow::Result<Self> {
+            match value {
+                #(#parse_arms)*
+                _ => ::anyhow::bail!(
+                    "unknown firmware capability value `{value}` for {}",
+                    stringify!(#type_name),
+                ),
+            }
+        }
+    };
+
+    quote! {
+        impl #type_name {
+            pub(crate) const fn capability_value_id(&self) -> &'static str {
+                match self {
+                    #(#value_arms)*
+                }
+            }
+
+            #[allow(
+                dead_code,
+                reason = "generated enum codecs share one capability surface across camera features"
+            )]
+            pub(crate) const fn capability_global_wire_value(&self) -> i32 {
+                match self {
+                    #(#wire_arms)*
+                }
+            }
+
+            #parser
+        }
+    }
+}
+
 fn generate_ptp_serde_impl(type_name: &Ident, repr_type: &Ident) -> anyhow::Result<TokenStream> {
     Ok(quote! {
         impl ::binrw::BinWrite for #type_name {
@@ -257,12 +314,46 @@ fn generate_ptp_serde_impl(type_name: &Ident, repr_type: &Ident) -> anyhow::Resu
 }
 
 fn generate_simulation_setting_impl(
+    id: &str,
     type_name: &Ident,
+    repr_type: &Ident,
     prop_code: u16,
 ) -> anyhow::Result<TokenStream> {
     Ok(quote! {
         impl crate::ptp::option::SimulationSetting for #type_name {
             fn prop_code() -> u16 { #prop_code }
+
+            fn try_push_to<IO: crate::features::simulation::SimulationPropertyIo>(
+                &self,
+                io: &mut IO,
+            ) -> ::std::result::Result<
+                (),
+                crate::features::simulation::SimulationPropertyWriteError,
+            > {
+                let wire = io
+                    .firmware_option_write_value(#id, self.capability_value_id())
+                    .map_err(
+                        crate::features::simulation::SimulationPropertyWriteError::unconfirmed,
+                    )?;
+                let raw: #repr_type = wire.try_into().map_err(|_| {
+                    crate::features::simulation::SimulationPropertyWriteError::unconfirmed(
+                        ::anyhow::anyhow!(
+                            "firmware wire value {wire} for {} does not fit {}",
+                            stringify!(#type_name),
+                            stringify!(#repr_type),
+                        ),
+                    )
+                })?;
+                io.set_prop(Self::prop_code(), &raw)
+            }
+
+            fn try_pull_from<IO: crate::features::simulation::SimulationPropertyIo>(
+                io: &mut IO,
+            ) -> ::anyhow::Result<Self> {
+                let raw: #repr_type = io.get_prop(Self::prop_code())?;
+                let logical = io.firmware_option_read_logical_value(#id, i32::from(raw))?;
+                Self::try_from_capability_value_id(logical)
+            }
         }
     })
 }
@@ -313,6 +404,49 @@ fn generate_conversion_profile_impl(
                     err: Box::new(error),
                 })
             }
+
+            fn write_conversion_profile_field_for_firmware<
+                W: ::std::io::Write + ::std::io::Seek,
+            >(
+                &self,
+                writer: &mut W,
+                endian: ::binrw::Endian,
+                profile: &crate::generated::cameras::CameraFirmwareCapabilityProfile,
+                option: &'static str,
+            ) -> ::binrw::BinResult<()> {
+                let position = ::std::io::Seek::stream_position(writer)?;
+                let wire = profile
+                    .write_wire_value(option, self.capability_value_id())
+                    .map_err(|error| ::binrw::Error::Custom {
+                        pos: position,
+                        err: Box::new(error),
+                    })?;
+                <i32 as ::binrw::BinWrite>::write_options(&wire, writer, endian, ())
+            }
+
+            fn read_conversion_profile_field_for_firmware<
+                R: ::std::io::Read + ::std::io::Seek,
+            >(
+                reader: &mut R,
+                endian: ::binrw::Endian,
+                profile: &crate::generated::cameras::CameraFirmwareCapabilityProfile,
+                option: &'static str,
+            ) -> ::binrw::BinResult<Self> {
+                let position = ::std::io::Seek::stream_position(reader)?;
+                let wire = <i32 as ::binrw::BinRead>::read_options(reader, endian, ())?;
+                let logical = profile
+                    .read_logical_value(option, wire)
+                    .map_err(|error| ::binrw::Error::Custom {
+                        pos: position,
+                        err: Box::new(error),
+                    })?;
+                Self::try_from_capability_value_id(logical).map_err(|error| {
+                    ::binrw::Error::Custom {
+                        pos: position,
+                        err: Box::new(error),
+                    }
+                })
+            }
         }
     })
 }
@@ -321,7 +455,27 @@ fn generate_conversion_profile_impl(
 mod tests {
     use proc_macro2::{Ident, Span};
 
-    use super::{generate_conversion_profile_impl, generate_ptp_serde_impl};
+    use super::{
+        generate_conversion_profile_impl, generate_ptp_serde_impl, generate_simulation_setting_impl,
+    };
+
+    #[test]
+    fn generated_simulation_enum_uses_firmware_scoped_wire_codec() {
+        let generated = generate_simulation_setting_impl(
+            "film_simulation",
+            &Ident::new("FilmSimulation", Span::call_site()),
+            &Ident::new("u16", Span::call_site()),
+            0xD192,
+        )
+        .expect("firmware-scoped enum setting must generate")
+        .to_string();
+
+        assert!(
+            generated.contains("firmware_option_write_value")
+                && generated.contains("firmware_option_read_logical_value"),
+            "simulation enum must use the selected exact firmware codec: {generated}"
+        );
+    }
 
     #[test]
     fn generated_enum_uses_binrw_manual_codec() {
@@ -358,6 +512,10 @@ mod tests {
         assert!(
             (uses_binrw_traits || uses_binrw_context)
                 && generated.contains("try_from_wire")
+                && generated.contains("write_conversion_profile_field_for_firmware")
+                && generated.contains("read_conversion_profile_field_for_firmware")
+                && generated.contains("write_wire_value")
+                && generated.contains("read_logical_value")
                 && !generated.contains("ptp_cursor"),
             "generated enum conversion profile must use binrw I/O: {generated}",
         );

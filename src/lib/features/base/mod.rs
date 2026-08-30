@@ -47,7 +47,7 @@ pub trait CameraBase {
     fn get_info(&self, ptp: &mut Ptp) -> anyhow::Result<Box<dyn CameraInfo>> {
         let info = ptp.get_info()?;
 
-        let mode = UsbMode::try_pull(ptp)?;
+        let mode = ptp.get_prop(UsbMode::prop_code())?;
 
         let battery_string = ptp
             .get_prop::<crate::ptp::codec::PtpString>(DevicePropCode::FujiBatteryInfo2)?
@@ -81,6 +81,7 @@ pub const UNKNOWN_CAMERA: SupportedCamera = SupportedCamera {
     product: 0x0000,
     ptp_identity: None,
     preflight_profiles: &[],
+    firmware_capability_profiles: &[],
     camera_factory: || Box::new(UnknownCamera),
 };
 

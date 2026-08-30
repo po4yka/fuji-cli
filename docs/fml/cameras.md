@@ -70,6 +70,51 @@ writable descriptor (`false` permits either because some read paths share a
 property with a write profile). Do not copy a profile to another firmware or
 model without captured traffic and a physical-device run.
 
+## Firmware Capabilities
+
+Feature shape and wire compatibility are separate. `capabilities` layers
+generation defaults, model facts, and exact firmware overrides; codegen
+materializes one profile per firmware and runtime lookup never falls back to a
+nearby version:
+
+```cue
+capabilities: {
+    generation: _generation.capabilities
+    model: option_overrides: [/* every enum used by X-T5 write paths */]
+    firmware: {
+        "3.01": {}
+        "4.00": option_overrides: [{
+            ref: "film_simulation"
+            allowed_values: [/* includes reala_ace */]
+        }]
+        "4.31": {
+            option_overrides: [/* exact logical-value allowlist */]
+            raw_conversion: {
+                profile_code:   0xff179502
+                header_padding: 0x1ee
+                fields: [/* exact ordered field ids */]
+            }
+        }
+    }
+}
+```
+
+An enum capability owns its allowed logical ids and its firmware-specific wire
+map. A scalar wire value is canonical for writes; a list means canonical first
+plus accepted read aliases. Codegen rejects missing or ambiguous mappings.
+It also rejects a verified operation whose exact firmware profile omits any
+enum consumed by that operation.
+Simulation PTP reads and writes use the selected profile directly. RAW
+conversion also requires an exact profile code, padding, and field order, then
+uses the selected profile for enum encoding and decoding. Every enum consumed
+by the X-T5 selector, simulation, or RAW path is explicitly pinned so there is
+no implicit global encoding fallback.
+
+Documented capability presence does not authorize writes. Only a matching
+`verified` preflight operation can create a validated session; X-T5 `3.01` and
+`4.00` capability entries are regression/documentation fixtures, while current
+mutating support remains restricted to `4.31`.
+
 ## Features
 
 ```cue

@@ -8,7 +8,42 @@ generations: [string]: #Generation
 	spec: #GenerationSpec
 
 	#GenerationSpec: {
-		name: string
+		name:          string
+		capabilities?: #CapabilitySet
+	}
+}
+
+#CapabilitySet: {
+	option_overrides?: [...#OptionCapability]
+	raw_conversion?: {
+		profile_code:   uint32
+		header_padding: uint32
+		fields: [string, ...string]
+
+		_validation: fields: list.UniqueItems & fields
+	}
+
+	#OptionCapability: {
+		ref: #RefOption
+
+		_option: options[ref] & {spec: kind: "enum"}
+
+		allowed_values?: [...or([for variant in _option.spec.rules.variants {variant.id}])]
+		wire_values?: {
+			[Value=or([for variant in _option.spec.rules.variants {variant.id}])]: int | [int, ...int]
+		}
+
+		_validation: {
+			if allowed_values != _|_ {
+				allowed_values: list.UniqueItems & allowed_values
+			}
+		}
+	}
+
+	_validation: {
+		if option_overrides != _|_ {
+			refs: list.UniqueItems & [for override in option_overrides {override.ref}]
+		}
 	}
 }
 
@@ -106,6 +141,13 @@ generations: {
 	x_trans_v: #Generation & {
 		spec: {
 			name: "X-Trans V"
+			capabilities: option_overrides: [{
+				ref: "film_simulation"
+				allowed_values: [for variant in options.film_simulation.spec.rules.variants if variant.id != "reala_ace" {
+					variant.id
+				}]
+				wire_values: options.film_simulation.spec.encoding.spec.values
+			}]
 
 			_simulation: {
 				settings: list.Concat([x_trans_iv.spec._simulation.settings, [

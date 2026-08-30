@@ -16,6 +16,7 @@ cameras: [string]: #Camera
 		usb:  #USB
 		ptp?: #PTPIdentity
 		preflight?: [...#PreflightProfile]
+		capabilities?: #CameraCapabilities
 
 		features?: #Features
 
@@ -31,6 +32,12 @@ cameras: [string]: #Camera
 		#PTPIdentity: {
 			manufacturer: string & =~".+"
 			model:        string & =~".+"
+		}
+
+		#CameraCapabilities: {
+			generation: #CapabilitySet
+			model:      #CapabilitySet
+			firmware: [Firmware=string & =~"^[0-9]+\\.[0-9]+$"]: #CapabilitySet
 		}
 
 		#PreflightProfile: {
@@ -365,6 +372,142 @@ cameras: {
 			ptp: {
 				manufacturer: "FUJIFILM"
 				model:        "X-T5"
+			}
+			// Every enum consumed by an X-T5 mutating path is pinned here. This
+			// prevents the runtime from falling back to a global option encoding.
+			_x_t5_enum_capabilities: [
+				{
+					ref:            "custom_setting"
+					allowed_values: ["c1", "c2", "c3", "c4", "c5", "c6", "c7"]
+					wire_values: {c1: 1, c2: 2, c3: 3, c4: 4, c5: 5, c6: 6, c7: 7}
+				},
+				{
+					ref:            "color_chrome_effect"
+					allowed_values: ["strong", "weak", "off"]
+					wire_values: {strong: 3, weak: 2, off: 1}
+				},
+				{
+					ref:            "color_chrome_fx_blue"
+					allowed_values: ["strong", "weak", "off"]
+					wire_values: {strong: 3, weak: 2, off: 1}
+				},
+				{
+					ref:            "color_space"
+					allowed_values: ["srgb", "adobe_rgb"]
+					wire_values: {srgb: 2, adobe_rgb: 1}
+				},
+				{
+					ref:            "dynamic_range"
+					allowed_values: ["auto", "hdr100", "hdr200", "hdr400", "hdr800", "hdr800_plus"]
+					wire_values: {auto: 65535, hdr100: 100, hdr200: 200, hdr400: 400, hdr800: 800, hdr800_plus: 1600}
+				},
+				{
+					ref:            "dynamic_range_priority"
+					allowed_values: ["auto", "plus", "strong", "weak", "off"]
+					wire_values: {auto: 32768, plus: 3, strong: 2, weak: 1, off: 0}
+				},
+				{
+					ref:            "file_type"
+					allowed_values: ["jpeg", "heif", "tiff8", "tiff16"]
+					wire_values: {jpeg: 7, heif: 18, tiff8: 9, tiff16: 11}
+				},
+				{
+					ref: "film_simulation"
+					allowed_values: [
+						"provia", "velvia", "astia", "pro_neg_hi", "pro_neg_std",
+						"monochrome", "monochrome_ye", "monochrome_r", "monochrome_g", "sepia",
+						"classic_chrome", "acros", "acros_ye", "acros_r", "acros_g", "eterna",
+						"classic_negative", "eterna_bleach_bypass", "nostalgic_negative",
+					]
+					wire_values: {
+						provia: 1, velvia: 2, astia: 3, pro_neg_hi: 4, pro_neg_std: 5,
+						monochrome: 6, monochrome_ye: 7, monochrome_r: 8, monochrome_g: 9,
+						sepia: 10, classic_chrome: 11, acros: 12, acros_ye: 13, acros_r: 14,
+						acros_g: 15, eterna: 16, classic_negative: 17, eterna_bleach_bypass: 18,
+						nostalgic_negative: 19, reala_ace: 20,
+					}
+				},
+				{
+					ref:            "grain_effect"
+					allowed_values: ["strong_large", "weak_large", "strong_small", "weak_small", "off"]
+					wire_values: {strong_large: 5, weak_large: 4, strong_small: 3, weak_small: 2, off: 1}
+				},
+				{
+					ref:            "image_quality"
+					allowed_values: ["fine_raw", "fine", "normal_raw", "normal", "raw"]
+					wire_values: {fine_raw: 4, fine: 2, normal_raw: 5, normal: 3, raw: 1}
+				},
+				{
+					ref: "image_size"
+					allowed_values: [
+						"7728x5152", "7728x4344", "5152x5152", "6864x5152", "6432x5152",
+						"5472x3648", "5472x3080", "3648x3648", "4864x3648", "4560x3648",
+						"3888x2592", "3888x2184", "2592x2592", "3456x2592", "3264x2592",
+					]
+					wire_values: {
+						"7728x5152": 7, "7728x4344": 8, "5152x5152": 9, "6864x5152": 14,
+						"6432x5152": 16, "5472x3648": 4, "5472x3080": 5, "3648x3648": 6,
+						"4864x3648": 18, "4560x3648": 20, "3888x2592": 1, "3888x2184": 2,
+						"2592x2592": 3, "3456x2592": 10, "3264x2592": 12,
+					}
+				},
+				{
+					ref:            "lens_modulation_optimizer"
+					allowed_values: ["on", "off"]
+					wire_values: {on: 1, off: 2}
+				},
+				{
+					ref:            "smooth_skin_effect"
+					allowed_values: ["strong", "weak", "off"]
+					wire_values: {strong: 3, weak: 2, off: 1}
+				},
+				{
+					ref:            "teleconverter"
+					allowed_values: ["on", "off"]
+					wire_values: {on: 1, off: 2}
+				},
+				{
+					ref: "white_balance"
+					allowed_values: [
+						"as_shot", "white_priority", "auto", "ambience_priority", "custom1", "custom2",
+						"custom3", "temperature", "daylight", "shade", "fluorescent1", "fluorescent2",
+						"fluorescent3", "incandescent", "underwater",
+					]
+					wire_values: {
+						as_shot: 0, white_priority: 32800, auto: 2, ambience_priority: 32801,
+						custom1: 32776, custom2: 32777, custom3: 32778, temperature: 32775,
+						daylight: 4, shade: 32774, fluorescent1: 32769, fluorescent2: 32770,
+						fluorescent3: 32771, incandescent: 6, underwater: 8,
+					}
+				},
+			]
+			_x_t5_post_reala_film_simulations: [
+				"provia", "velvia", "astia", "pro_neg_hi", "pro_neg_std",
+				"monochrome", "monochrome_ye", "monochrome_r", "monochrome_g", "sepia",
+				"classic_chrome", "acros", "acros_ye", "acros_r", "acros_g", "eterna",
+				"classic_negative", "eterna_bleach_bypass", "nostalgic_negative", "reala_ace",
+			]
+			capabilities: {
+				generation: _generation.capabilities
+				model: option_overrides: _x_t5_enum_capabilities
+				firmware: {
+					"3.01": {}
+					"4.00": option_overrides: [{
+						ref: "film_simulation"
+						allowed_values: _x_t5_post_reala_film_simulations
+					}]
+					"4.31": {
+						option_overrides: [{
+							ref: "film_simulation"
+							allowed_values: _x_t5_post_reala_film_simulations
+						}]
+						raw_conversion: {
+							profile_code:   features.render.profile_code
+							header_padding: features.render.header_padding
+							fields: [for field in features.render.fields {field.id}]
+						}
+					}
+				}
 			}
 
 			_preflight_common_properties: [
