@@ -1,8 +1,12 @@
 use anyhow::ensure;
 use clap::{Args, Subcommand};
-use fujicli::features::backup::{
-    BACKUP_ARTIFACT_FORMAT_VERSION, BackupArtifact, BackupPurpose, MAX_BACKUP_ARTIFACT_BYTES,
-    MAX_BACKUP_PAYLOAD_BYTES,
+#[cfg(feature = "reverse-tools")]
+use fujicli::features::backup::MAX_BACKUP_PAYLOAD_BYTES;
+use fujicli::{
+    features::backup::{
+        BACKUP_ARTIFACT_FORMAT_VERSION, BackupArtifact, BackupPurpose, MAX_BACKUP_ARTIFACT_BYTES,
+    },
+    policy::CommandRisk,
 };
 use log::warn;
 
@@ -10,6 +14,7 @@ use crate::cli::{GlobalOptions, common::usb};
 
 use super::common::file::{Input, Output, write_stdout_line};
 
+#[cfg(feature = "reverse-tools")]
 pub const MAX_BACKUP_INPUT_BYTES: usize = MAX_BACKUP_PAYLOAD_BYTES;
 
 fn ensure_import_confirmation(yes: bool, dry_run: bool, emulated: bool) -> anyhow::Result<()> {
@@ -62,6 +67,7 @@ fn ensure_import_input_policy(
     Ok(())
 }
 
+#[cfg(any(feature = "reverse-tools", test))]
 pub fn backup_import_target_warning(camera_name: &str, usb_id: &str, emulated: bool) -> String {
     let mode = if emulated {
         " using an emulated camera model"
@@ -139,23 +145,30 @@ pub enum BackupCmd {
     Import(BackupImportArgs),
 }
 
+impl BackupCmd {
+    pub(super) const fn command_risk(&self) -> CommandRisk {
+        match self {
+            Self::Export { .. } | Self::Inspect { .. } => CommandRisk::ReadOnly,
+            Self::Import(args) if args.dry_run => CommandRisk::ReadOnly,
+            Self::Import(_) => CommandRisk::OpaqueRestore,
+        }
+    }
+}
+
 #[expect(
     clippy::needless_pass_by_value,
     reason = "command handlers consume parsed CLI values"
 )]
 fn handle_export(options: GlobalOptions, output: Output) -> anyhow::Result<()> {
-    let GlobalOptions {
-        device,
-        emulate,
-        json,
-        ..
-    } = options;
+    let device = options.device;
+    let emulate = options.emulate;
+    let json = options.json;
     ensure!(
         emulate.is_none(),
         "safe backup export does not support --emulate; use device reverse only for explicit protocol research"
     );
 
-    let mut camera = usb::get_camera(device, emulate)?;
+    let mut camera = usb::get_camera(device, emulate, false)?;
 
     let backup = camera.export_backup(BackupPurpose::Portable)?;
     let artifact_sha256 = backup.fingerprint();
@@ -226,12 +239,9 @@ fn handle_import(options: GlobalOptions, args: BackupImportArgs) -> anyhow::Resu
         target_serial_sha256,
         allow_stdin,
     } = args;
-    let GlobalOptions {
-        device,
-        emulate,
-        json,
-        ..
-    } = options;
+    let device = options.device;
+    let emulate = options.emulate;
+    let json = options.json;
     let emulated = emulate.is_some();
     ensure_import_confirmation(yes, dry_run, emulated)?;
     if let Some(recovery_backup) = &recovery_backup {
@@ -262,7 +272,7 @@ fn handle_import(options: GlobalOptions, args: BackupImportArgs) -> anyhow::Resu
     if let Some(expected) = &expect_sha256 {
         backup.verify_fingerprint(expected)?;
     }
-    let mut camera = usb::get_camera(device, emulate)?;
+    let mut camera = usb::get_camera(device, emulate, false)?;
     if dry_run {
         let target = camera.backup_identity()?;
         backup.validate_target_compatibility(&target)?;
@@ -306,16 +316,15 @@ fn handle_import(options: GlobalOptions, args: BackupImportArgs) -> anyhow::Resu
         &backup,
         |bytes| recovery_backup.write_all_new(bytes),
         |backup| {
-            warn!(
-                "{}",
-                validated_backup_import_target_warning(camera.name(), &camera.connected_usb_id())
-            );
+            let usb_id = camera.connected_usb_id();
+            let warning = validated_backup_import_target_warning(camera.logical_name(), &usb_id);
+            warn!("{warning}");
             camera.import_backup(backup, target_serial_sha256.as_deref())
         },
     )?;
     warn!(
         "PTP restore was accepted by {}; verify settings on the camera after it reconnects",
-        camera.name()
+        camera.logical_name()
     );
 
     Ok(())

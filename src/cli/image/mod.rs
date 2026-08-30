@@ -68,7 +68,10 @@ fn handle_render(
     output: Output,
 ) -> anyhow::Result<()> {
     let GlobalOptions {
-        device, emulate, ..
+        device,
+        emulate,
+        allow_emulated_transient_write,
+        ..
     } = options;
 
     let image = input.read_limited(MAX_IMAGE_INPUT_BYTES, "RAF image")?;
@@ -81,7 +84,7 @@ fn handle_render(
         })
         .transpose()?;
 
-    let mut camera = usb::get_camera(device, emulate)?;
+    let mut camera = usb::get_camera(device, emulate, allow_emulated_transient_write)?;
 
     let simulation_base: Option<SimulationBase> = if let Some(slot) = slot {
         Some(camera.get_simulation(slot)?.to_base())

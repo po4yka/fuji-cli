@@ -62,10 +62,11 @@ fn handle_list(options: GlobalOptions) -> anyhow::Result<()> {
         json,
         device,
         emulate,
+        allow_emulated_transient_write,
         ..
     } = options;
 
-    let mut camera = usb::get_camera(device, emulate)?;
+    let mut camera = usb::get_camera(device, emulate, allow_emulated_transient_write)?;
 
     let slots: Vec<SimulationListItem> = camera
         .custom_settings_slots()?
@@ -97,10 +98,11 @@ fn handle_get(options: GlobalOptions, slot: CustomSetting) -> anyhow::Result<()>
         json,
         device,
         emulate,
+        allow_emulated_transient_write,
         ..
     } = options;
 
-    let mut camera = usb::get_camera(device, emulate)?;
+    let mut camera = usb::get_camera(device, emulate, allow_emulated_transient_write)?;
 
     let simulation = camera.get_simulation(slot)?;
 
@@ -126,10 +128,13 @@ fn handle_set(
     slot: CustomSetting,
 ) -> anyhow::Result<()> {
     let GlobalOptions {
-        device, emulate, ..
+        device,
+        emulate,
+        allow_emulated_transient_write,
+        ..
     } = options;
 
-    let mut camera = usb::get_camera(device, emulate)?;
+    let mut camera = usb::get_camera(device, emulate, allow_emulated_transient_write)?;
     let partial: SimulationBase = simulation.into();
     camera.update_simulation(slot, partial)?;
     Ok(())
@@ -145,10 +150,13 @@ fn handle_export(
     output: Output,
 ) -> anyhow::Result<()> {
     let GlobalOptions {
-        device, emulate, ..
+        device,
+        emulate,
+        allow_emulated_transient_write,
+        ..
     } = options;
 
-    let mut camera = usb::get_camera(device, emulate)?;
+    let mut camera = usb::get_camera(device, emulate, allow_emulated_transient_write)?;
 
     let simulation = camera.get_simulation(slot)?;
     let simulation = camera.serialize_simulation(&*simulation)?;
@@ -163,11 +171,14 @@ fn handle_export(
 )]
 fn handle_import(options: GlobalOptions, slot: CustomSetting, input: Input) -> anyhow::Result<()> {
     let GlobalOptions {
-        device, emulate, ..
+        device,
+        emulate,
+        allow_emulated_transient_write,
+        ..
     } = options;
 
     let buffer = input.read_limited(MAX_SIMULATION_INPUT_BYTES, "simulation JSON")?;
-    let mut camera = usb::get_camera(device, emulate)?;
+    let mut camera = usb::get_camera(device, emulate, allow_emulated_transient_write)?;
     let simulation = camera.deserialize_simulation(&buffer)?;
     camera.set_simulation(slot, &*simulation)?;
 

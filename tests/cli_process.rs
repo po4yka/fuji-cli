@@ -48,6 +48,176 @@ fn invalid_subcommand_is_a_usage_error_on_stderr() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("unrecognized subcommand"));
 }
 
+fn assert_policy_error_before_io(arguments: &[&str], expected: &str) {
+    let output = run(arguments);
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains(expected), "unexpected stderr: {stderr}");
+    assert!(!stderr.contains("No USB device found"));
+}
+
+#[test]
+fn emulated_device_info_is_the_only_pure_read_path() {
+    let output = run(&[
+        "device",
+        "info",
+        "--device",
+        "255.255",
+        "--emulate",
+        "04cb:02f7",
+    ]);
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("No USB device found"));
+}
+
+#[test]
+fn emulated_simulation_read_requires_transient_write_acknowledgement() {
+    assert_policy_error_before_io(
+        &[
+            "simulation",
+            "get",
+            "c1",
+            "--device",
+            "255.255",
+            "--emulate",
+            "04cb:02f7",
+        ],
+        "--allow-emulated-transient-write",
+    );
+}
+
+#[test]
+fn acknowledged_emulated_simulation_read_reaches_usb_selection() {
+    let output = run(&[
+        "simulation",
+        "get",
+        "c1",
+        "--device",
+        "255.255",
+        "--emulate",
+        "04cb:02f7",
+        "--allow-emulated-transient-write",
+    ]);
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("No USB device found"));
+    assert!(!stderr.contains("require --allow-emulated-transient-write"));
+}
+
+#[test]
+fn emulated_persistent_and_destructive_commands_fail_before_io() {
+    assert_policy_error_before_io(
+        &[
+            "simulation",
+            "set",
+            "c1",
+            "--device",
+            "255.255",
+            "--emulate",
+            "04cb:02f7",
+        ],
+        "cannot write persistent settings",
+    );
+    assert_policy_error_before_io(
+        &[
+            "simulation",
+            "import",
+            "c1",
+            "missing.json",
+            "--emulate",
+            "04cb:02f7",
+        ],
+        "cannot write persistent settings",
+    );
+    assert_policy_error_before_io(
+        &[
+            "image",
+            "render",
+            "missing.raf",
+            "output.jpg",
+            "--emulate",
+            "04cb:02f7",
+        ],
+        "cannot perform destructive or recovery-sensitive operations",
+    );
+}
+
+#[test]
+fn every_backup_command_rejects_emulation_before_io() {
+    assert_policy_error_before_io(
+        &["backup", "inspect", "missing.fbk", "--emulate", "04cb:02f7"],
+        "--emulate is not supported",
+    );
+    assert_policy_error_before_io(
+        &["backup", "export", "output.fbk", "--emulate", "04cb:02f7"],
+        "--emulate is not supported",
+    );
+    assert_policy_error_before_io(
+        &[
+            "backup",
+            "import",
+            "missing.fbk",
+            "--dry-run",
+            "--emulate",
+            "04cb:02f7",
+        ],
+        "--emulate is not supported",
+    );
+    assert_policy_error_before_io(
+        &[
+            "backup",
+            "import",
+            "missing.fbk",
+            "--yes",
+            "--recovery-backup",
+            "recovery.fbk",
+            "--expect-sha256",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+            "--emulate",
+            "04cb:02f7",
+        ],
+        "cannot restore opaque camera state",
+    );
+}
+
+#[test]
+fn device_list_rejects_irrelevant_emulation() {
+    assert_policy_error_before_io(
+        &["device", "list", "--emulate", "04cb:02f7"],
+        "--emulate is not supported",
+    );
+}
+
+#[cfg(not(feature = "reverse-tools"))]
+#[test]
+fn default_build_does_not_expose_reverse_commands() {
+    let output = run(&["device", "reverse", "info"]);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("unrecognized subcommand"));
+}
+
+#[cfg(feature = "reverse-tools")]
+#[test]
+fn reverse_commands_reject_emulation_before_usb_access() {
+    assert_policy_error_before_io(
+        &[
+            "device",
+            "reverse",
+            "info",
+            "--device",
+            "255.255",
+            "--emulate",
+            "04cb:02f7",
+        ],
+        "--emulate is not supported",
+    );
+}
+
 #[test]
 fn backup_import_without_confirmation_fails_before_device_io() {
     let output = run(&["backup", "import", "missing.fbk"]);

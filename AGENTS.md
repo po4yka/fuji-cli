@@ -137,10 +137,17 @@ build-gate -- cargo clippy --locked --all-features --all-targets --workspace --j
 build-gate -- cargo test --locked --all-features --all-targets --workspace --jobs 4
 ```
 
-For a release build, keep LTO compilation at two jobs:
+For all-features release-profile validation, keep LTO compilation at two jobs:
 
 ```sh
 build-gate -- cargo build --locked --release --all-features --all-targets --workspace --jobs 2
+```
+
+Distributable binaries must use default features so the `reverse-tools` escape
+hatch is not packaged:
+
+```sh
+build-gate -- cargo build --locked --release --workspace --jobs 2
 ```
 
 If `build-gate` is unavailable outside the managed development Mac, run the

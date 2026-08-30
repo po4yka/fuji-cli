@@ -49,16 +49,22 @@ in.
 
 ## Emulation Mode
 
-The `--emulate VENDOR:PRODUCT` flag forces fujicli to treat the connected camera
-as a different model by overriding its USB vendor / product ID. It is intended
-for development, reverse engineering, and compatibility testing, not as a way to
-coerce unsupported behaviour.
+The `--emulate VENDOR:PRODUCT` flag selects a different generated logical model
+while retaining the connected camera's physical USB identity. The physical
+vendor/product pair must itself be in the supported-camera registry, including
+when the device is selected explicitly with `--device BUS.ADDRESS`.
 
 - Emulation does not add support for cameras that aren't yet in the schema; it
   only changes which generated implementation is invoked.
-- It may expose incorrect or unsupported PTP properties.
-- Rendering in particular will misbehave in unpredictable ways under emulation.
-  Treat any render output as untrusted.
+- `device info` is the only emulated operation that requires no extra
+  acknowledgement because it is read-only.
+- Simulation `list`, `get`, and `export` write a temporary slot selector before
+  reading. They require `--allow-emulated-transient-write`.
+- Simulation `set` and `import`, every backup operation, and image rendering are
+  forbidden under emulation. The runtime enforces the same policy before PTP
+  operations, independently of CLI dispatch.
+- `device list` and feature-gated reverse commands reject `--emulate` because
+  the option is not meaningful for them.
 
 If you're not actively debugging or contributing, you probably don't want this
 flag.

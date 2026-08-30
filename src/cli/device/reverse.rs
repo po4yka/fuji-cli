@@ -7,6 +7,7 @@ use fujicli::{
         cli::SIMULATION_PROP_CODES,
         options::{CustomSetting, UsbMode},
     },
+    policy::CommandRisk,
     ptp::{CommandCode, DevicePropCode, option::SimulationSetting},
 };
 use log::{debug, warn};
@@ -59,6 +60,16 @@ pub enum ReverseBackupCmd {
         #[arg(long, required = true, requires = "yes")]
         allow_unknown_camera: bool,
     },
+}
+
+impl ReverseCmd {
+    pub(in crate::cli) const fn command_risk(&self) -> CommandRisk {
+        match self {
+            Self::Backup(ReverseBackupCmd::Export { .. }) | Self::Info => CommandRisk::ReadOnly,
+            Self::Backup(ReverseBackupCmd::Import { .. }) => CommandRisk::OpaqueRestore,
+            Self::Simulation => CommandRisk::TransientStateChange,
+        }
+    }
 }
 
 macro_rules! try_call {
@@ -117,16 +128,16 @@ fn handle_backup_export(options: GlobalOptions, output: Output) -> anyhow::Resul
     let usb = usb::get_usb_device_by_location(location)?;
     let mut camera = Camera::open_unknown(&usb)?;
 
-    try_call!(camera.ptp.send(
+    try_call!(camera.reverse_ptp()?.send(
         CommandCode::GetObjectInfo,
         &backup::EXPORT_OBJECT_INFO_HANDLE,
         None
     ))?;
-    let backup = try_call!(
-        camera
-            .ptp
-            .send(CommandCode::GetObject, &backup::OBJECT_HANDLE, None)
-    )?;
+    let backup = try_call!(camera.reverse_ptp()?.send(
+        CommandCode::GetObject,
+        &backup::OBJECT_HANDLE,
+        None
+    ))?;
     output.write_all(&backup)?;
 
     Ok(())
@@ -159,10 +170,10 @@ fn handle_backup_import(
 
     warn!(
         "{}",
-        backup_import_target_warning(camera.name(), &camera.connected_usb_id(), false)
+        backup_import_target_warning(camera.logical_name(), &camera.connected_usb_id(), false)
     );
     try_call!(backup::import_backup_over_ptp_unchecked(
-        &mut camera.ptp,
+        camera.reverse_ptp()?,
         &backup
     ))?;
 
@@ -181,11 +192,15 @@ fn handle_info(options: GlobalOptions) -> anyhow::Result<()> {
     let mut camera = Camera::open_unknown(&usb)?;
 
     let mut probes = ProbeSummary::default();
-    let result = try_call!(camera.ptp.get_info());
+    let result = try_call!(camera.reverse_ptp()?.get_info());
     probes.observe(&result);
-    let result = try_call!(camera.ptp.get_prop_raw(UsbMode::prop_code()));
+    let result = try_call!(camera.reverse_ptp()?.get_prop_raw(UsbMode::prop_code()));
     probes.observe(&result);
-    let result = try_call!(camera.ptp.get_prop_raw(DevicePropCode::FujiBatteryInfo2));
+    let result = try_call!(
+        camera
+            .reverse_ptp()?
+            .get_prop_raw(DevicePropCode::FujiBatteryInfo2)
+    );
     probes.observe(&result);
 
     probes.finish("camera info")
@@ -205,12 +220,12 @@ fn handle_simulation(options: GlobalOptions) -> anyhow::Result<()> {
     let mut probes = ProbeSummary::default();
 
     for slot in CustomSetting::iter() {
-        if try_call!(slot.try_push(&mut camera.ptp)).is_err() {
+        if try_call!(slot.try_push(camera.reverse_ptp()?)).is_err() {
             continue;
         }
 
         for &code in SIMULATION_PROP_CODES {
-            let result = camera.ptp.get_prop_raw(code);
+            let result = camera.reverse_ptp()?.get_prop_raw(code);
             log_simulation_probe(code, &result);
             probes.observe(&result);
         }

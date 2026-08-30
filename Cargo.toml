@@ -54,6 +54,10 @@ workspace = true
 name = "fujicli"
 path = "src/lib/mod.rs"
 
+[features]
+default = []
+reverse-tools = []
+
 [[bin]]
 name = "fujicli"
 path = "src/main.rs"

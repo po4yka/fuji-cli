@@ -89,14 +89,14 @@ impl BulkTransport for rusb::DeviceHandle<GlobalContext> {
 }
 
 pub struct Ptp {
-    pub bus: u8,
-    pub address: u8,
-    pub interface: u8,
-    pub bulk_in: u8,
-    pub bulk_out: u8,
-    pub handle: rusb::DeviceHandle<GlobalContext>,
-    pub transaction_id: u32,
-    pub chunk_size: usize,
+    pub(crate) bus: u8,
+    pub(crate) address: u8,
+    pub(crate) interface: u8,
+    pub(crate) bulk_in: u8,
+    pub(crate) bulk_out: u8,
+    pub(crate) handle: rusb::DeviceHandle<GlobalContext>,
+    pub(crate) transaction_id: u32,
+    pub(crate) chunk_size: usize,
     pub(crate) poisoned: bool,
 }
 

@@ -15,7 +15,15 @@ Commands:
 ```
 
 This subcommand is `hide = true` in the CLI on purpose. It probes the camera for
-capabilities and is useful only when adding support for a new model.
+capabilities and is useful only when adding support for a new model. It is also
+excluded from normal builds. Build it deliberately with:
+
+```sh
+cargo build --features reverse-tools
+```
+
+Reverse commands always reject `--emulate`; they operate on the explicitly
+selected physical USB device.
 
 ## Prerequisites
 
@@ -80,8 +88,10 @@ camera actually responds to, which informs the `settings:` list for the camera's
 simulation block. Diagnostics omit the returned property bytes and
 custom-setting names.
 
-The reverse mode does **not** verify allowed values; it only reads. Writing to a
-property you don't understand is what backups exist for.
+The reverse mode does **not** verify allowed values. Its simulation probe writes
+the temporary custom-setting selector before reading each slot, so it changes
+transient camera state even though it does not persist simulation properties.
+Writing persistent properties you don't understand is what backups exist for.
 
 ## Reversing Render Profiles
 

@@ -4,7 +4,7 @@ use std::{
 };
 
 use anyhow::{anyhow, bail};
-use fujicli::{Camera, features::base::info::CameraInfoListItem};
+use fujicli::{Camera, features::base::info::CameraInfoListItem, policy::EmulationAcknowledgement};
 use log::trace;
 
 #[derive(Default)]
@@ -197,13 +197,22 @@ fn select_only<T>(candidates: Vec<T>) -> anyhow::Result<T> {
     }
 }
 
-pub fn get_camera(device: Option<Location>, emulate: Option<Identity>) -> anyhow::Result<Camera> {
+pub fn get_camera(
+    device: Option<Location>,
+    emulate: Option<Identity>,
+    allow_emulated_transient_write: bool,
+) -> anyhow::Result<Camera> {
+    let acknowledgement = if allow_emulated_transient_write {
+        EmulationAcknowledgement::Provided
+    } else {
+        EmulationAcknowledgement::NotProvided
+    };
     if let Some(location) = device {
         let device = get_usb_device_by_location(location)?;
 
         emulate.as_ref().map_or_else(
             || Camera::open(&device),
-            |identity| Camera::open_as(&device, identity.vendor, identity.product),
+            |identity| Camera::open_as(&device, identity.vendor, identity.product, acknowledgement),
         )
     } else {
         let (cameras, summary) = probe_candidates(rusb::devices()?.iter(), Camera::probe);
@@ -218,7 +227,7 @@ pub fn get_camera(device: Option<Location>, emulate: Option<Identity>) -> anyhow
         })?;
         emulate.as_ref().map_or_else(
             || Camera::open(&device),
-            |identity| Camera::open_as(&device, identity.vendor, identity.product),
+            |identity| Camera::open_as(&device, identity.vendor, identity.product, acknowledgement),
         )
     }
 }

@@ -43,11 +43,12 @@ pub struct CameraInfoListItem {
 
 impl From<&Camera> for CameraInfoListItem {
     fn from(camera: &Camera) -> Self {
+        let physical = camera.physical_usb_identity();
         Self {
-            name: camera.name(),
+            name: camera.physical_model_name().unwrap_or("Unknown Camera"),
             usb_id: camera.connected_usb_id(),
-            vendor_id: format!("0x{:04x}", camera.vendor_id()),
-            product_id: format!("0x{:04x}", camera.product_id()),
+            vendor_id: format!("0x{:04x}", physical.vendor),
+            product_id: format!("0x{:04x}", physical.product),
         }
     }
 }

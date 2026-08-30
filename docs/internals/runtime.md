@@ -4,6 +4,23 @@ The runtime is the small Rust crate that mounts the generated module from
 Cargo's build `OUT_DIR` and dispatches user requests through trait objects.
 There is deliberately not much here; the heavy lifting is at build time.
 
+## Physical and logical camera identity
+
+`Camera` retains two distinct identities. `PhysicalUsbIdentity` always comes
+from the connected USB descriptor. `LogicalCameraIdentity` identifies the
+generated implementation selected for dispatch. Native mode makes them match;
+emulation may select a different logical model but never replaces the physical
+identity. Both the physical and emulated vendor/product pairs must exist in the
+generated `SUPPORTED` registry.
+
+Before CLI I/O and again before high-level library PTP operations, the
+`CommandRisk` policy authorizes the binding. Read-only device info is allowed;
+simulation reads require acknowledgement because selecting a slot is a
+transient write; persistent settings, opaque restore, and render operations are
+denied. The raw `Ptp` inside `Camera` is private. A deliberate `reverse-tools`
+Cargo feature exposes the reverse-only escape hatch and is absent from default
+builds.
+
 ## The Trait Hierarchy
 
 `CameraBase` is the root. Every camera struct implements it; feature

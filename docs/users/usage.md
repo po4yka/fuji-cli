@@ -17,6 +17,8 @@ Options:
   -v, --verbose...         Log extra debugging information (multiple instances increase verbosity)
   -d, --device <DEVICE>    Manually specify target device using USB <BUS>.<ADDRESS>
       --emulate <EMULATE>  Treat device as a different model using <VENDOR_ID>:<PRODUCT_ID>
+      --allow-emulated-transient-write
+                            Allow emulation to change a temporary camera selector while reading
   -h, --help               Print help
   -V, --version            Print version
 ```
@@ -28,8 +30,9 @@ aliased (`list -> l`, `get -> g`, `set -> s`, `export -> e`, `import -> i`,
 
 The `-d / --device` flag accepts a USB bus/address pair (e.g. `1.4`) and is only
 needed when more than one supported camera is plugged in.
-`--emulate VENDOR:PRODUCT` forces fujicli to treat the connected device as a
-different model - useful for development; see
+`--emulate VENDOR:PRODUCT` selects another generated logical model without
+changing the connected camera's physical USB identity. The physical device must
+still be a supported camera. Emulation is restricted by command risk; see
 [camera support](support.md#emulation-mode).
 
 ## Devices
@@ -101,9 +104,9 @@ Fujifilm exposes no signature or public parser here, so the value passed to
 of the artifact being imported. A hash supplied by the same untrusted party as
 the file does not establish provenance.
 
-Safe backup export and import reject `--emulate`. The explicitly unsafe
-`device reverse backup import` remains available only for protocol research and
-continues to require its two acknowledgement flags.
+All backup commands, including offline inspection and dry-run, reject
+`--emulate`. This fail-closed rule keeps opaque backup identity and restore
+behavior bound to the physical model.
 
 Destructive import from stdin is additionally disabled unless `--allow-stdin`
 is supplied. The external artifact fingerprint, explicit serial binding,
@@ -123,6 +126,11 @@ no `fujicli` process is still writing there, that temporary file can be removed.
 
 A _simulation_ is one of the camera's custom-setting slots (e.g. C1-C7). The
 number of slots is per-camera (`SLOTS` in the generated code).
+
+Reading a slot first writes Fujifilm's temporary custom-setting selector.
+Therefore emulated `list`, `get`, and `export` require both `--emulate` and the
+explicit `--allow-emulated-transient-write` acknowledgement. Emulated `set` and
+`import` are always rejected because they write persistent settings.
 
 ```sh
 # List slots with their assigned names.

@@ -8,6 +8,10 @@ use clap::{ArgAction, Args, Parser, Subcommand};
 
 use backup::BackupCmd;
 use device::DeviceCmd;
+use fujicli::policy::{
+    CommandRisk, CommandSpec, EmulationAcknowledgement, EmulationPolicy, ModelBindingKind,
+    authorize,
+};
 use image::ImageCmd;
 use simulation::SimulationCmd;
 
@@ -45,6 +49,10 @@ pub struct GlobalOptions {
     /// Treat device as a different model using <VENDOR_ID>:<PRODUCT_ID>
     #[arg(long, global = true)]
     pub emulate: Option<Identity>,
+
+    /// Allow emulation to change a temporary camera selector while reading
+    #[arg(long, global = true, requires = "emulate")]
+    pub allow_emulated_transient_write: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -67,6 +75,7 @@ pub enum Commands {
 }
 
 pub fn handle(cli: Cli) -> Result<(), anyhow::Error> {
+    authorize_command(&cli.command, &cli.options)?;
     let () = match cli.command {
         Commands::Device(device_cmd) => device::handle(device_cmd, cli.options)?,
         Commands::Backup(backup_cmd) => backup::handle(backup_cmd, cli.options)?,
@@ -77,6 +86,56 @@ pub fn handle(cli: Cli) -> Result<(), anyhow::Error> {
     };
 
     Ok(())
+}
+
+fn authorize_command(command: &Commands, options: &GlobalOptions) -> anyhow::Result<()> {
+    let binding = if options.emulate.is_some() {
+        ModelBindingKind::Emulated
+    } else {
+        ModelBindingKind::Native
+    };
+    let acknowledgement = if options.allow_emulated_transient_write {
+        EmulationAcknowledgement::Provided
+    } else {
+        EmulationAcknowledgement::NotProvided
+    };
+    let spec = match command {
+        Commands::Device(DeviceCmd::List) => CommandSpec {
+            risk: CommandRisk::ReadOnly,
+            emulation: EmulationPolicy::Forbidden,
+        },
+        Commands::Device(DeviceCmd::Info) => CommandSpec {
+            risk: CommandRisk::ReadOnly,
+            emulation: EmulationPolicy::Allowed,
+        },
+        #[cfg(feature = "reverse-tools")]
+        Commands::Device(DeviceCmd::Reverse(command)) => CommandSpec {
+            risk: command.command_risk(),
+            emulation: EmulationPolicy::Forbidden,
+        },
+        Commands::Simulation(
+            SimulationCmd::List | SimulationCmd::Get { .. } | SimulationCmd::Export { .. },
+        ) => CommandSpec {
+            risk: CommandRisk::TransientStateChange,
+            emulation: EmulationPolicy::RequireTransientWriteAcknowledgement,
+        },
+        Commands::Simulation(SimulationCmd::Set { .. } | SimulationCmd::Import { .. }) => {
+            CommandSpec {
+                risk: CommandRisk::PersistentSettingsWrite,
+                emulation: EmulationPolicy::Forbidden,
+            }
+        }
+        Commands::Backup(command) => CommandSpec {
+            risk: command.command_risk(),
+            emulation: EmulationPolicy::Forbidden,
+        },
+        Commands::Image(ImageCmd::Render { .. }) => CommandSpec {
+            risk: CommandRisk::DestructiveRecoverySensitive,
+            emulation: EmulationPolicy::Forbidden,
+        },
+    };
+
+    authorize(binding, spec, acknowledgement)
 }
 
 #[cfg(test)]
@@ -178,6 +237,25 @@ mod tests {
         );
     }
 
+    #[test]
+    fn transient_write_acknowledgement_requires_emulation() {
+        let error = Cli::try_parse_from([
+            "fujicli",
+            "simulation",
+            "get",
+            "c1",
+            "--allow-emulated-transient-write",
+        ])
+        .expect_err("transient acknowledgement must be scoped to --emulate");
+
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+        assert!(error.to_string().contains("--emulate"));
+    }
+
+    #[cfg(feature = "reverse-tools")]
     #[test]
     fn reverse_backup_import_requires_unknown_camera_opt_in() {
         let error = Cli::try_parse_from([

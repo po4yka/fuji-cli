@@ -153,7 +153,7 @@ jobs:
         shell: bash
         env:
           RELEASE_TARGET: ${{ matrix.target }}
-        run: cargo build --locked --release --all-features --workspace --target "$RELEASE_TARGET" --jobs 2
+        run: cargo build --locked --release --workspace --target "$RELEASE_TARGET" --jobs 2
 
       - name: Smoke-test binary
         shell: bash
@@ -164,6 +164,12 @@ jobs:
           binary="target/${RELEASE_TARGET}/release/${RELEASE_BINARY}"
           "$binary" --version
           "$binary" --help >/dev/null
+          reverse_output="$("$binary" device reverse info 2>&1 || true)"
+          if ! grep -q "unrecognized subcommand" <<<"$reverse_output"; then
+            printf '%s\n' "default release binary unexpectedly exposes device reverse" >&2
+            printf '%s\n' "$reverse_output" >&2
+            exit 1
+          fi
 
       - name: Inspect Linux linkage
         if: runner.os == 'Linux'
