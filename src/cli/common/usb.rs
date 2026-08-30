@@ -232,6 +232,17 @@ pub fn get_camera(
     }
 }
 
+/// Opens the camera for a command that never supplies an emulation
+/// acknowledgement — every CLI command except the ones that explicitly
+/// negotiate emulation. Centralises the `EmulationAcknowledgement::NotProvided`
+/// policy so it can be changed in one place rather than at each call site.
+pub fn get_native_camera(
+    device: Option<Location>,
+    emulate: Option<Identity>,
+) -> anyhow::Result<Camera> {
+    get_camera(device, emulate, EmulationAcknowledgement::NotProvided)
+}
+
 pub fn reconnect_camera_by_serial(
     serial: &SerialFingerprint,
     timeout: Duration,

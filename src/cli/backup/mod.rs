@@ -7,7 +7,7 @@ use fujicli::{
         BACKUP_ARTIFACT_FORMAT_VERSION, BackupArtifact, BackupIdentity, BackupPurpose,
         MAX_BACKUP_ARTIFACT_BYTES,
     },
-    policy::{EmulationAcknowledgement, SerialFingerprint},
+    policy::SerialFingerprint,
 };
 use log::warn;
 
@@ -188,7 +188,7 @@ fn handle_export(options: GlobalOptions, output: Output) -> anyhow::Result<()> {
         "safe backup export does not support --emulate; use fujicli-dev only for explicit protocol research"
     );
 
-    let mut camera = usb::get_camera(device, emulate, EmulationAcknowledgement::NotProvided)?;
+    let mut camera = usb::get_native_camera(device, emulate)?;
 
     let backup = camera.export_backup(BackupPurpose::Portable)?;
     let artifact_sha256 = backup.fingerprint();
@@ -295,7 +295,7 @@ fn handle_import(options: GlobalOptions, args: BackupImportArgs) -> anyhow::Resu
     if let Some(expected) = &expect_sha256 {
         backup.verify_fingerprint(expected)?;
     }
-    let mut camera = usb::get_camera(device, emulate, EmulationAcknowledgement::NotProvided)?;
+    let mut camera = usb::get_native_camera(device, emulate)?;
     let usb_id = camera.connected_usb_id();
     let binding = target_serial_sha256
         .as_deref()

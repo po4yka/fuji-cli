@@ -4,7 +4,7 @@ use crate::cli::{
     GlobalOptions,
     common::{file::write_stdout_line, usb},
 };
-use fujicli::{CameraInfoListItem, policy::EmulationAcknowledgement};
+use fujicli::CameraInfoListItem;
 
 #[derive(Subcommand, Debug, Clone, Copy)]
 pub enum DeviceCmd {
@@ -55,7 +55,7 @@ fn handle_info(options: GlobalOptions) -> anyhow::Result<()> {
         ..
     } = options;
 
-    let mut camera = usb::get_camera(device, emulate, EmulationAcknowledgement::NotProvided)?;
+    let mut camera = usb::get_native_camera(device, emulate)?;
 
     let repr = camera.get_info()?;
 

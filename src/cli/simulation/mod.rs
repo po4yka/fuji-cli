@@ -1,7 +1,7 @@
 use fujicli::{
     features::simulation::SimulationListItem,
     generated::{cli::SimulationArgs, options::CustomSetting, simulations::SimulationBase},
-    policy::{EmulationAcknowledgement, SerialFingerprint},
+    policy::SerialFingerprint,
 };
 
 use super::common::file::{Input, Output, write_stdout_line};
@@ -77,7 +77,7 @@ fn handle_list(options: GlobalOptions) -> anyhow::Result<()> {
         ..
     } = options;
 
-    let mut camera = usb::get_camera(device, emulate, EmulationAcknowledgement::NotProvided)?;
+    let mut camera = usb::get_native_camera(device, emulate)?;
     let slots = camera.custom_settings_slots()?;
     let mut session = camera.preflight_simulation_access()?;
     let slots: Vec<SimulationListItem> = session
@@ -112,7 +112,7 @@ fn handle_get(options: GlobalOptions, slot: CustomSetting) -> anyhow::Result<()>
         ..
     } = options;
 
-    let mut camera = usb::get_camera(device, emulate, EmulationAcknowledgement::NotProvided)?;
+    let mut camera = usb::get_native_camera(device, emulate)?;
     let mut session = camera.preflight_simulation_access()?;
     let simulation = session.get_simulation(slot)?;
 
@@ -142,7 +142,7 @@ fn handle_set(
         device, emulate, ..
     } = options;
 
-    let mut camera = usb::get_camera(device, emulate, EmulationAcknowledgement::NotProvided)?;
+    let mut camera = usb::get_native_camera(device, emulate)?;
     let target_serial_sha256 = target_serial_sha256
         .ok_or_else(|| anyhow::anyhow!("simulation write requires --target-serial-sha256"))?;
     let partial: SimulationBase = simulation.into();
@@ -166,7 +166,7 @@ fn handle_export(
         device, emulate, ..
     } = options;
 
-    let mut camera = usb::get_camera(device, emulate, EmulationAcknowledgement::NotProvided)?;
+    let mut camera = usb::get_native_camera(device, emulate)?;
     let mut session = camera.preflight_simulation_access()?;
     let simulation = session.get_simulation(slot)?;
     drop(session);
@@ -191,7 +191,7 @@ fn handle_import(
     } = options;
 
     let buffer = input.read_limited(MAX_SIMULATION_INPUT_BYTES, "simulation JSON")?;
-    let mut camera = usb::get_camera(device, emulate, EmulationAcknowledgement::NotProvided)?;
+    let mut camera = usb::get_native_camera(device, emulate)?;
     let simulation = camera.deserialize_simulation(&buffer)?;
     let target_serial_sha256 = target_serial_sha256
         .ok_or_else(|| anyhow::anyhow!("simulation write requires --target-serial-sha256"))?;

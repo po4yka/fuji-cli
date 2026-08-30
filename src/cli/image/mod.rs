@@ -1,7 +1,7 @@
 use fujicli::{
     features::render::{RenderSaveError, finish_render_cleanup, validate_xt5_raf},
     generated::{cli::RenderArgs, renders::RenderBase},
-    policy::{EmulationAcknowledgement, SerialFingerprint},
+    policy::SerialFingerprint,
 };
 
 use super::common::file::{Input, Output, OutputTransaction};
@@ -137,7 +137,7 @@ fn handle_render(options: GlobalOptions, request: RenderRequest) -> anyhow::Resu
     let output_transaction = output.begin_write()?;
     let delete_after_save = !output_transaction.is_stdout();
 
-    let mut camera = usb::get_camera(device, emulate, EmulationAcknowledgement::NotProvided)?;
+    let mut camera = usb::get_native_camera(device, emulate)?;
     let simulation_from_file = if let Some(buffer) = simulation_json {
         Some(camera.deserialize_simulation(&buffer)?.to_base())
     } else {
@@ -189,7 +189,7 @@ fn handle_recover(
     let target_serial_sha256 = target_serial_sha256
         .ok_or_else(|| anyhow::anyhow!("RAW recovery requires --target-serial-sha256"))?;
 
-    let mut camera = usb::get_camera(device, emulate, EmulationAcknowledgement::NotProvided)?;
+    let mut camera = usb::get_native_camera(device, emulate)?;
     let rendered = camera
         .preflight_raw_recovery_fetch(&target_serial_sha256)?
         .recover_rendered_object(handle)?;
