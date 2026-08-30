@@ -489,6 +489,40 @@ fn generate_transaction_profile_impl(
         }
     });
 
+    let verifications = write_order.iter().enumerate().map(|(index, id)| {
+        let info = settings
+            .get(id.as_str())
+            .expect("write order references known setting");
+        let ident = info.field_ident();
+        let type_path = info.type_path();
+        let missing = format!("planned simulation setting `{id}` has no value");
+        let context = format!("reading back simulation setting `{id}`");
+        let mismatch = format!(
+            "simulation setting `{id}` readback did not match the requested value"
+        );
+        quote! {
+            #index => {
+                let expected = self.#ident.as_ref().ok_or_else(|| {
+                    crate::features::simulation::SimulationPropertyWriteError::confirmed(
+                        ::anyhow::anyhow!(#missing),
+                    )
+                })?;
+                let observed = <#type_path as crate::ptp::option::SimulationSetting>::try_pull_from(io)
+                    .map_err(|error| {
+                        crate::features::simulation::SimulationPropertyWriteError::confirmed(error)
+                            .context(#context)
+                    })?;
+                if &observed == expected {
+                    Ok(())
+                } else {
+                    Err(crate::features::simulation::SimulationPropertyWriteError::confirmed(
+                        ::anyhow::anyhow!(#mismatch),
+                    ))
+                }
+            }
+        }
+    });
+
     Ok(quote! {
         impl crate::features::simulation::SimulationTransactionProfile for #struct_ident {
             fn changes_from(
@@ -519,6 +553,25 @@ fn generate_transaction_profile_impl(
                 match change.index {
                     #( #writes )*
                     _ => Err(crate::features::simulation::SimulationPropertyWriteError::unconfirmed(
+                        ::anyhow::anyhow!(
+                            "unknown simulation property change index {}",
+                            change.index,
+                        ),
+                    )),
+                }
+            }
+
+            fn verify_change<IO: crate::features::simulation::SimulationPropertyIo>(
+                &self,
+                change: crate::features::simulation::SimulationPropertyChange,
+                io: &mut IO,
+            ) -> ::std::result::Result<
+                (),
+                crate::features::simulation::SimulationPropertyWriteError,
+            > {
+                match change.index {
+                    #( #verifications )*
+                    _ => Err(crate::features::simulation::SimulationPropertyWriteError::confirmed(
                         ::anyhow::anyhow!(
                             "unknown simulation property change index {}",
                             change.index,
@@ -790,6 +843,21 @@ mod tests {
         assert!(
             generated.contains("writing simulation setting `film_simulation`"),
             "write failures need actionable setting context:\n{generated}",
+        );
+    }
+
+    #[test]
+    fn generated_setting_writes_have_immediate_semantic_readback() {
+        let (options, cameras) = fixture();
+        let generated = generate(&options, &cameras).unwrap().to_string();
+
+        assert!(
+            generated.contains("fn verify_change")
+                && generated.contains("reading back simulation setting `film_simulation`")
+                && generated.contains(
+                    "simulation setting `film_simulation` readback did not match the requested value"
+                ),
+            "every accepted setting write must be read back and compared before continuing:\n{generated}",
         );
     }
 

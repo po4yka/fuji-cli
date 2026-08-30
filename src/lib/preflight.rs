@@ -111,7 +111,7 @@ impl ValidatedCameraSession<'_, BackupRestore> {
         &mut self,
         artifact: &crate::features::backup::BackupArtifact,
         expected_target_serial_sha256: Option<&str>,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<crate::features::backup::BackupRestoreAccepted> {
         artifact.validate_target(
             &backup_identity_from_evidence(&self.evidence),
             expected_target_serial_sha256,
@@ -131,7 +131,10 @@ impl ValidatedCameraSession<'_, RawConversion> {
         self.camera.render_unchecked(image, partial, draft)
     }
 
-    pub fn cleanup_rendered_object(&mut self, handle: u32) -> anyhow::Result<()> {
+    pub fn cleanup_rendered_object(
+        &mut self,
+        handle: u32,
+    ) -> anyhow::Result<crate::features::outcome::StateChangeAudit> {
         self.camera.cleanup_rendered_object_unchecked(handle)
     }
 }
@@ -146,7 +149,10 @@ impl ValidatedCameraSession<'_, RawRecoveryFetch> {
 }
 
 impl ValidatedCameraSession<'_, RawRecoveryCleanup> {
-    pub fn cleanup_rendered_object(&mut self, handle: u32) -> anyhow::Result<()> {
+    pub fn cleanup_rendered_object(
+        &mut self,
+        handle: u32,
+    ) -> anyhow::Result<crate::features::outcome::StateChangeAudit> {
         self.camera.cleanup_rendered_object_unchecked(handle)
     }
 }

@@ -527,7 +527,7 @@ impl Camera {
     pub(crate) fn import_backup_unchecked(
         &mut self,
         artifact: &BackupArtifact,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<features::backup::BackupRestoreAccepted> {
         if let Some(backups) = self.r#impl.as_backup_manager() {
             backups.import_backup(&mut self.ptp, artifact)
         } else {
@@ -635,7 +635,10 @@ impl Camera {
         }
     }
 
-    pub(crate) fn cleanup_rendered_object_unchecked(&mut self, handle: u32) -> anyhow::Result<()> {
+    pub(crate) fn cleanup_rendered_object_unchecked(
+        &mut self,
+        handle: u32,
+    ) -> anyhow::Result<features::outcome::StateChangeAudit> {
         if let Some(renders) = self.r#impl.as_render_manager() {
             renders.cleanup_rendered_object(&mut self.ptp, handle)
         } else {

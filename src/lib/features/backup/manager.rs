@@ -8,7 +8,11 @@ use binrw::{BinRead, BinResult, BinWrite, Endian};
 use log::debug;
 
 use crate::{
-    features::{backup::artifact::BackupArtifact, base::CameraBase},
+    features::{
+        backup::artifact::{BackupArtifact, sha256_hex},
+        base::CameraBase,
+        outcome::{OutcomeStatus, StateChangeAudit},
+    },
     ptp::{CommandCode, ObjectFormat, ObjectInfo, Ptp, PtpOperation},
 };
 
@@ -33,7 +37,27 @@ pub enum BackupImportState {
 pub struct BackupImportError {
     phase: BackupImportPhase,
     state: BackupImportState,
+    audit: StateChangeAudit,
     source: anyhow::Error,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BackupRestoreAccepted {
+    audit: StateChangeAudit,
+    expected_payload_sha256: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BackupRestoreOutcome {
+    audit: StateChangeAudit,
+    payload_sha256: String,
+}
+
+#[derive(Debug)]
+pub struct BackupPostconditionError {
+    audit: StateChangeAudit,
+    expected_payload_sha256: String,
+    observed_payload_sha256: String,
 }
 
 impl BackupImportError {
@@ -43,6 +67,82 @@ impl BackupImportError {
 
     pub fn state(&self) -> BackupImportState {
         self.state
+    }
+
+    pub const fn audit(&self) -> StateChangeAudit {
+        self.audit
+    }
+}
+
+impl BackupRestoreAccepted {
+    fn new(payload: &[u8]) -> Self {
+        Self {
+            audit: StateChangeAudit::ptp_accepted(),
+            expected_payload_sha256: sha256_hex(payload),
+        }
+    }
+
+    pub const fn audit(&self) -> StateChangeAudit {
+        self.audit
+    }
+
+    /// Compares a backup exported from a fresh camera session with the requested restore payload.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackupPostconditionError`] when the accepted payload is not the payload being
+    /// verified or when the fresh-session export differs byte-for-byte from the requested state.
+    pub fn verify_post_restore_export(
+        self,
+        expected: &BackupArtifact,
+        observed: &BackupArtifact,
+    ) -> Result<BackupRestoreOutcome, BackupPostconditionError> {
+        let expected_payload_sha256 = sha256_hex(expected.payload());
+        let observed_payload_sha256 = sha256_hex(observed.payload());
+        if self.expected_payload_sha256 == expected_payload_sha256
+            && expected.payload() == observed.payload()
+        {
+            Ok(BackupRestoreOutcome {
+                audit: self
+                    .audit
+                    .with_semantic(OutcomeStatus::Succeeded)
+                    .with_persistence(OutcomeStatus::Succeeded),
+                payload_sha256: observed_payload_sha256,
+            })
+        } else {
+            Err(BackupPostconditionError {
+                audit: self
+                    .audit
+                    .with_semantic(OutcomeStatus::Failed)
+                    .with_persistence(OutcomeStatus::Failed),
+                expected_payload_sha256,
+                observed_payload_sha256,
+            })
+        }
+    }
+}
+
+impl BackupRestoreOutcome {
+    pub const fn audit(&self) -> StateChangeAudit {
+        self.audit
+    }
+
+    pub fn payload_sha256(&self) -> &str {
+        &self.payload_sha256
+    }
+}
+
+impl BackupPostconditionError {
+    pub const fn audit(&self) -> StateChangeAudit {
+        self.audit
+    }
+
+    pub fn expected_payload_sha256(&self) -> &str {
+        &self.expected_payload_sha256
+    }
+
+    pub fn observed_payload_sha256(&self) -> &str {
+        &self.observed_payload_sha256
     }
 }
 
@@ -64,6 +164,18 @@ impl std::error::Error for BackupImportError {
         Some(self.source.as_ref())
     }
 }
+
+impl fmt::Display for BackupPostconditionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "backup restore was accepted by PTP, but a fresh-session export did not match the requested payload (expected {}, observed {}); camera state is unknown and the restore must not be retried automatically",
+            self.expected_payload_sha256, self.observed_payload_sha256
+        )
+    }
+}
+
+impl std::error::Error for BackupPostconditionError {}
 
 trait BackupTransport {
     fn send_object_info(&mut self, object_info: &[u8]) -> anyhow::Result<()>;
@@ -147,29 +259,33 @@ fn import_backup_with_transport(
     transport: &mut impl BackupTransport,
     object_info: &[u8],
     buffer: &[u8],
-) -> anyhow::Result<()> {
-    transport
-        .send_object_info(object_info)
-        .map_err(|source| BackupImportError {
+) -> anyhow::Result<BackupRestoreAccepted> {
+    transport.send_object_info(object_info).map_err(|source| {
+        let audit = StateChangeAudit::from_write_error(&source);
+        BackupImportError {
             phase: BackupImportPhase::ObjectInfo,
             state: BackupImportState::Unknown,
+            audit,
             source,
-        })?;
-    transport
-        .send_object_data(buffer)
-        .map_err(|source| BackupImportError {
+        }
+    })?;
+    transport.send_object_data(buffer).map_err(|source| {
+        let audit = StateChangeAudit::from_write_error(&source);
+        BackupImportError {
             phase: BackupImportPhase::ObjectData,
             state: BackupImportState::Unknown,
+            audit,
             source,
-        })?;
-    Ok(())
+        }
+    })?;
+    Ok(BackupRestoreAccepted::new(buffer))
 }
 
 #[cfg(test)]
 fn import_backup_artifact_with_transport(
     transport: &mut impl BackupTransport,
     artifact: Vec<u8>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<BackupRestoreAccepted> {
     let artifact = BackupArtifact::parse(artifact)?;
     let object_info = BackupObjectInfo::new(artifact.payload().len())?;
     let object_info = crate::ptp::codec::encode(&object_info)?;
@@ -179,7 +295,7 @@ fn import_backup_artifact_with_transport(
 fn import_validated_backup_with_transport(
     transport: &mut impl BackupTransport,
     artifact: &BackupArtifact,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<BackupRestoreAccepted> {
     let object_info = BackupObjectInfo::new(artifact.payload().len())?;
     let object_info = crate::ptp::codec::encode(&object_info)?;
     import_backup_with_transport(transport, &object_info, artifact.payload())
@@ -195,12 +311,16 @@ pub trait CameraBackupManager: CameraBase {
         Ok(response)
     }
 
-    fn import_backup(&self, ptp: &mut Ptp, artifact: &BackupArtifact) -> anyhow::Result<()> {
+    fn import_backup(
+        &self,
+        ptp: &mut Ptp,
+        artifact: &BackupArtifact,
+    ) -> anyhow::Result<BackupRestoreAccepted> {
         debug!("Starting backup import");
-        import_validated_backup_with_transport(ptp, artifact)?;
+        let accepted = import_validated_backup_with_transport(ptp, artifact)?;
         debug!("Backup import completed");
 
-        Ok(())
+        Ok(accepted)
     }
 }
 
@@ -244,7 +364,13 @@ impl BackupObjectInfo {
 mod tests {
     use std::io;
 
-    use crate::ptp::codec::encode;
+    use crate::{
+        features::{
+            backup::{BackupArtifact, BackupIdentity, BackupPurpose},
+            outcome::OutcomeStatus,
+        },
+        ptp::codec::encode,
+    };
 
     use super::{
         BACKUP_OBJECT_INFO_BYTES, BACKUP_OBJECT_INFO_PADDING_BYTES, BackupExportTransport,
@@ -262,6 +388,23 @@ mod tests {
     }
 
     struct WrongLengthExportTransport;
+
+    fn sample_artifact(payload: &[u8]) -> BackupArtifact {
+        BackupArtifact::create(
+            BackupPurpose::Portable,
+            BackupIdentity {
+                camera_name: "FUJIFILM X-T5".to_owned(),
+                vendor_id: 0x04cb,
+                product_id: 0x02fc,
+                manufacturer: "FUJIFILM".to_owned(),
+                model: "X-T5".to_owned(),
+                firmware: "4.31".to_owned(),
+                serial_sha256: crate::features::backup::sha256_hex(b"serial"),
+            },
+            payload,
+        )
+        .expect("backup fixture must be valid")
+    }
 
     #[derive(Default)]
     struct FakeBackupTransport {
@@ -374,6 +517,46 @@ mod tests {
             .expect_err("object metadata must match the returned payload length");
 
         assert!(error.to_string().contains("payload length"));
+    }
+
+    #[test]
+    fn transport_acceptance_is_explicitly_unverified() {
+        let mut transport = FakeBackupTransport::default();
+
+        let accepted = import_backup_with_transport(&mut transport, b"info", b"backup")
+            .expect("PTP acceptance should produce a typed, unverified outcome");
+
+        assert_eq!(transport.object_info_calls, 1);
+        assert_eq!(transport.object_data_calls, 1);
+        assert_eq!(accepted.audit().transport(), OutcomeStatus::Succeeded);
+        assert_eq!(accepted.audit().ptp_response(), OutcomeStatus::Succeeded);
+        assert_eq!(accepted.audit().semantic(), OutcomeStatus::NotAttempted);
+        assert_eq!(accepted.audit().persistence(), OutcomeStatus::NotAttempted);
+    }
+
+    #[test]
+    fn post_restore_export_mismatch_is_typed_semantic_and_persistence_failure() {
+        let expected = sample_artifact(b"requested backup state");
+        let observed = sample_artifact(b"different camera state");
+        let accepted = import_backup_with_transport(
+            &mut FakeBackupTransport::default(),
+            b"info",
+            expected.payload(),
+        )
+        .expect("PTP acceptance should remain available for explicit verification");
+
+        let error = accepted
+            .verify_post_restore_export(&expected, &observed)
+            .expect_err("a different fresh-session export must fail verification");
+
+        assert_eq!(error.audit().transport(), OutcomeStatus::Succeeded);
+        assert_eq!(error.audit().ptp_response(), OutcomeStatus::Succeeded);
+        assert_eq!(error.audit().semantic(), OutcomeStatus::Failed);
+        assert_eq!(error.audit().persistence(), OutcomeStatus::Failed);
+        assert_ne!(
+            error.expected_payload_sha256(),
+            error.observed_payload_sha256()
+        );
     }
 
     #[test]

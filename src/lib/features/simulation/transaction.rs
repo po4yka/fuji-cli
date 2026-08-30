@@ -3,10 +3,25 @@ use std::fmt;
 use anyhow::Context;
 use binrw::{BinRead, BinWrite};
 
+use crate::features::outcome::{OutcomeStatus, StateChangeAudit};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SimulationTransactionSuccess {
     AppliedAndVerified,
     NoChangeVerified,
+}
+
+impl SimulationTransactionSuccess {
+    pub const fn audit(self) -> StateChangeAudit {
+        match self {
+            Self::AppliedAndVerified => {
+                StateChangeAudit::ptp_accepted().with_semantic(OutcomeStatus::Succeeded)
+            }
+            Self::NoChangeVerified => {
+                StateChangeAudit::not_attempted().with_semantic(OutcomeStatus::Succeeded)
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -163,6 +178,14 @@ impl SimulationPropertyWriteError {
         Self {
             cause,
             property_confirmed: false,
+            binding_uncertain: false,
+        }
+    }
+
+    pub(crate) fn confirmed(cause: anyhow::Error) -> Self {
+        Self {
+            cause,
+            property_confirmed: true,
             binding_uncertain: false,
         }
     }
@@ -469,6 +492,12 @@ pub(crate) trait SimulationTransactionProfile: Clone + PartialEq {
         change: SimulationPropertyChange,
         io: &mut IO,
     ) -> Result<(), SimulationPropertyWriteError>;
+
+    fn verify_change<IO: SimulationPropertyIo>(
+        &self,
+        change: SimulationPropertyChange,
+        io: &mut IO,
+    ) -> Result<(), SimulationPropertyWriteError>;
 }
 
 pub(crate) fn execute_simulation_transaction<P, IO>(
@@ -536,6 +565,16 @@ where
             ));
         }
         journal.push(change);
+        if let Err(error) = candidate.verify_change(change, io) {
+            return Err(recover_original(
+                io,
+                original,
+                SimulationTransactionPhase::ApplyReadback,
+                error.cause,
+                &journal,
+                error.binding_uncertain,
+            ));
+        }
     }
 
     match P::pull_from(io) {
@@ -622,6 +661,7 @@ where
 
     let mut rollback_journal = Vec::new();
     let mut rollback_error = None;
+    let mut rollback_readback_error = None;
     let mut all_restorable = true;
     for change in journal.iter().rev().copied() {
         if !change.restorable {
@@ -629,7 +669,20 @@ where
             continue;
         }
         match original.push_change(change, io) {
-            Ok(()) => rollback_journal.push(change.into()),
+            Ok(()) => {
+                rollback_journal.push(change.into());
+                if let Err(error) = original.verify_change(change, io) {
+                    binding_uncertain |= error.binding_uncertain;
+                    rollback_readback_error.get_or_insert_with(|| {
+                        error.cause.context(
+                            "simulation recovery readback did not match the original profile",
+                        )
+                    });
+                    if !io.is_healthy() {
+                        break;
+                    }
+                }
+            }
             Err(error) => {
                 if error.property_confirmed {
                     rollback_journal.push(change.into());
@@ -646,42 +699,56 @@ where
     if !io.is_healthy() {
         return SimulationTransactionError {
             state: SimulationFailureState::CameraStateUnknown,
-            phase: SimulationTransactionPhase::RollbackWrite,
+            phase: if rollback_readback_error.is_some() {
+                SimulationTransactionPhase::RollbackReadback
+            } else {
+                SimulationTransactionPhase::RollbackWrite
+            },
             cause,
             rollback_error,
-            rollback_readback_error: None,
+            rollback_readback_error,
             journal: receipts,
             rollback_journal,
         };
     }
 
     match P::pull_from(io) {
-        Ok(readback) if readback == *original && all_restorable && !binding_uncertain => {
+        Ok(readback)
+            if readback == *original
+                && all_restorable
+                && !binding_uncertain
+                && rollback_readback_error.is_none() =>
+        {
             SimulationTransactionError {
                 state: SimulationFailureState::RollbackVerified,
                 phase: primary_phase,
                 cause,
                 rollback_error,
-                rollback_readback_error: None,
+                rollback_readback_error,
                 journal: receipts,
                 rollback_journal,
             }
         }
-        Ok(_) => SimulationTransactionError {
-            state: SimulationFailureState::CameraStateUnknown,
-            phase: SimulationTransactionPhase::RollbackReadback,
-            cause,
-            rollback_error,
-            rollback_readback_error: None,
-            journal: receipts,
-            rollback_journal,
-        },
+        Ok(_) => {
+            rollback_readback_error.get_or_insert_with(|| {
+                anyhow::anyhow!("simulation recovery readback did not match the original profile")
+            });
+            SimulationTransactionError {
+                state: SimulationFailureState::CameraStateUnknown,
+                phase: SimulationTransactionPhase::RollbackReadback,
+                cause,
+                rollback_error,
+                rollback_readback_error,
+                journal: receipts,
+                rollback_journal,
+            }
+        }
         Err(error) => SimulationTransactionError {
             state: SimulationFailureState::CameraStateUnknown,
             phase: SimulationTransactionPhase::RollbackReadback,
             cause,
             rollback_error,
-            rollback_readback_error: Some(error),
+            rollback_readback_error: rollback_readback_error.or(Some(error)),
             journal: receipts,
             rollback_journal,
         },
@@ -782,6 +849,40 @@ mod tests {
                 ))),
             }
         }
+
+        fn verify_change<IO: SimulationPropertyIo>(
+            &self,
+            change: SimulationPropertyChange,
+            io: &mut IO,
+        ) -> Result<(), SimulationPropertyWriteError> {
+            let (expected, observed) = match change.index {
+                0 => (
+                    self.first.expect("planned value"),
+                    io.get_prop::<u16>(0xd001),
+                ),
+                1 => (
+                    self.second.expect("planned value"),
+                    io.get_prop::<u16>(0xd002),
+                ),
+                2 => (
+                    self.third.expect("planned value"),
+                    io.get_prop::<u16>(0xd003),
+                ),
+                _ => {
+                    return Err(SimulationPropertyWriteError::confirmed(anyhow::anyhow!(
+                        "unknown test change index"
+                    )));
+                }
+            };
+            let observed = observed.map_err(SimulationPropertyWriteError::confirmed)?;
+            if observed == expected {
+                Ok(())
+            } else {
+                Err(SimulationPropertyWriteError::confirmed(anyhow::anyhow!(
+                    "test setting readback mismatch"
+                )))
+            }
+        }
     }
 
     #[derive(Default)]
@@ -795,6 +896,7 @@ mod tests {
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum Fault {
+        IgnoreWrite(u16),
         RejectWrite(u16),
         PoisonWrite(u16),
         PoisonRead(u16),
@@ -815,6 +917,11 @@ mod tests {
                 faults: VecDeque::new(),
                 reads: Vec::new(),
             }
+        }
+
+        fn ignore_write(mut self, property_code: u16) -> Self {
+            self.faults.push_back(Fault::IgnoreWrite(property_code));
+            self
         }
 
         fn reject_write(mut self, property_code: u16) -> Self {
@@ -897,6 +1004,10 @@ mod tests {
                 )));
             }
             self.writes.push(code);
+            if self.faults.front() == Some(&Fault::IgnoreWrite(code)) {
+                self.faults.pop_front();
+                return Ok(());
+            }
             let encoded = codec::encode(value).map_err(|error| {
                 SimulationPropertyWriteError::unconfirmed(anyhow::Error::from(error))
             })?;
@@ -969,6 +1080,29 @@ mod tests {
     }
 
     #[test]
+    fn accepted_setting_write_is_read_back_before_the_next_write() {
+        let original = TestProfile {
+            first: Some(1),
+            second: Some(2),
+            third: Some(5),
+        };
+        let candidate = TestProfile {
+            first: Some(3),
+            second: Some(4),
+            third: Some(5),
+        };
+        let mut io = FakeSimulationPropertyIo::with_profile(&original).ignore_write(0xd001);
+
+        execute_simulation_transaction(&mut io, &original, &candidate)
+            .expect_err("PTP OK without the requested state change must fail semantically");
+
+        assert!(
+            !io.writes.contains(&0xd002),
+            "the next setting must not be written before the first setting is verified"
+        );
+    }
+
+    #[test]
     fn healthy_rejection_rolls_back_confirmed_writes_in_reverse_order() {
         let original = TestProfile {
             first: Some(1),
@@ -1016,7 +1150,7 @@ mod tests {
             super::SimulationFailureState::CameraStateUnknown
         );
         assert_eq!(io.writes, [0xd001]);
-        assert!(io.reads.is_empty(), "poisoned sessions must not be read");
+        assert_eq!(io.reads, [0xd001]);
         assert_eq!(error.journal().len(), 1);
         assert!(error.rollback_journal().is_empty());
     }
@@ -1042,7 +1176,7 @@ mod tests {
             error.state(),
             super::SimulationFailureState::CameraStateUnknown
         );
-        assert_eq!(io.writes, [0xd001, 0xd002]);
+        assert_eq!(io.writes, [0xd001]);
         assert_eq!(io.reads, [0xd001]);
         assert!(error.rollback_journal().is_empty());
     }
@@ -1068,8 +1202,8 @@ mod tests {
             error.state(),
             super::SimulationFailureState::RollbackVerified
         );
-        assert_eq!(io.writes, [0xd001, 0xd002, 0xd002, 0xd001]);
-        assert_eq!(error.rollback_journal().len(), 2);
+        assert_eq!(io.writes, [0xd001, 0xd001]);
+        assert_eq!(error.rollback_journal().len(), 1);
     }
 
     #[test]
@@ -1104,6 +1238,41 @@ mod tests {
     }
 
     #[test]
+    fn accepted_rollback_write_without_original_value_is_not_verified() {
+        let original = TestProfile {
+            first: Some(1),
+            second: Some(2),
+            third: Some(5),
+        };
+        let candidate = TestProfile {
+            first: Some(3),
+            second: Some(4),
+            third: Some(6),
+        };
+        let mut io = FakeSimulationPropertyIo::with_profile(&original)
+            .reject_write(0xd003)
+            .ignore_write(0xd002);
+
+        let error = execute_simulation_transaction(&mut io, &original, &candidate)
+            .expect_err("PTP OK without restoring the original value must fail semantically");
+
+        assert_eq!(
+            error.state(),
+            super::SimulationFailureState::CameraStateUnknown
+        );
+        assert_eq!(
+            error.phase(),
+            super::SimulationTransactionPhase::RollbackReadback
+        );
+        assert!(
+            error.rollback_readback_error().is_some_and(|error| error
+                .to_string()
+                .contains("did not match the original profile")),
+            "the typed outcome must retain the rollback semantic mismatch"
+        );
+    }
+
+    #[test]
     fn poisoned_rollback_write_stops_recovery_without_readback() {
         let original = TestProfile {
             first: Some(1),
@@ -1131,7 +1300,7 @@ mod tests {
             super::SimulationTransactionPhase::RollbackWrite
         );
         assert_eq!(io.writes, [0xd001, 0xd002]);
-        assert!(io.reads.is_empty(), "poisoned rollback must not read back");
+        assert_eq!(io.reads, [0xd001, 0xd002]);
         assert!(error.rollback_journal().is_empty());
     }
 
@@ -1163,7 +1332,7 @@ mod tests {
             super::SimulationTransactionPhase::RollbackReadback
         );
         assert_eq!(io.writes, [0xd001, 0xd002, 0xd002, 0xd001]);
-        assert_eq!(io.reads, [0xd001]);
+        assert_eq!(io.reads, [0xd001, 0xd002, 0xd002, 0xd001]);
         assert_eq!(error.rollback_journal().len(), 2);
         assert!(error.rollback_readback_error().is_some());
     }

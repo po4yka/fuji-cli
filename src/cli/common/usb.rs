@@ -1,10 +1,16 @@
 use std::{
     fmt::{Display, Formatter},
     str::FromStr,
+    thread::sleep,
+    time::{Duration, Instant},
 };
 
-use anyhow::{anyhow, bail};
-use fujicli::{Camera, features::base::info::CameraInfoListItem, policy::EmulationAcknowledgement};
+use anyhow::{Context as _, anyhow, bail};
+use fujicli::{
+    Camera,
+    features::base::info::CameraInfoListItem,
+    policy::{EmulationAcknowledgement, SerialFingerprint},
+};
 use log::trace;
 
 #[derive(Default)]
@@ -227,11 +233,136 @@ pub fn get_camera(
     }
 }
 
+pub fn reconnect_camera_by_serial(
+    serial: &SerialFingerprint,
+    timeout: Duration,
+) -> anyhow::Result<Camera> {
+    retry_reconnect(
+        || find_camera_by_serial(serial),
+        sleep,
+        Instant::now,
+        timeout,
+    )
+}
+
+fn retry_reconnect<T>(
+    mut attempt: impl FnMut() -> anyhow::Result<Option<T>>,
+    mut sleep_between_attempts: impl FnMut(Duration),
+    mut now: impl FnMut() -> Instant,
+    timeout: Duration,
+) -> anyhow::Result<T> {
+    let deadline = now()
+        .checked_add(timeout)
+        .ok_or_else(|| anyhow!("camera reconnect deadline overflow"))?;
+    let mut last_error = None;
+    loop {
+        match attempt() {
+            Ok(Some(camera)) => return Ok(camera),
+            Ok(None) => {}
+            Err(error) => last_error = Some(error),
+        }
+
+        let remaining = deadline.saturating_duration_since(now());
+        if remaining.is_zero() {
+            return last_error.map_or_else(
+                || {
+                    Err(anyhow!(
+                        "camera did not reconnect before the verification deadline"
+                    ))
+                },
+                |error| {
+                    Err(error).context("camera did not reconnect before the verification deadline")
+                },
+            );
+        }
+        sleep_between_attempts(remaining.min(Duration::from_millis(250)));
+    }
+}
+
+fn find_camera_by_serial(serial: &SerialFingerprint) -> anyhow::Result<Option<Camera>> {
+    let (candidates, summary) = probe_candidates(rusb::devices()?.iter(), Camera::probe);
+    trace!("USB camera reconnect scan complete: {summary}");
+
+    for device in candidates {
+        let Ok(mut camera) = Camera::open(&device) else {
+            continue;
+        };
+        let Ok(identity) = camera.backup_identity() else {
+            continue;
+        };
+        if identity.serial_sha256 == serial.as_str() {
+            return Ok(Some(camera));
+        }
+    }
+
+    Ok(None)
+}
+
 #[cfg(test)]
 mod tests {
-    use std::{cell::Cell, io};
+    use std::{
+        cell::{Cell, RefCell},
+        collections::VecDeque,
+        io,
+        time::{Duration, Instant},
+    };
 
-    use super::{UsbIdentity, UsbScanSummary, discover_camera_info, probe_candidates, select_only};
+    use super::{
+        UsbIdentity, UsbScanSummary, discover_camera_info, probe_candidates, retry_reconnect,
+        select_only,
+    };
+
+    #[test]
+    fn reconnect_retries_by_logical_serial_and_accepts_a_new_usb_address() {
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        struct EnumeratedDevice {
+            serial: &'static str,
+            bus: u8,
+            address: u8,
+        }
+
+        let target_serial = "CAMERA-0001";
+        let enumerations = RefCell::new(VecDeque::from([
+            vec![EnumeratedDevice {
+                serial: "STALE-DEVICE",
+                bus: 1,
+                address: 4,
+            }],
+            vec![EnumeratedDevice {
+                serial: target_serial,
+                bus: 1,
+                address: 9,
+            }],
+        ]));
+        let attempts = Cell::new(0_u8);
+        let sleeps = Cell::new(0_u8);
+        let clock = Cell::new(Instant::now());
+
+        let reconnected = retry_reconnect(
+            || {
+                attempts.set(attempts.get() + 1);
+                Ok(enumerations
+                    .borrow_mut()
+                    .pop_front()
+                    .expect("test enumeration")
+                    .into_iter()
+                    .find(|device| device.serial == target_serial))
+            },
+            |duration| {
+                sleeps.set(sleeps.get() + 1);
+                clock.set(clock.get() + duration);
+            },
+            || clock.get(),
+            Duration::from_secs(1),
+        )
+        .expect("the target camera must be found after re-enumeration");
+
+        assert_eq!(attempts.get(), 2);
+        assert_eq!(sleeps.get(), 1);
+        assert_eq!(reconnected.serial, target_serial);
+        assert_eq!((reconnected.bus, reconnected.address), (1, 9));
+        assert_ne!((reconnected.bus, reconnected.address), (1, 4));
+    }
 
     #[test]
     fn discovery_lists_supported_descriptors_without_opening_a_camera() {

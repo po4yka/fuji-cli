@@ -1,4 +1,6 @@
-use anyhow::ensure;
+use std::time::Duration;
+
+use anyhow::{Context as _, ensure};
 use clap::{Args, Subcommand};
 use fujicli::{
     features::backup::{
@@ -12,6 +14,8 @@ use log::warn;
 use crate::cli::{GlobalOptions, common::usb};
 
 use super::common::file::{Input, Output, write_stdout_line};
+
+const BACKUP_RECONNECT_TIMEOUT: Duration = Duration::from_mins(2);
 
 fn ensure_import_confirmation(yes: bool, dry_run: bool, emulated: bool) -> anyhow::Result<()> {
     ensure!(
@@ -69,12 +73,12 @@ fn validated_backup_import_target_warning(camera_name: &str, usb_id: &str) -> St
     )
 }
 
-fn restore_after_recovery_saved(
+fn restore_after_recovery_saved<T>(
     recovery: &BackupArtifact,
     backup: &BackupArtifact,
     save_recovery: impl FnOnce(&[u8]) -> anyhow::Result<()>,
-    restore: impl FnOnce(&BackupArtifact) -> anyhow::Result<()>,
-) -> anyhow::Result<()> {
+    restore: impl FnOnce(&BackupArtifact) -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
     save_recovery(recovery.as_bytes())?;
     restore(backup)
 }
@@ -302,12 +306,13 @@ fn handle_import(options: GlobalOptions, args: BackupImportArgs) -> anyhow::Resu
         }
         return report_dry_run(&backup, &target, target_serial_sha256.is_some(), json);
     }
-    backup.validate_target(&session.target_identity(), target_serial_sha256.as_deref())?;
+    let target = session.target_identity();
+    backup.validate_target(&target, target_serial_sha256.as_deref())?;
     let recovery_backup = recovery_backup
         .ok_or_else(|| anyhow::anyhow!("backup import requires --recovery-backup"))?;
     let recovery = session.export_recovery()?;
     let camera_name = session.evidence().camera_name;
-    restore_after_recovery_saved(
+    let accepted = restore_after_recovery_saved(
         &recovery,
         &backup,
         |bytes| recovery_backup.write_all_new(bytes),
@@ -319,8 +324,26 @@ fn handle_import(options: GlobalOptions, args: BackupImportArgs) -> anyhow::Resu
             session.restore(backup, target_serial_sha256.as_deref())
         },
     )?;
+    drop(session);
+    drop(camera);
+
     warn!(
-        "PTP restore was accepted by {camera_name}; verify settings on the camera after it reconnects"
+        "PTP restore was accepted by {camera_name}; waiting for a fresh camera session to verify restored state"
+    );
+    let mut camera = usb::reconnect_camera_by_serial(&binding, BACKUP_RECONNECT_TIMEOUT)
+        .context("backup restore was accepted, but the target camera did not reconnect for persistence verification; camera state is unknown and the restore must not be retried automatically")?;
+    let observed = camera
+        .export_backup(BackupPurpose::Recovery)
+        .context("backup restore was accepted, but exporting a fresh-session verification backup failed; camera state is unknown and the restore must not be retried automatically")?;
+    backup.validate_target(&observed.manifest().source, target_serial_sha256.as_deref())?;
+    anyhow::ensure!(
+        observed.manifest().source == target,
+        "fresh-session backup identity changed after restore; camera state is unknown"
+    );
+    let verified = accepted.verify_post_restore_export(&backup, &observed)?;
+    warn!(
+        "Backup restore was semantically verified and persisted across a fresh camera session (payload SHA-256 {})",
+        verified.payload_sha256()
     );
 
     Ok(())

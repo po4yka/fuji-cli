@@ -6,6 +6,7 @@ pub use artifact::{
     MAX_BACKUP_ARTIFACT_BYTES, MAX_BACKUP_PAYLOAD_BYTES, sha256_hex,
 };
 pub use manager::{
-    BackupImportError, BackupImportPhase, BackupImportState, CameraBackupManager,
-    EXPORT_OBJECT_INFO_HANDLE, IMPORT_OBJECT_INFO_HANDLE, OBJECT_HANDLE,
+    BackupImportError, BackupImportPhase, BackupImportState, BackupPostconditionError,
+    BackupRestoreAccepted, BackupRestoreOutcome, CameraBackupManager, EXPORT_OBJECT_INFO_HANDLE,
+    IMPORT_OBJECT_INFO_HANDLE, OBJECT_HANDLE,
 };

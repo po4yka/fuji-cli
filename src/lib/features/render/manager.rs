@@ -4,7 +4,10 @@ use std::{
 };
 
 use crate::{
-    features::base::CameraBase,
+    features::{
+        base::CameraBase,
+        outcome::{OutcomeStatus, StateChangeAudit},
+    },
     generated::renders::RenderBase,
     ptp::{CommandCode, DevicePropCode, ObjectFormat, ObjectInfo, Ptp, PtpOperation},
 };
@@ -519,6 +522,22 @@ fn fetch_rendered_object<I: RenderObjectIo>(io: &mut I, handle: u32) -> anyhow::
     Ok(image)
 }
 
+fn delete_object_verified<I: RenderIo + RenderObjectIo>(
+    io: &mut I,
+    handle: u32,
+) -> anyhow::Result<StateChangeAudit> {
+    io.delete_object(handle)?;
+    let deadline = Instant::now()
+        .checked_add(RENDER_TIMEOUT)
+        .ok_or_else(|| anyhow::anyhow!("render cleanup deadline overflow"))?;
+    let handles = io.object_handles(deadline)?;
+    anyhow::ensure!(
+        !handles.contains(&handle),
+        "DeleteObject was accepted by PTP, but object handle {handle} is still present"
+    );
+    Ok(StateChangeAudit::ptp_accepted().with_semantic(OutcomeStatus::Succeeded))
+}
+
 #[cfg(test)]
 fn wait_for_rendered_handle<F, S, N>(
     mut fetch_handles: F,
@@ -700,11 +719,15 @@ pub trait CameraRenderManager: CameraBase {
         recover_rendered_object_with_io(ptp, handle)
     }
 
-    fn cleanup_rendered_object(&self, ptp: &mut Ptp, handle: u32) -> anyhow::Result<()> {
+    fn cleanup_rendered_object(
+        &self,
+        ptp: &mut Ptp,
+        handle: u32,
+    ) -> anyhow::Result<StateChangeAudit> {
         debug!("Cleaning up rendered image on camera");
-        ptp.delete_object(handle)?;
+        let audit = delete_object_verified(ptp, handle)?;
         debug!("Cleaned up rendered image on camera");
-        Ok(())
+        Ok(audit)
     }
 
     fn render(
@@ -730,9 +753,10 @@ mod tests {
 
     use super::{
         RENDER_TIMEOUT, RenderIo, RenderObjectIo, RenderUploadIo, combine_render_and_restore,
-        fetch_rendered_object, fetch_unique_rendered_object, recover_rendered_object_with_io,
-        send_image_with_io, start_and_wait_for_new_rendered_handle,
-        start_and_wait_for_stable_new_handles, wait_for_rendered_handle, write_profile_verified,
+        delete_object_verified, fetch_rendered_object, fetch_unique_rendered_object,
+        recover_rendered_object_with_io, send_image_with_io,
+        start_and_wait_for_new_rendered_handle, start_and_wait_for_stable_new_handles,
+        wait_for_rendered_handle, write_profile_verified,
     };
 
     fn valid_jpeg() -> Vec<u8> {
@@ -813,6 +837,38 @@ mod tests {
         deleted: Vec<u32>,
     }
 
+    #[derive(Default)]
+    struct FakeCleanupIo {
+        deleted: Vec<u32>,
+        handle_readbacks: usize,
+    }
+
+    impl RenderObjectIo for FakeCleanupIo {
+        fn object_info(&mut self, _handle: u32) -> anyhow::Result<crate::ptp::ObjectInfo> {
+            unreachable!("cleanup verification does not inspect ObjectInfo")
+        }
+
+        fn fetch_object(&mut self, _handle: u32) -> anyhow::Result<Vec<u8>> {
+            unreachable!("cleanup verification does not fetch object data")
+        }
+
+        fn delete_object(&mut self, handle: u32) -> anyhow::Result<()> {
+            self.deleted.push(handle);
+            Ok(())
+        }
+    }
+
+    impl RenderIo for FakeCleanupIo {
+        fn start_render(&mut self, _draft: bool) -> anyhow::Result<()> {
+            unreachable!("cleanup verification does not start rendering")
+        }
+
+        fn object_handles(&mut self, _deadline: Instant) -> anyhow::Result<Vec<u32>> {
+            self.handle_readbacks += 1;
+            Ok(vec![42])
+        }
+    }
+
     impl RenderObjectIo for FakeRenderObjectIo {
         fn object_info(&mut self, _handle: u32) -> anyhow::Result<crate::ptp::ObjectInfo> {
             self.object_infos
@@ -890,6 +946,23 @@ mod tests {
 
         assert!(error.to_string().contains("simulated fetch failure"));
         assert!(io.deleted.is_empty());
+    }
+
+    #[test]
+    fn delete_acceptance_is_not_success_while_handle_remains_present() {
+        let mut io = FakeCleanupIo::default();
+
+        let result = delete_object_verified(&mut io, 42);
+
+        assert_eq!(io.deleted, [42]);
+        assert!(
+            result.is_err(),
+            "DeleteObject PTP OK must not be verified success while handle 42 remains present"
+        );
+        assert!(
+            io.handle_readbacks > 0,
+            "cleanup must verify absence through GetObjectHandles"
+        );
     }
 
     #[test]

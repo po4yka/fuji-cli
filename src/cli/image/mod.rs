@@ -158,7 +158,7 @@ fn handle_render(options: GlobalOptions, request: RenderRequest) -> anyhow::Resu
         rendered.data(),
         profile_restore_error,
         delete_after_save,
-        |handle| session.cleanup_rendered_object(handle),
+        |handle| session.cleanup_rendered_object(handle).map(|_| ()),
     )
 }
 
@@ -199,6 +199,7 @@ fn handle_recover(
             camera
                 .preflight_raw_recovery_cleanup(&target_serial_sha256)?
                 .cleanup_rendered_object(handle)
+                .map(|_| ())
         },
     )
 }
