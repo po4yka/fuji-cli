@@ -5,7 +5,10 @@ use fujicli::{
 };
 
 use super::common::file::{Input, Output, OutputTransaction};
-use crate::cli::{GlobalOptions, common::usb};
+use crate::cli::{
+    GlobalOptions,
+    common::{interrupt, usb},
+};
 use clap::Subcommand;
 
 const MAX_IMAGE_INPUT_BYTES: usize = 512 * 1024 * 1024;
@@ -150,7 +153,9 @@ fn handle_render(options: GlobalOptions, request: RenderRequest) -> anyhow::Resu
     }
     base.merge(render.into());
 
-    let outcome = session.render(&image, base, draft)?;
+    let outcome = interrupt::critical_camera_write("RAW render upload", || {
+        session.render(&image, base, draft)
+    })?;
     let (rendered, profile_restore_error) = outcome.into_parts();
     save_rendered_object(
         output_transaction,

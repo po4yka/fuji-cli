@@ -14,6 +14,7 @@ mod log;
 fn run() -> anyhow::Result<()> {
     let cli = cli::Cli::parse();
     log::init(cli.options.verbose)?;
+    cli::common::interrupt::install()?;
     cli::handle(cli)?;
     Ok(())
 }

@@ -5,7 +5,10 @@ use fujicli::{
 };
 
 use super::common::file::{Input, Output, write_stdout_line};
-use crate::cli::{GlobalOptions, common::usb};
+use crate::cli::{
+    GlobalOptions,
+    common::{interrupt, usb},
+};
 use clap::Subcommand;
 
 pub const MAX_SIMULATION_INPUT_BYTES: usize = 1024 * 1024;
@@ -143,9 +146,10 @@ fn handle_set(
     let target_serial_sha256 = target_serial_sha256
         .ok_or_else(|| anyhow::anyhow!("simulation write requires --target-serial-sha256"))?;
     let partial: SimulationBase = simulation.into();
-    camera
-        .preflight_simulation_write(&target_serial_sha256)?
-        .update_simulation(slot, partial)?;
+    let mut session = camera.preflight_simulation_write(&target_serial_sha256)?;
+    interrupt::critical_camera_write("simulation update", || {
+        Ok(session.update_simulation(slot, partial)?)
+    })?;
     Ok(())
 }
 
@@ -191,9 +195,10 @@ fn handle_import(
     let simulation = camera.deserialize_simulation(&buffer)?;
     let target_serial_sha256 = target_serial_sha256
         .ok_or_else(|| anyhow::anyhow!("simulation write requires --target-serial-sha256"))?;
-    camera
-        .preflight_simulation_write(&target_serial_sha256)?
-        .set_simulation(slot, &*simulation)?;
+    let mut session = camera.preflight_simulation_write(&target_serial_sha256)?;
+    interrupt::critical_camera_write("simulation write", || {
+        Ok(session.set_simulation(slot, &*simulation)?)
+    })?;
 
     Ok(())
 }

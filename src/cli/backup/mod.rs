@@ -11,7 +11,10 @@ use fujicli::{
 };
 use log::warn;
 
-use crate::cli::{GlobalOptions, common::usb};
+use crate::cli::{
+    GlobalOptions,
+    common::{interrupt, usb},
+};
 
 use super::common::file::{Input, Output, write_stdout_line};
 
@@ -321,7 +324,9 @@ fn handle_import(options: GlobalOptions, args: BackupImportArgs) -> anyhow::Resu
                 "{}",
                 validated_backup_import_target_warning(camera_name, &usb_id)
             );
-            session.restore(backup, target_serial_sha256.as_deref())
+            interrupt::critical_camera_write("backup restore", || {
+                session.restore(backup, target_serial_sha256.as_deref())
+            })
         },
     )?;
     drop(session);
