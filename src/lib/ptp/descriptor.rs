@@ -115,14 +115,7 @@ impl DevicePropDesc {
                 maximum: read_value(&mut reader, data_type)?,
                 step: read_value(&mut reader, data_type)?,
             },
-            2 => {
-                let count = usize::from(read_u16(&mut reader)?);
-                let mut values = Vec::with_capacity(count);
-                for _ in 0..count {
-                    values.push(read_value(&mut reader, data_type)?);
-                }
-                DevicePropForm::Enumeration(values)
-            }
+            2 => DevicePropForm::Enumeration(read_enumeration(&mut reader, data_type)?),
             value => bail!("unsupported PTP device property form {value}"),
         };
         ensure!(
@@ -403,6 +396,35 @@ fn read_array(
     Ok(DevicePropValue::Array(values))
 }
 
+fn read_enumeration(
+    reader: &mut Cursor<&[u8]>,
+    element_type: DevicePropDataType,
+) -> anyhow::Result<Vec<DevicePropValue>> {
+    let count = usize::from(read_u16(reader)?);
+    let Some(element_size) = wire_size(element_type) else {
+        bail!("PTP device property enumeration element type has no fixed wire size");
+    };
+    let required_bytes = count
+        .checked_mul(element_size)
+        .ok_or_else(|| anyhow!("PTP device property enumeration size overflows"))?;
+    let remaining_bytes = reader
+        .get_ref()
+        .len()
+        .saturating_sub(usize::try_from(reader.position())?);
+    ensure!(
+        required_bytes <= remaining_bytes,
+        "PTP device property enumeration is larger than its payload"
+    );
+    let mut values = Vec::new();
+    values
+        .try_reserve_exact(count)
+        .map_err(|error| anyhow!("failed to reserve PTP device property enumeration: {error}"))?;
+    for _ in 0..count {
+        values.push(read_value(reader, element_type)?);
+    }
+    Ok(values)
+}
+
 fn read_string(reader: &mut Cursor<&[u8]>) -> anyhow::Result<String> {
     let length = read_u8(reader)?;
     if length == 0 {
@@ -621,6 +643,52 @@ mod tests {
         assert_eq!(
             descriptor.current,
             DevicePropValue::Array(vec![DevicePropValue::UInt(30), DevicePropValue::UInt(40)])
+        );
+    }
+
+    #[test]
+    fn enumeration_count_exceeding_payload_is_rejected_before_allocation() {
+        let mut bytes = Vec::from([
+            0x01, 0xd0, // DevicePropertyCode
+            0x04, 0x00, // DataType: UINT16
+            0x01, // GetSet: writable
+            0x00, 0x00, // FactoryDefaultValue
+            0x00, 0x00, // CurrentValue
+            0x02, // FormFlag: Enumeration
+        ]);
+        // NumberOfValues: declares the maximum u16 count but supplies no
+        // element bytes at all.
+        bytes.extend(u16::MAX.to_le_bytes());
+
+        let error = DevicePropDesc::decode(&bytes).expect_err(
+            "enumeration count exceeding its payload must be rejected before allocation",
+        );
+
+        assert!(error.to_string().contains("larger than its payload"));
+    }
+
+    #[test]
+    fn enumeration_matching_its_payload_still_decodes() {
+        let bytes = [
+            0x01, 0xd0, // DevicePropertyCode
+            0x04, 0x00, // DataType: UINT16
+            0x01, // GetSet: writable
+            0x0a, 0x00, // FactoryDefaultValue
+            0x14, 0x00, // CurrentValue
+            0x02, // FormFlag: Enumeration
+            0x02, 0x00, // NumberOfValues
+            0x0a, 0x00, // SupportedValue[0]
+            0x14, 0x00, // SupportedValue[1]
+        ];
+
+        let descriptor = DevicePropDesc::decode(&bytes)
+            .expect("enumeration whose declared count matches its payload must decode");
+
+        assert_eq!(
+            descriptor.form,
+            DevicePropForm::Enumeration(
+                vec![DevicePropValue::UInt(10), DevicePropValue::UInt(20),]
+            )
         );
     }
 
