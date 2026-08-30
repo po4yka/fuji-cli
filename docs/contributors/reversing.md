@@ -191,6 +191,32 @@ open question below):
    it is a maintainer decision, not something this design authorizes
    unilaterally; see the executor report for the exact API shape considered.
 
+### Maintainer decisions (2026-08-30)
+
+Both open questions above have been answered by the maintainer.
+
+1. **Observable: resolve by capture first, LCD probe as fallback.** Before any
+   mutating write of our own, run an X RAW Studio USB-traffic capture: the
+   official software may itself touch `0xD18C` and expose the still/movie
+   signal on the wire, with no dangerous write from us. Only if the capture
+   fails to establish which namespace `0xD18C` addresses do we fall back to the
+   probe with the LCD-observation protocol (PTP-level log paired with a human
+   reading the camera's own C1-C7 menu before and after, in still and movie
+   modes). The non-mutating capture is always attempted first.
+2. **Raw single-property primitive: sanctioned, probe-scoped only.** A new
+   `Camera` method (working name `reverse_probe_write_single_property`)
+   performing one `SetDevicePropValue`/`GetDevicePropValue` round trip without
+   the `MutationPermit`/`Verified`-profile requirement, gated behind BOTH
+   `reverse-tools` AND `dangerous-reverse-engineering` so it cannot compile
+   into a default-features distributable. Single send, no auto-retry. This is a
+   deliberate, narrowly-scoped reopening of the `124aa4f` seal, authorized only
+   for this probe; it must not be widened beyond the single-property round trip.
+   Its implementation is tracked as a follow-up plan and must go through the
+   diff-acceptance review for sealed-mutation-surface changes.
+
+The physical-device work (the capture and, if needed, the sanctioned probe run
+against an X-T5 with a recovery plan) remains a maintainer step.
+
 ## Reversing Render Profiles
 
 Rendering is the hard one. Fujifilm doesn't document the conversion profile wire
