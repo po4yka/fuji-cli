@@ -472,6 +472,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "fujicli-dev"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "fujicli",
+ "log",
+ "log4rs",
+ "rusb",
+ "tempfile",
+]
+
+[[package]]
 name = "futures-core"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"

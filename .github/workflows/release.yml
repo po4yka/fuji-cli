@@ -153,23 +153,22 @@ jobs:
         shell: bash
         env:
           RELEASE_TARGET: ${{ matrix.target }}
-        run: cargo build --locked --release --workspace --target "$RELEASE_TARGET" --jobs 2
+        run: >-
+          cargo build --locked --release --no-default-features
+          --package fujicli --bin fujicli
+          --target "$RELEASE_TARGET" --jobs 2
 
       - name: Smoke-test binary
         shell: bash
         env:
+          PYTHON: ${{ runner.os == 'Windows' && 'python' || 'python3' }}
           RELEASE_TARGET: ${{ matrix.target }}
           RELEASE_BINARY: ${{ matrix.binary }}
         run: |
           binary="target/${RELEASE_TARGET}/release/${RELEASE_BINARY}"
-          "$binary" --version
-          "$binary" --help >/dev/null
-          reverse_output="$("$binary" device reverse info 2>&1 || true)"
-          if ! grep -q "unrecognized subcommand" <<<"$reverse_output"; then
-            printf '%s\n' "default release binary unexpectedly exposes device reverse" >&2
-            printf '%s\n' "$reverse_output" >&2
-            exit 1
-          fi
+          "$PYTHON" support/verify-release-artifact.py \
+            --binary "$binary" \
+            --binary-name "$RELEASE_BINARY"
 
       - name: Inspect Linux linkage
         if: runner.os == 'Linux'
@@ -194,6 +193,19 @@ jobs:
             --package "$package" \
             --output "dist/$package.zip" \
             --epoch "$source_date_epoch"
+
+      - name: Verify packaged production boundary
+        shell: bash
+        env:
+          PYTHON: ${{ runner.os == 'Windows' && 'python' || 'python3' }}
+          RELEASE_LABEL: ${{ needs.validate.outputs.release-label }}
+          RELEASE_TARGET: ${{ matrix.target }}
+          RELEASE_BINARY: ${{ matrix.binary }}
+        run: |
+          package="fujicli-${RELEASE_LABEL}-${RELEASE_TARGET}"
+          "$PYTHON" support/verify-release-artifact.py \
+            --archive "dist/$package.zip" \
+            --binary-name "$RELEASE_BINARY"
 
       - name: Stage SBOM input
         shell: bash

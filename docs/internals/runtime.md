@@ -84,8 +84,9 @@ Every high-level operation is classified before file or USB I/O and is checked
 again at the `Camera` boundary. Emulated read-only access is allowed; transient
 selector writes, persistent settings writes, opaque restore, and
 destructive/recovery-sensitive operations are denied.
-`reverse-tools` adds discovery commands, but does not expose raw PTP or a restore
-bypass.
+`reverse-tools` adds narrow read-only library probes consumed only by the
+unpublished `fujicli-dev` package. The production parser contains no reverse
+command, and the feature does not expose raw PTP or a restore bypass.
 
 ## State-Changing Preflight
 

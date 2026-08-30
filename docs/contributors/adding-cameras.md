@@ -53,7 +53,7 @@ If anything fails, the CUE error will pinpoint the bad field.
 ## 2. Enable Backup
 
 Probe the read side with
-[`fujicli device reverse backup export`](reversing.md#backup) **first**; the
+[`fujicli-dev discover backup export`](reversing.md#backup) **first**; the
 non-reverse `fujicli backup` commands won't run until the feature is declared.
 Then capture and physically verify the restore exchange through a reviewed FML
 preflight profile before setting:
@@ -70,7 +70,7 @@ camera model is not sufficient evidence.
 
 ## 3. Enable Simulations
 
-Probe with [`fujicli device reverse simulation`](reversing.md#simulation) to
+Probe with [`fujicli-dev discover simulation`](reversing.md#simulation) to
 confirm which PTP property codes the camera responds to. Then declare the
 feature block.
 

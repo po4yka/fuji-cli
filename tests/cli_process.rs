@@ -248,24 +248,34 @@ fn emulated_backup_import_is_rejected_before_file_access() {
     assert!(!stderr.contains("No such file or directory"));
 }
 
-#[test]
-#[cfg(feature = "reverse-tools")]
-fn emulated_reverse_command_is_rejected_before_usb_lookup() {
-    let output = run(&[
-        "device",
-        "reverse",
-        "info",
-        "--emulate",
-        "04cb:02f7",
-        "--device",
-        "255.255",
-    ]);
+fn assert_reverse_absent(arguments: &[&str]) {
+    let output = run(arguments);
 
-    assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(2));
     assert!(output.stdout.is_empty());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("--emulate is not supported for this command"));
+    assert!(stderr.contains("unrecognized subcommand"));
     assert!(!stderr.contains("No USB device found"));
+}
+
+#[test]
+fn production_binary_rejects_reverse_command() {
+    assert_reverse_absent(&["device", "reverse", "info"]);
+}
+
+#[test]
+fn production_binary_rejects_reverse_alias() {
+    assert_reverse_absent(&["device", "r", "info"]);
+}
+
+#[test]
+fn production_binary_rejects_device_alias_with_reverse_command() {
+    assert_reverse_absent(&["d", "reverse", "info"]);
+}
+
+#[test]
+fn production_binary_rejects_device_and_reverse_aliases() {
+    assert_reverse_absent(&["d", "r", "info"]);
 }
 
 #[test]

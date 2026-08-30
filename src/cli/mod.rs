@@ -94,11 +94,9 @@ fn authorize_command(command: &Commands, options: &GlobalOptions) -> anyhow::Res
         }
         Commands::Simulation(
             SimulationCmd::List | SimulationCmd::Get { .. } | SimulationCmd::Export { .. },
-        ) => CommandRisk::EmulationForbidden,
+        )
+        | Commands::Device(DeviceCmd::List) => CommandRisk::EmulationForbidden,
         Commands::Device(DeviceCmd::Info) => CommandRisk::ReadOnly,
-        Commands::Device(DeviceCmd::List) => CommandRisk::EmulationForbidden,
-        #[cfg(feature = "reverse-tools")]
-        Commands::Device(DeviceCmd::Reverse(_)) => CommandRisk::EmulationForbidden,
         Commands::Backup(BackupCmd::Import(_)) => CommandRisk::OpaqueRestore,
         Commands::Backup(BackupCmd::Export { .. } | BackupCmd::Inspect { .. }) => {
             CommandRisk::EmulationForbidden
@@ -237,29 +235,9 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(feature = "reverse-tools"))]
-    fn reverse_commands_are_absent_from_default_builds() {
+    fn reverse_command_is_absent_from_production_parser() {
         let error = Cli::try_parse_from(["fujicli", "device", "reverse", "info"])
-            .expect_err("default builds must not expose reverse commands");
-
-        assert_eq!(error.kind(), clap::error::ErrorKind::InvalidSubcommand);
-    }
-
-    #[test]
-    #[cfg(feature = "reverse-tools")]
-    fn reverse_backup_import_is_not_exposed_as_a_preflight_bypass() {
-        let error = Cli::try_parse_from([
-            "fujicli",
-            "device",
-            "reverse",
-            "backup",
-            "import",
-            "backup.dat",
-            "--device",
-            "1.2",
-            "--yes",
-        ])
-        .expect_err("reverse restore must not bypass centralized preflight");
+            .expect_err("production parser must not expose reverse commands");
 
         assert_eq!(error.kind(), clap::error::ErrorKind::InvalidSubcommand);
     }

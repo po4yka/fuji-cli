@@ -52,6 +52,13 @@
                 "https://github.com/rust-lang/crates.io-index" = "https://static.crates.io/crates";
               };
             };
+            cargoBuildFlags = [
+              "--package"
+              "fujicli"
+              "--bin"
+              "fujicli"
+              "--no-default-features"
+            ];
 
             # nixpkgs emits an extra source block for every registry override,
             # including the built-in crates.io index. Cargo rejects that alias
@@ -90,6 +97,16 @@
             installCheckPhase = ''
               runHook preInstallCheck
               "$out/bin/fujicli" --help >/dev/null
+              test ! -e "$out/bin/fujicli-dev"
+              reverse_stdout="$(mktemp)"
+              reverse_stderr="$(mktemp)"
+              set +e
+              "$out/bin/fujicli" device reverse info >"$reverse_stdout" 2>"$reverse_stderr"
+              reverse_status=$?
+              set -e
+              test "$reverse_status" -eq 2
+              test ! -s "$reverse_stdout"
+              grep -Fq "unrecognized subcommand" "$reverse_stderr"
               runHook postInstallCheck
             '';
           };

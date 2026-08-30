@@ -71,7 +71,7 @@ trait BackupTransport {
     fn send_object_data(&mut self, buffer: &[u8]) -> anyhow::Result<()>;
 }
 
-trait BackupExportTransport {
+pub(crate) trait BackupExportTransport {
     fn get_object_info(&mut self) -> anyhow::Result<Vec<u8>>;
 
     fn get_object_data(&mut self) -> anyhow::Result<Vec<u8>>;
@@ -114,7 +114,7 @@ impl BackupExportTransport for Ptp {
     }
 }
 
-fn export_backup_with_transport(
+pub(crate) fn export_backup_with_transport(
     transport: &mut impl BackupExportTransport,
 ) -> anyhow::Result<Vec<u8>> {
     let object_info = transport.get_object_info()?;

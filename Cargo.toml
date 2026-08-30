@@ -1,5 +1,7 @@
 [workspace]
-members = [".", "crates/codegen"]
+members = [".", "crates/codegen", "crates/fujicli-dev"]
+default-members = ["."]
+resolver = "2"
 
 [workspace.lints.rust]
 let_underscore_drop = "deny"

@@ -339,18 +339,8 @@ impl Camera {
 
     #[doc(hidden)]
     #[cfg(feature = "reverse-tools")]
-    pub fn reverse_export_backup_raw(&mut self) -> anyhow::Result<Vec<u8>> {
-        self.ptp.send(
-            ptp::CommandCode::GetObjectInfo,
-            &features::backup::EXPORT_OBJECT_INFO_HANDLE,
-            None,
-        )?;
-        self.ptp.send_for_operation(
-            ptp::PtpOperation::LargeTransfer,
-            ptp::CommandCode::GetObject,
-            &features::backup::OBJECT_HANDLE,
-            None,
-        )
+    pub fn reverse_export_backup(&mut self) -> anyhow::Result<Vec<u8>> {
+        features::backup::manager::export_backup_with_transport(&mut self.ptp)
     }
 
     pub fn close(mut self) -> anyhow::Result<()> {

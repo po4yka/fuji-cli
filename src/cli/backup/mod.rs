@@ -20,7 +20,7 @@ fn ensure_import_confirmation(yes: bool, dry_run: bool, emulated: bool) -> anyho
     );
     ensure!(
         !emulated,
-        "safe backup import does not support --emulate; use device reverse only for explicit protocol research"
+        "safe backup import does not support --emulate; use fujicli-dev only for explicit protocol research"
     );
     Ok(())
 }
@@ -178,7 +178,7 @@ fn handle_export(options: GlobalOptions, output: Output) -> anyhow::Result<()> {
     } = options;
     ensure!(
         emulate.is_none(),
-        "safe backup export does not support --emulate; use device reverse only for explicit protocol research"
+        "safe backup export does not support --emulate; use fujicli-dev only for explicit protocol research"
     );
 
     let mut camera = usb::get_camera(device, emulate, EmulationAcknowledgement::NotProvided)?;

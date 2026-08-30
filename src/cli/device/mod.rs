@@ -1,17 +1,12 @@
-#[cfg(feature = "reverse-tools")]
-mod reverse;
-
 use clap::Subcommand;
 
-#[cfg(feature = "reverse-tools")]
-use crate::cli::device::reverse::ReverseCmd;
 use crate::cli::{
     GlobalOptions,
     common::{file::write_stdout_line, usb},
 };
 use fujicli::{features::base::info::CameraInfoListItem, policy::EmulationAcknowledgement};
 
-#[derive(Subcommand, Debug, Clone)]
+#[derive(Subcommand, Debug, Clone, Copy)]
 pub enum DeviceCmd {
     /// List cameras
     #[command(alias = "l")]
@@ -20,14 +15,6 @@ pub enum DeviceCmd {
     /// Get camera info
     #[command(alias = "i")]
     Info,
-
-    /// Reverse engineer device communication
-    ///
-    /// Only run this if you have a full device backup and know what
-    /// you are doing. Misuse can corrupt your camera or void your warranty.
-    #[command(alias = "r", subcommand, hide = true)]
-    #[cfg(feature = "reverse-tools")]
-    Reverse(ReverseCmd),
 }
 
 #[expect(
@@ -85,7 +72,5 @@ pub fn handle(cmd: DeviceCmd, options: GlobalOptions) -> anyhow::Result<()> {
     match cmd {
         DeviceCmd::List => handle_list(options),
         DeviceCmd::Info => handle_info(options),
-        #[cfg(feature = "reverse-tools")]
-        DeviceCmd::Reverse(cmd) => reverse::handle(cmd, options),
     }
 }
