@@ -21,11 +21,11 @@ cameras: [string]: #Camera
 		features?: #Features
 
 		#USB: {
-			#FujifilmVendorID:          0x04cb
+			#FujifilmVendorID:                 0x04cb
 			#DefaultCameraUSBChunkSizeCeiling: 1024 * 1024
 
-			vendor_id:  uint16 | *#FujifilmVendorID
-			product_id: uint16
+			vendor_id:          uint16 | *#FujifilmVendorID
+			product_id:         uint16
 			chunk_size_ceiling: uint | *#DefaultCameraUSBChunkSizeCeiling
 		}
 
@@ -366,7 +366,7 @@ cameras: {
 			_generation: _
 
 			usb: {
-				product_id: 0x02fc
+				product_id:         0x02fc
 				chunk_size_ceiling: 16128 * 1024
 			}
 			ptp: {
@@ -504,7 +504,7 @@ cameras: {
 						raw_conversion: {
 							id: "x_t5-4.31-raw-layout-unverified"
 							evidence: {
-								status:    "unverified"
+								status: "unverified"
 								manifests: []
 							}
 							binding: usb_modes: [0x6]
