@@ -173,9 +173,12 @@ list`.
 ### `CameraSimulationManager`
 
 The PTP-talking interface: `custom_settings_slots`, `get_simulation`,
-`update_simulation`, `set_simulation`. The codegen-emitted impl uses the
-option's `SimulationSetting::try_push` to select the slot before
-reading/writing.
+`get_simulations`, `update_simulation`, `set_simulation`. Reads are classified
+as `ReadWithTemporaryMutation`: codegen snapshots the raw custom-setting
+selector, selects and verifies the requested slot around every property read,
+then restores and verifies the exact raw snapshot. The batch API used by
+`simulation list` performs one outer snapshot/restore around the complete slot
+sequence and returns no partial list on failure.
 
 `update_simulation` and `set_simulation` snapshot the selected profile, build a
 complete candidate, and pass both to the runtime transaction executor. The
@@ -212,15 +215,52 @@ verified recovery remains possible.
 ### `CameraRenderManager`
 
 [`features/render/manager.rs`](../../src/lib/features/render/manager.rs)
-provides default `send_image` / `render_image` (uniform across cameras). Each
-render-capable camera must override `render`, which the codegen does: send the
-image, fetch the current `<Camera>RenderProfile`, `try_update_from(partial)`,
-write back, then `render_image`.
+provides the upload, object-discovery, validated fetch, explicit recovery, and
+cleanup primitives shared by render-capable cameras. Codegen snapshots the raw
+conversion profile, builds the candidate, validates and uploads an X-T5 RAF,
+writes and verifies the candidate, triggers the render, then restores and
+verifies the original raw profile. A render failure and a restore failure are
+both retained in the typed outcome.
+
+Object discovery takes a pre-trigger handle baseline and requires two identical
+non-empty delta polls. Every stable candidate is inspected with
+`GetObjectInfo`; exactly one EXIF/JPEG object may be fetched. Its reported size,
+fetched byte count, JPEG frame/scan structure, and terminal EOI are verified.
+No fetch or validation path deletes an object. Discovery/access errors retain
+all observed handles so the CLI can print an actionable `image recover`
+command.
+
+Local output is opened before camera mutation. A path output is written,
+synced, and atomically committed before `DeleteObject`; stdout and explicit
+recovery retain the camera object by default. Recovery fetch and recovery
+cleanup use separate least-privilege preflight profiles, so fetching retained
+bytes does not depend on writable conversion-profile properties.
 
 Render-object polling has a five-minute absolute deadline. Each
 `GetObjectHandles` exchange uses that same deadline instead of starting a fresh
 five-minute transaction budget, so an empty object list or a peer that only
 makes partial progress cannot keep the CLI alive past the polling deadline.
+
+### X-T5 physical acceptance matrix
+
+Local fault injection proves control flow, not camera semantics. Before calling
+the selector/profile lifecycle physically verified on a new firmware, run this
+matrix with privacy-reviewed `-vvv` traces and record the pre/post camera UI
+state and object handles:
+
+| Mode | Operation | Inject/interrupt after | Required observation |
+| --- | --- | --- | --- |
+| Still and movie | `simulation get` / `export` | selector write; each property read | Original D18C raw value and visible slot restored, or explicit unknown-state failure |
+| Still and movie | `simulation list` | each C1-C7 selection | One outer restore; no partial CLI output; correct namespace identified |
+| Still and movie | selector lifecycle | disconnect/reconnect and power cycle | Determine whether D18C is active/persistent state rather than assuming query-only context |
+| Still | `image render` | upload, profile write/readback, trigger, every handle poll, `GetObjectInfo`, fetch | Original D185 bytes restored/read back; every observed new handle retained on failure |
+| Still | local output | write, sync, rename | No `DeleteObject` until the final path is durable |
+| Still | `image recover` | fetch and optional cleanup | Default retains object; explicit cleanup occurs only after durable save and cleanup preflight |
+
+Repeat render rows for success, framed PTP rejection, timeout, disconnect, and
+malformed/truncated response. Verify the saved JPEG with an independent decoder
+before accepting the structural in-process validator as sufficient for the
+specific X-T5 firmware.
 
 For the cross-state semantics that `try_update_from` enables, see
 [fml/rules / cross-state rules](../fml/rules.md#cross-state-rules).

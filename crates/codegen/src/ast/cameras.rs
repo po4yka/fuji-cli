@@ -54,8 +54,35 @@ pub struct PreflightProfile {
 #[serde(rename_all = "snake_case")]
 pub enum PreflightOperation {
     BackupRestore,
+    SimulationAccess,
     SimulationWrite,
     RawConversion,
+    RawRecoveryFetch,
+    RawRecoveryCleanup,
+}
+
+#[cfg(test)]
+mod preflight_operation_tests {
+    use super::PreflightOperation;
+
+    #[test]
+    fn temporary_reads_have_a_distinct_preflight_operation() {
+        let simulation: PreflightOperation = serde_json::from_str(r#""simulation_access""#)
+            .expect("simulation access operation must parse");
+
+        assert_eq!(simulation, PreflightOperation::SimulationAccess);
+    }
+
+    #[test]
+    fn raw_recovery_fetch_and_cleanup_have_distinct_preflight_operations() {
+        let fetch: PreflightOperation = serde_json::from_str(r#""raw_recovery_fetch""#)
+            .expect("RAW recovery fetch operation must parse");
+        let cleanup: PreflightOperation = serde_json::from_str(r#""raw_recovery_cleanup""#)
+            .expect("RAW recovery cleanup operation must parse");
+
+        assert_eq!(fetch, PreflightOperation::RawRecoveryFetch);
+        assert_eq!(cleanup, PreflightOperation::RawRecoveryCleanup);
+    }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]

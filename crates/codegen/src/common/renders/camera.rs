@@ -463,19 +463,51 @@ fn generate_camera_render_manager_impl(
                 image: &[u8],
                 partial: #renders_path::RenderBase,
                 draft: bool,
-            ) -> ::anyhow::Result<Vec<u8>> {
-                <Self as crate::features::render::CameraRenderManager>::send_image(self, ptp, image)?;
-                let mut profile: #struct_ident = ptp.get_prop(
-                    crate::ptp::DevicePropCode::FujiRawConversionProfile,
-                )?;
+            ) -> ::anyhow::Result<crate::features::render::RenderOutcome> {
+                let original_profile =
+                    crate::features::render::manager::snapshot_raw_conversion_profile(ptp)?;
+                let mut profile: #struct_ident =
+                    crate::ptp::codec::decode_exact(&original_profile)?;
                 profile.try_update_from(partial)?;
-                ptp.set_prop(
-                    crate::ptp::DevicePropCode::FujiRawConversionProfile,
-                    &profile,
+                let candidate_profile = crate::ptp::codec::encode(&profile)?;
+
+                <Self as crate::features::render::CameraRenderManager>::send_image(
+                    self, ptp, image,
                 )?;
-                <Self as crate::features::render::CameraRenderManager>::render_image(
-                    self, ptp, draft,
-                )
+
+                if candidate_profile == original_profile {
+                    let render =
+                        <Self as crate::features::render::CameraRenderManager>::render_object(
+                            self, ptp, draft,
+                        );
+                    return crate::features::render::combine_render_and_restore(render, Ok(()));
+                }
+
+                let render = (|| {
+                    crate::features::render::manager::write_raw_conversion_profile_verified(
+                        ptp,
+                        &candidate_profile,
+                    )?;
+                    <Self as crate::features::render::CameraRenderManager>::render_object(
+                        self, ptp, draft,
+                    )
+                })();
+
+                let restore = if ptp.is_healthy() {
+                    ::anyhow::Context::context(
+                        crate::features::render::manager::write_raw_conversion_profile_verified(
+                            ptp,
+                            &original_profile,
+                        ),
+                        "restoring the original RAW conversion profile",
+                    )
+                } else {
+                    Err(::anyhow::anyhow!(
+                        "PTP session is unhealthy; RAW conversion profile state is unknown",
+                    ))
+                };
+
+                crate::features::render::combine_render_and_restore(render, restore)
             }
         }
     }
@@ -495,6 +527,50 @@ mod tests {
     };
 
     use super::{generate, generate_ptp_deserialize_impl, generate_ptp_serialize_impl};
+
+    #[test]
+    fn generated_render_restores_and_verifies_the_conversion_profile() {
+        let camera = serde_json::from_str::<Camera>(
+            r#"{
+                "id": "fixture",
+                "spec": {
+                    "name": "Fixture",
+                    "generation": "fixture",
+                    "usb": { "vendor_id": 1227, "product_id": 1, "chunk_size": 1024 },
+                    "features": {
+                        "render": { "profile_code": 1, "header_padding": 0, "fields": [] }
+                    }
+                }
+            }"#,
+        )
+        .expect("render fixture must parse");
+        let generated = generate(
+            &BTreeMap::new(),
+            &BTreeMap::from([(camera.id.clone(), camera)]),
+        )
+        .expect("render fixture must generate")
+        .to_string();
+
+        let snapshot = generated
+            .find("snapshot_raw_conversion_profile")
+            .expect("render must snapshot the raw profile");
+        let upload = generated
+            .find("CameraRenderManager > :: send_image")
+            .expect("render must upload the RAF");
+        assert!(
+            snapshot < upload,
+            "profile snapshot must precede upload: {generated}"
+        );
+        assert!(
+            generated
+                .matches("write_raw_conversion_profile_verified")
+                .count()
+                == 2
+                && generated.contains("restoring the original RAW conversion profile")
+                && generated.contains("combine_render_and_restore"),
+            "render must verify both target and restored raw values and retain cleanup outcomes: {generated}",
+        );
+    }
 
     #[test]
     fn render_header_padding_is_required_and_drives_both_wire_directions() {

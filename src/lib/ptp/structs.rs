@@ -161,6 +161,18 @@ mod tests {
         assert_eq!(decoded.date_created, value.date_created);
         assert_eq!(decoded.filename, value.filename);
     }
+
+    #[test]
+    fn object_info_accepts_standard_exif_jpeg_format() {
+        let mut bytes =
+            encode(&ObjectInfo::default()).expect("default ObjectInfo encoding must succeed");
+        bytes[4..6].copy_from_slice(&0x3801_u16.to_le_bytes());
+
+        let decoded = decode_exact::<ObjectInfo>(&bytes)
+            .expect("standard EXIF/JPEG ObjectInfo format must be supported");
+
+        assert_eq!(u16::from(decoded.object_format), 0x3801);
+    }
 }
 
 #[repr(u16)]
@@ -171,6 +183,7 @@ mod tests {
 pub enum ObjectFormat {
     #[default]
     None = 0x0,
+    ExifJpeg = 0x3801,
     FujiBackup = 0x5000,
     FujiRAF = 0xf802,
 }

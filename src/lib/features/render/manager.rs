@@ -15,29 +15,265 @@ pub const INCOMING_OBJECT_HANDLE: [u32; 3] = [u32::MAX, 0x0, 0x0];
 const RENDER_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Debug)]
-pub struct RenderCleanupError {
-    rendered_data: Vec<u8>,
-    cleanup: anyhow::Error,
+pub struct RenderedObject {
+    handle: u32,
+    object_info: ObjectInfo,
+    data: Vec<u8>,
 }
 
-impl RenderCleanupError {
-    pub fn new(rendered_data: Vec<u8>, cleanup: anyhow::Error) -> Self {
+impl RenderedObject {
+    fn new(handle: u32, object_info: ObjectInfo, data: Vec<u8>) -> Self {
         Self {
-            rendered_data,
-            cleanup,
+            handle,
+            object_info,
+            data,
         }
     }
 
-    pub fn rendered_data(&self) -> &[u8] {
-        &self.rendered_data
+    pub fn handle(&self) -> u32 {
+        self.handle
     }
 
-    pub fn into_rendered_data(self) -> Vec<u8> {
-        self.rendered_data
+    pub fn object_info(&self) -> &ObjectInfo {
+        &self.object_info
     }
 
-    pub fn cleanup_error(&self) -> &(dyn std::error::Error + Send + Sync + 'static) {
-        self.cleanup.as_ref()
+    pub fn data(&self) -> &[u8] {
+        &self.data
+    }
+}
+
+#[derive(Debug)]
+pub struct RenderOutcome {
+    rendered: RenderedObject,
+    profile_restore_error: Option<anyhow::Error>,
+}
+
+impl RenderOutcome {
+    pub fn new(rendered: RenderedObject, profile_restore_error: Option<anyhow::Error>) -> Self {
+        Self {
+            rendered,
+            profile_restore_error,
+        }
+    }
+
+    pub fn rendered(&self) -> &RenderedObject {
+        &self.rendered
+    }
+
+    pub fn into_parts(self) -> (RenderedObject, Option<anyhow::Error>) {
+        (self.rendered, self.profile_restore_error)
+    }
+}
+
+#[derive(Debug)]
+pub struct RenderFailureWithRestoreError {
+    render: anyhow::Error,
+    restore: anyhow::Error,
+}
+
+#[derive(Debug)]
+pub struct RenderHandleDiscoveryError {
+    observed_handles: Vec<u32>,
+    cause: anyhow::Error,
+}
+
+impl RenderHandleDiscoveryError {
+    fn new(observed_handles: Vec<u32>, cause: anyhow::Error) -> Self {
+        Self {
+            observed_handles,
+            cause,
+        }
+    }
+
+    pub fn observed_handles(&self) -> &[u32] {
+        &self.observed_handles
+    }
+}
+
+impl std::fmt::Display for RenderHandleDiscoveryError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "RAW render was triggered, but its camera object could not be identified: {}",
+            self.cause
+        )?;
+        if self.observed_handles.is_empty() {
+            formatter.write_str("; no new object handle was observed before failure")
+        } else {
+            write!(
+                formatter,
+                "; observed new camera object handles [{}] were retained",
+                format_handles(&self.observed_handles)
+            )
+        }
+    }
+}
+
+impl std::error::Error for RenderHandleDiscoveryError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.cause.as_ref())
+    }
+}
+
+#[derive(Debug)]
+pub struct RenderObjectRetentionError {
+    handles: Vec<u32>,
+    cause: anyhow::Error,
+}
+
+impl RenderObjectRetentionError {
+    fn new(handles: &[u32], cause: anyhow::Error) -> Self {
+        Self {
+            handles: handles.to_vec(),
+            cause,
+        }
+    }
+
+    pub fn handles(&self) -> &[u32] {
+        &self.handles
+    }
+}
+
+impl std::fmt::Display for RenderObjectRetentionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "no deletion was attempted for camera object handles [{}]; recover a JPEG with `fujicli image recover HANDLE OUTPUT --target-serial-sha256 SHA256`: {}",
+            format_handles(&self.handles),
+            self.cause
+        )
+    }
+}
+
+impl std::error::Error for RenderObjectRetentionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.cause.as_ref())
+    }
+}
+
+fn format_handles(handles: &[u32]) -> String {
+    handles
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+impl std::fmt::Display for RenderFailureWithRestoreError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "RAW conversion failed and conversion-profile restoration also failed: {}; restore: {}",
+            self.render, self.restore
+        )
+    }
+}
+
+impl std::error::Error for RenderFailureWithRestoreError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.render.as_ref())
+    }
+}
+
+pub fn combine_render_and_restore(
+    render: anyhow::Result<RenderedObject>,
+    restore: anyhow::Result<()>,
+) -> anyhow::Result<RenderOutcome> {
+    match (render, restore) {
+        (Ok(rendered), Ok(())) => Ok(RenderOutcome::new(rendered, None)),
+        (Ok(rendered), Err(restore)) => Ok(RenderOutcome::new(rendered, Some(restore))),
+        (Err(render), Ok(())) => Err(render),
+        (Err(render), Err(restore)) => {
+            Err(RenderFailureWithRestoreError { render, restore }.into())
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct RenderCleanupError {
+    handle: u32,
+    profile_restore: Option<anyhow::Error>,
+    camera_object_cleanup: Option<anyhow::Error>,
+}
+
+#[derive(Debug)]
+pub struct RenderSaveError {
+    handle: u32,
+    save: anyhow::Error,
+    profile_restore: Option<anyhow::Error>,
+}
+
+impl RenderSaveError {
+    pub fn new(handle: u32, save: anyhow::Error, profile_restore: Option<anyhow::Error>) -> Self {
+        Self {
+            handle,
+            save,
+            profile_restore,
+        }
+    }
+
+    pub fn handle(&self) -> u32 {
+        self.handle
+    }
+
+    pub fn profile_restore_error(
+        &self,
+    ) -> Option<&(dyn std::error::Error + Send + Sync + 'static)> {
+        self.profile_restore.as_deref()
+    }
+}
+
+impl std::fmt::Display for RenderSaveError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "saving rendered JPEG failed; camera object {} was retained and can be recovered explicitly: {}",
+            self.handle, self.save
+        )?;
+        if let Some(error) = &self.profile_restore {
+            write!(
+                formatter,
+                "; conversion-profile restoration also failed: {error}"
+            )?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for RenderSaveError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.save.as_ref())
+    }
+}
+
+impl RenderCleanupError {
+    pub fn new(
+        handle: u32,
+        profile_restore: Option<anyhow::Error>,
+        camera_object_cleanup: Option<anyhow::Error>,
+    ) -> Self {
+        Self {
+            handle,
+            profile_restore,
+            camera_object_cleanup,
+        }
+    }
+
+    pub fn handle(&self) -> u32 {
+        self.handle
+    }
+
+    pub fn profile_restore_error(
+        &self,
+    ) -> Option<&(dyn std::error::Error + Send + Sync + 'static)> {
+        self.profile_restore.as_deref()
+    }
+
+    pub fn camera_object_cleanup_error(
+        &self,
+    ) -> Option<&(dyn std::error::Error + Send + Sync + 'static)> {
+        self.camera_object_cleanup.as_deref()
     }
 }
 
@@ -45,53 +281,81 @@ impl std::fmt::Display for RenderCleanupError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             formatter,
-            "rendered image was fetched, but camera cleanup failed: {}",
-            self.cleanup
-        )
+            "rendered JPEG was saved, but camera cleanup failed for object handle {}",
+            self.handle
+        )?;
+        if let Some(error) = &self.profile_restore {
+            write!(formatter, "; conversion-profile restoration: {error}")?;
+        }
+        if let Some(error) = &self.camera_object_cleanup {
+            write!(formatter, "; camera object cleanup: {error}")?;
+        }
+        Ok(())
     }
 }
 
 impl std::error::Error for RenderCleanupError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(self.cleanup.as_ref())
+        self.profile_restore
+            .as_ref()
+            .or(self.camera_object_cleanup.as_ref())
+            .map(|error| error.as_ref() as &(dyn std::error::Error + 'static))
     }
 }
 
-#[derive(Debug)]
-pub struct RenderFetchError {
-    fetch: anyhow::Error,
-    cleanup: anyhow::Error,
-}
-
-impl RenderFetchError {
-    pub fn fetch_error(&self) -> &(dyn std::error::Error + Send + Sync + 'static) {
-        self.fetch.as_ref()
-    }
-
-    pub fn cleanup_error(&self) -> &(dyn std::error::Error + Send + Sync + 'static) {
-        self.cleanup.as_ref()
-    }
-}
-
-impl std::fmt::Display for RenderFetchError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            formatter,
-            "rendered image fetch failed and camera cleanup also failed: {}; cleanup: {}",
-            self.fetch, self.cleanup
-        )
-    }
-}
-
-impl std::error::Error for RenderFetchError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(self.fetch.as_ref())
+pub fn finish_render_cleanup(
+    handle: u32,
+    profile_restore: Option<anyhow::Error>,
+    camera_object_cleanup: anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    let camera_object_cleanup = camera_object_cleanup.err();
+    if profile_restore.is_none() && camera_object_cleanup.is_none() {
+        Ok(())
+    } else {
+        Err(RenderCleanupError::new(handle, profile_restore, camera_object_cleanup).into())
     }
 }
 
 trait RenderIo {
     fn start_render(&mut self, draft: bool) -> anyhow::Result<()>;
     fn object_handles(&mut self, deadline: Instant) -> anyhow::Result<Vec<u32>>;
+}
+
+trait RawProfileIo {
+    fn get_profile_raw(&mut self) -> anyhow::Result<Vec<u8>>;
+    fn set_profile_raw(&mut self, value: &[u8]) -> anyhow::Result<()>;
+}
+
+impl RawProfileIo for Ptp {
+    fn get_profile_raw(&mut self) -> anyhow::Result<Vec<u8>> {
+        self.get_prop_raw(DevicePropCode::FujiRawConversionProfile)
+    }
+
+    fn set_profile_raw(&mut self, value: &[u8]) -> anyhow::Result<()> {
+        self.set_prop_raw(DevicePropCode::FujiRawConversionProfile, value)?;
+        Ok(())
+    }
+}
+
+pub(crate) fn snapshot_raw_conversion_profile(ptp: &mut Ptp) -> anyhow::Result<Vec<u8>> {
+    ptp.get_profile_raw()
+}
+
+pub(crate) fn write_raw_conversion_profile_verified(
+    ptp: &mut Ptp,
+    value: &[u8],
+) -> anyhow::Result<()> {
+    write_profile_verified(ptp, value)
+}
+
+fn write_profile_verified(io: &mut impl RawProfileIo, value: &[u8]) -> anyhow::Result<()> {
+    io.set_profile_raw(value)?;
+    let readback = io.get_profile_raw()?;
+    anyhow::ensure!(
+        readback == value,
+        "RAW conversion profile readback did not match the requested value"
+    );
+    Ok(())
 }
 
 impl RenderIo for Ptp {
@@ -114,11 +378,51 @@ impl RenderIo for Ptp {
 }
 
 trait RenderObjectIo {
+    fn object_info(&mut self, handle: u32) -> anyhow::Result<ObjectInfo>;
     fn fetch_object(&mut self, handle: u32) -> anyhow::Result<Vec<u8>>;
     fn delete_object(&mut self, handle: u32) -> anyhow::Result<()>;
 }
 
+trait RenderUploadIo {
+    fn send_object_info(&mut self, data: &[u8]) -> anyhow::Result<()>;
+    fn send_object(&mut self, data: &[u8]) -> anyhow::Result<()>;
+}
+
+impl RenderUploadIo for Ptp {
+    fn send_object_info(&mut self, data: &[u8]) -> anyhow::Result<()> {
+        self.send(
+            CommandCode::FujiSendObjectInfo,
+            &OUTGOING_OBJECT_HANDLE,
+            Some(data),
+        )?;
+        Ok(())
+    }
+
+    fn send_object(&mut self, data: &[u8]) -> anyhow::Result<()> {
+        self.send(CommandCode::FujiSendObject, &[], Some(data))?;
+        Ok(())
+    }
+}
+
+fn send_image_with_io(io: &mut impl RenderUploadIo, image: &[u8]) -> anyhow::Result<()> {
+    crate::features::render::raf::validate_xt5_raf(image)?;
+    let object_info = ObjectInfo {
+        object_format: ObjectFormat::FujiRAF,
+        compressed_size: u32::try_from(image.len())?,
+        filename: String::from("FUP_FILE.dat"),
+        ..Default::default()
+    };
+    let object_info = crate::ptp::codec::encode(&object_info)?;
+    io.send_object_info(&object_info)?;
+    io.send_object(image)
+}
+
 impl RenderObjectIo for Ptp {
+    fn object_info(&mut self, handle: u32) -> anyhow::Result<ObjectInfo> {
+        let response = self.send(CommandCode::GetObjectInfo, &[handle], None)?;
+        Ok(crate::ptp::codec::decode_exact(&response)?)
+    }
+
     fn fetch_object(&mut self, handle: u32) -> anyhow::Result<Vec<u8>> {
         self.send(CommandCode::GetObject, &[handle], None)
     }
@@ -129,29 +433,70 @@ impl RenderObjectIo for Ptp {
     }
 }
 
-fn fetch_rendered_object<I: RenderObjectIo>(io: &mut I, handle: u32) -> anyhow::Result<Vec<u8>> {
-    debug!("Fetching rendered image");
-    let image = io.fetch_object(handle);
-    if image.is_ok() {
-        debug!("Fetched rendered image");
-    }
-
-    debug!("Cleaning up rendered image on camera");
-    let cleanup = io.delete_object(handle);
-    if cleanup.is_ok() {
-        debug!("Cleaned up rendered image on camera");
-    }
-
-    match (image, cleanup) {
-        (Ok(rendered_data), Ok(())) => Ok(rendered_data),
-        (Ok(rendered_data), Err(cleanup)) => {
-            Err(RenderCleanupError::new(rendered_data, cleanup).into())
-        }
-        (Err(fetch), Ok(())) => Err(fetch),
-        (Err(fetch), Err(cleanup)) => Err(RenderFetchError { fetch, cleanup }.into()),
-    }
+fn fetch_unique_rendered_object<I: RenderObjectIo>(
+    io: &mut I,
+    handles: &[u32],
+) -> anyhow::Result<RenderedObject> {
+    fetch_unique_rendered_object_inner(io, handles)
+        .map_err(|cause| RenderObjectRetentionError::new(handles, cause).into())
 }
 
+fn fetch_unique_rendered_object_inner<I: RenderObjectIo>(
+    io: &mut I,
+    handles: &[u32],
+) -> anyhow::Result<RenderedObject> {
+    let mut candidates = Vec::new();
+    for handle in handles {
+        let object_info = io.object_info(*handle)?;
+        if object_info.object_format == ObjectFormat::ExifJpeg {
+            candidates.push((*handle, object_info));
+        }
+    }
+    anyhow::ensure!(
+        !candidates.is_empty(),
+        "render produced no EXIF/JPEG object"
+    );
+    anyhow::ensure!(
+        candidates.len() == 1,
+        "render produced multiple JPEG objects; refusing an ambiguous fetch"
+    );
+    let (handle, object_info) = candidates
+        .pop()
+        .expect("one rendered JPEG candidate was verified above");
+    anyhow::ensure!(
+        object_info.compressed_size > 0,
+        "rendered JPEG ObjectInfo reports an empty object"
+    );
+    anyhow::ensure!(
+        usize::try_from(object_info.compressed_size)?
+            <= crate::ptp::MAX_PTP_CONTAINER_PAYLOAD_BYTES,
+        "rendered JPEG ObjectInfo exceeds the PTP payload limit"
+    );
+
+    let data = fetch_rendered_object(io, handle)?;
+    anyhow::ensure!(
+        usize::try_from(object_info.compressed_size)? == data.len(),
+        "rendered JPEG length does not match GetObjectInfo"
+    );
+    crate::features::render::validate_jpeg(&data)?;
+    Ok(RenderedObject::new(handle, object_info, data))
+}
+
+fn recover_rendered_object_with_io<I: RenderObjectIo>(
+    io: &mut I,
+    handle: u32,
+) -> anyhow::Result<RenderedObject> {
+    fetch_unique_rendered_object(io, &[handle])
+}
+
+fn fetch_rendered_object<I: RenderObjectIo>(io: &mut I, handle: u32) -> anyhow::Result<Vec<u8>> {
+    debug!("Fetching rendered image");
+    let image = io.fetch_object(handle)?;
+    debug!("Fetched rendered image");
+    Ok(image)
+}
+
+#[cfg(test)]
 fn wait_for_rendered_handle<F, S, N>(
     mut fetch_handles: F,
     mut sleep_between_polls: S,
@@ -183,6 +528,7 @@ where
     }
 }
 
+#[cfg(test)]
 fn start_and_wait_for_new_rendered_handle<I, S, N>(
     io: &mut I,
     draft: bool,
@@ -217,40 +563,94 @@ where
     )
 }
 
+fn start_and_wait_for_stable_new_handles<I, S, N>(
+    io: &mut I,
+    draft: bool,
+    mut sleep_between_polls: S,
+    mut now: N,
+    timeout: Duration,
+) -> anyhow::Result<Vec<u32>>
+where
+    I: RenderIo,
+    S: FnMut(Duration),
+    N: FnMut() -> Instant,
+{
+    let deadline = now()
+        .checked_add(timeout)
+        .ok_or_else(|| anyhow::anyhow!("render deadline overflow"))?;
+    let baseline = io.object_handles(deadline)?;
+    io.start_render(draft)
+        .map_err(|cause| RenderHandleDiscoveryError::new(Vec::new(), cause))?;
+
+    let mut previous: Option<Vec<u32>> = None;
+    loop {
+        let remaining = deadline.saturating_duration_since(now());
+        if remaining.is_zero() {
+            return Err(RenderHandleDiscoveryError::new(
+                previous.unwrap_or_default(),
+                anyhow::anyhow!("render deadline exceeded"),
+            )
+            .into());
+        }
+
+        let current = io.object_handles(deadline).map_err(|cause| {
+            RenderHandleDiscoveryError::new(previous.clone().unwrap_or_default(), cause)
+        })?;
+        let mut delta = current
+            .into_iter()
+            .filter(|handle| !baseline.contains(handle))
+            .collect::<Vec<_>>();
+        delta.sort_unstable();
+        delta.dedup();
+
+        if !delta.is_empty() && previous.as_ref() == Some(&delta) {
+            return Ok(delta);
+        }
+        previous = Some(delta);
+
+        let remaining = deadline.saturating_duration_since(now());
+        if remaining.is_zero() {
+            return Err(RenderHandleDiscoveryError::new(
+                previous.unwrap_or_default(),
+                anyhow::anyhow!("render deadline exceeded"),
+            )
+            .into());
+        }
+        sleep_between_polls(remaining.min(Duration::from_millis(100)));
+    }
+}
+
 // NOTE: Naively assuming that all cameras render in a similar way.
 pub trait CameraRenderManager: CameraBase {
     fn send_image(&self, ptp: &mut Ptp, image: &[u8]) -> anyhow::Result<()> {
         debug!("Sending image to camera");
-        let object_info = ObjectInfo {
-            object_format: ObjectFormat::FujiRAF,
-            compressed_size: u32::try_from(image.len())?,
-            filename: String::from("FUP_FILE.dat"),
-            ..Default::default()
-        };
-        let object_info = crate::ptp::codec::encode(&object_info)?;
-
-        ptp.send(
-            CommandCode::FujiSendObjectInfo,
-            &OUTGOING_OBJECT_HANDLE,
-            Some(&object_info),
-        )?;
-        ptp.send(CommandCode::FujiSendObject, &[], Some(image))?;
+        send_image_with_io(ptp, image)?;
         debug!("Sent image to camera");
 
         Ok(())
     }
 
-    fn render_image(&self, ptp: &mut Ptp, draft: bool) -> anyhow::Result<Vec<u8>> {
+    fn render_object(&self, ptp: &mut Ptp, draft: bool) -> anyhow::Result<RenderedObject> {
         debug!("Starting image render");
-        let handle = start_and_wait_for_new_rendered_handle(
-            ptp,
-            draft,
-            sleep,
-            Instant::now,
-            RENDER_TIMEOUT,
-        )?;
+        let handles =
+            start_and_wait_for_stable_new_handles(ptp, draft, sleep, Instant::now, RENDER_TIMEOUT)?;
 
-        fetch_rendered_object(ptp, handle)
+        fetch_unique_rendered_object(ptp, &handles)
+    }
+
+    fn recover_rendered_object(
+        &self,
+        ptp: &mut Ptp,
+        handle: u32,
+    ) -> anyhow::Result<RenderedObject> {
+        recover_rendered_object_with_io(ptp, handle)
+    }
+
+    fn cleanup_rendered_object(&self, ptp: &mut Ptp, handle: u32) -> anyhow::Result<()> {
+        debug!("Cleaning up rendered image on camera");
+        ptp.delete_object(handle)?;
+        debug!("Cleaned up rendered image on camera");
+        Ok(())
     }
 
     fn render(
@@ -259,7 +659,7 @@ pub trait CameraRenderManager: CameraBase {
         image: &[u8],
         partial: RenderBase,
         draft: bool,
-    ) -> anyhow::Result<Vec<u8>>;
+    ) -> anyhow::Result<RenderOutcome>;
 }
 
 #[cfg(test)]
@@ -275,9 +675,19 @@ mod tests {
     use log::{Level, LevelFilter, Log, Metadata, Record};
 
     use super::{
-        RENDER_TIMEOUT, RenderCleanupError, RenderFetchError, RenderIo, RenderObjectIo,
-        fetch_rendered_object, start_and_wait_for_new_rendered_handle, wait_for_rendered_handle,
+        RENDER_TIMEOUT, RenderIo, RenderObjectIo, RenderUploadIo, combine_render_and_restore,
+        fetch_rendered_object, fetch_unique_rendered_object, recover_rendered_object_with_io,
+        send_image_with_io, start_and_wait_for_new_rendered_handle,
+        start_and_wait_for_stable_new_handles, wait_for_rendered_handle, write_profile_verified,
     };
+
+    fn valid_jpeg() -> Vec<u8> {
+        vec![
+            0xff, 0xd8, 0xff, 0xc0, 0x00, 0x11, 0x08, 0x00, 0x01, 0x00, 0x01, 0x03, 0x01, 0x11,
+            0x00, 0x02, 0x11, 0x00, 0x03, 0x11, 0x00, 0xff, 0xda, 0x00, 0x0c, 0x03, 0x01, 0x00,
+            0x02, 0x11, 0x03, 0x11, 0x00, 0x3f, 0x00, 0x00, 0xff, 0xd9,
+        ]
+    }
 
     #[derive(Debug, PartialEq, Eq)]
     enum RenderIoCall {
@@ -286,8 +696,41 @@ mod tests {
     }
 
     struct FakeRenderIo {
-        handles: VecDeque<Vec<u32>>,
+        handles: VecDeque<anyhow::Result<Vec<u32>>>,
         calls: Vec<RenderIoCall>,
+    }
+
+    struct FakeRawProfileIo {
+        readback: Vec<u8>,
+        writes: Vec<Vec<u8>>,
+    }
+
+    #[derive(Default)]
+    struct FakeRenderUploadIo {
+        calls: Vec<&'static str>,
+    }
+
+    impl RenderUploadIo for FakeRenderUploadIo {
+        fn send_object_info(&mut self, _data: &[u8]) -> anyhow::Result<()> {
+            self.calls.push("object info");
+            Ok(())
+        }
+
+        fn send_object(&mut self, _data: &[u8]) -> anyhow::Result<()> {
+            self.calls.push("object data");
+            Ok(())
+        }
+    }
+
+    impl super::RawProfileIo for FakeRawProfileIo {
+        fn get_profile_raw(&mut self) -> anyhow::Result<Vec<u8>> {
+            Ok(self.readback.clone())
+        }
+
+        fn set_profile_raw(&mut self, value: &[u8]) -> anyhow::Result<()> {
+            self.writes.push(value.to_vec());
+            Ok(())
+        }
     }
 
     impl RenderIo for FakeRenderIo {
@@ -300,17 +743,24 @@ mod tests {
             self.calls.push(RenderIoCall::Handles);
             self.handles
                 .pop_front()
-                .ok_or_else(|| anyhow!("test handle queue exhausted"))
+                .ok_or_else(|| anyhow!("test handle queue exhausted"))?
         }
     }
 
     struct FakeRenderObjectIo {
+        object_infos: VecDeque<anyhow::Result<crate::ptp::ObjectInfo>>,
         fetch_result: Option<anyhow::Result<Vec<u8>>>,
         delete_result: Option<anyhow::Result<()>>,
         deleted: Vec<u32>,
     }
 
     impl RenderObjectIo for FakeRenderObjectIo {
+        fn object_info(&mut self, _handle: u32) -> anyhow::Result<crate::ptp::ObjectInfo> {
+            self.object_infos
+                .pop_front()
+                .ok_or_else(|| anyhow!("test ObjectInfo queue exhausted"))?
+        }
+
         fn fetch_object(&mut self, _handle: u32) -> anyhow::Result<Vec<u8>> {
             self.fetch_result
                 .take()
@@ -368,73 +818,166 @@ mod tests {
     static LOGGER_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
-    fn attempts_cleanup_when_fetching_the_rendered_object_fails() {
+    fn retains_camera_object_when_fetching_the_rendered_object_fails() {
         let mut io = FakeRenderObjectIo {
+            object_infos: VecDeque::new(),
             fetch_result: Some(Err(anyhow!("simulated fetch failure"))),
             delete_result: Some(Ok(())),
             deleted: Vec::new(),
         };
 
         let error = fetch_rendered_object(&mut io, 42)
-            .expect_err("fetch failure must be returned after cleanup is attempted");
+            .expect_err("fetch failure must be returned without deleting the camera object");
 
         assert!(error.to_string().contains("simulated fetch failure"));
-        assert_eq!(io.deleted, [42]);
+        assert!(io.deleted.is_empty());
     }
 
     #[test]
-    fn cleanup_error_preserves_successfully_fetched_rendered_data() {
-        let expected = vec![1, 2, 3, 4];
+    fn fetch_failure_reports_the_owned_render_handle() {
         let mut io = FakeRenderObjectIo {
-            fetch_result: Some(Ok(expected.clone())),
-            delete_result: Some(Err(anyhow!("simulated cleanup failure"))),
-            deleted: Vec::new(),
-        };
-
-        let error = fetch_rendered_object(&mut io, 42)
-            .expect_err("cleanup failure must be returned without dropping fetched data");
-
-        assert!(
-            error.downcast_ref::<RenderCleanupError>().is_some(),
-            "cleanup failure must retain a typed outcome: {error:#}"
-        );
-        let cleanup = error
-            .downcast::<RenderCleanupError>()
-            .expect("typed cleanup error was checked above");
-        assert_eq!(cleanup.rendered_data(), expected);
-        assert_eq!(
-            cleanup.cleanup_error().to_string(),
-            "simulated cleanup failure"
-        );
-        assert_eq!(cleanup.into_rendered_data(), expected);
-    }
-
-    #[test]
-    fn combined_fetch_and_cleanup_error_preserves_both_failures() {
-        let mut io = FakeRenderObjectIo {
+            object_infos: VecDeque::from([Ok(crate::ptp::ObjectInfo {
+                object_format: crate::ptp::ObjectFormat::ExifJpeg,
+                compressed_size: 100,
+                ..Default::default()
+            })]),
             fetch_result: Some(Err(anyhow!("simulated fetch failure"))),
-            delete_result: Some(Err(anyhow!("simulated cleanup failure"))),
+            delete_result: Some(Ok(())),
             deleted: Vec::new(),
         };
 
-        let error = fetch_rendered_object(&mut io, 42)
-            .expect_err("both lifecycle failures must be returned together");
+        let error = fetch_unique_rendered_object(&mut io, &[42])
+            .expect_err("failed fetch must expose the retained object handle");
+        let error = error
+            .downcast_ref::<super::RenderObjectRetentionError>()
+            .expect("post-trigger fetch failure must retain typed handles");
 
+        assert_eq!(error.handles(), &[42]);
+        assert!(io.deleted.is_empty());
+    }
+
+    #[test]
+    fn rejects_ambiguous_multiple_new_jpeg_objects_without_fetching() {
+        let jpeg_info = crate::ptp::ObjectInfo {
+            object_format: crate::ptp::ObjectFormat::ExifJpeg,
+            compressed_size: 6,
+            ..Default::default()
+        };
+        let mut io = FakeRenderObjectIo {
+            object_infos: VecDeque::from([Ok(jpeg_info.clone()), Ok(jpeg_info)]),
+            fetch_result: Some(Ok(vec![0xff, 0xd8, 0xff, 0xda, 0xff, 0xd9])),
+            delete_result: Some(Ok(())),
+            deleted: Vec::new(),
+        };
+
+        let error = fetch_unique_rendered_object(&mut io, &[42, 43])
+            .expect_err("multiple JPEG candidates must remain ambiguous");
+
+        assert!(error.to_string().contains("multiple JPEG"));
         assert!(
-            error.downcast_ref::<RenderFetchError>().is_some(),
-            "both failures must retain a typed outcome: {error:#}"
+            error.to_string().contains("42, 43"),
+            "every retained candidate handle must be actionable: {error:#}"
         );
-        let combined = error
-            .downcast::<RenderFetchError>()
-            .expect("typed fetch error was checked above");
+        assert!(
+            io.fetch_result.is_some(),
+            "ambiguous objects must not be fetched"
+        );
+        assert!(io.deleted.is_empty());
+    }
+
+    #[test]
+    fn retains_camera_object_when_fetched_length_disagrees_with_object_info() {
+        let mut io = FakeRenderObjectIo {
+            object_infos: VecDeque::from([Ok(crate::ptp::ObjectInfo {
+                object_format: crate::ptp::ObjectFormat::ExifJpeg,
+                compressed_size: 7,
+                ..Default::default()
+            })]),
+            fetch_result: Some(Ok(vec![0xff, 0xd8, 0xff, 0xda, 0xff, 0xd9])),
+            delete_result: Some(Ok(())),
+            deleted: Vec::new(),
+        };
+
+        let error = fetch_unique_rendered_object(&mut io, &[42])
+            .expect_err("truncated fetched data must be rejected");
+
+        assert!(error.to_string().contains("does not match GetObjectInfo"));
         assert_eq!(
-            combined.fetch_error().to_string(),
-            "simulated fetch failure"
+            error
+                .downcast_ref::<super::RenderObjectRetentionError>()
+                .expect("post-trigger object failure must retain typed handles")
+                .handles(),
+            &[42]
         );
+        assert!(io.deleted.is_empty());
+    }
+
+    #[test]
+    fn object_info_failure_reports_all_stable_candidate_handles() {
+        let mut io = FakeRenderObjectIo {
+            object_infos: VecDeque::from([Err(anyhow!("simulated GetObjectInfo failure"))]),
+            fetch_result: None,
+            delete_result: Some(Ok(())),
+            deleted: Vec::new(),
+        };
+
+        let error = fetch_unique_rendered_object(&mut io, &[42, 43])
+            .expect_err("ObjectInfo failure must keep every stable candidate actionable");
+        let error = error
+            .downcast_ref::<super::RenderObjectRetentionError>()
+            .expect("post-trigger object failure must retain typed handles");
+
+        assert_eq!(error.handles(), &[42, 43]);
+        assert!(io.deleted.is_empty());
+    }
+
+    #[test]
+    fn retains_camera_object_when_fetched_jpeg_is_structurally_invalid() {
+        let mut io = FakeRenderObjectIo {
+            object_infos: VecDeque::from([Ok(crate::ptp::ObjectInfo {
+                object_format: crate::ptp::ObjectFormat::ExifJpeg,
+                compressed_size: 6,
+                ..Default::default()
+            })]),
+            fetch_result: Some(Ok(vec![0xff, 0xd8, 0xff, 0xda, 0xff, 0xd9])),
+            delete_result: Some(Ok(())),
+            deleted: Vec::new(),
+        };
+
+        let error = fetch_unique_rendered_object(&mut io, &[42])
+            .expect_err("structurally invalid JPEG must be rejected");
+
+        assert!(error.to_string().contains("JPEG"));
         assert_eq!(
-            combined.cleanup_error().to_string(),
-            "simulated cleanup failure"
+            error
+                .downcast_ref::<super::RenderObjectRetentionError>()
+                .expect("JPEG validation failure must retain typed handles")
+                .handles(),
+            &[42]
         );
+        assert!(io.deleted.is_empty());
+    }
+
+    #[test]
+    fn explicit_handle_recovery_fetches_validated_jpeg_without_deleting_it() {
+        let jpeg = valid_jpeg();
+        let mut io = FakeRenderObjectIo {
+            object_infos: VecDeque::from([Ok(crate::ptp::ObjectInfo {
+                object_format: crate::ptp::ObjectFormat::ExifJpeg,
+                compressed_size: u32::try_from(jpeg.len()).expect("fixture fits u32"),
+                ..Default::default()
+            })]),
+            fetch_result: Some(Ok(jpeg.clone())),
+            delete_result: Some(Ok(())),
+            deleted: Vec::new(),
+        };
+
+        let recovered = recover_rendered_object_with_io(&mut io, 42)
+            .expect("valid JPEG should be recoverable by explicit handle");
+
+        assert_eq!(recovered.handle(), 42);
+        assert_eq!(recovered.data(), jpeg);
+        assert!(io.deleted.is_empty());
     }
 
     #[test]
@@ -442,7 +985,7 @@ mod tests {
         let start = Instant::now();
         let mut instants = VecDeque::from([start; 5]);
         let mut io = FakeRenderIo {
-            handles: VecDeque::from([vec![7], vec![7, 42]]),
+            handles: VecDeque::from([Ok(vec![7]), Ok(vec![7, 42])]),
             calls: Vec::new(),
         };
 
@@ -464,6 +1007,104 @@ mod tests {
                 RenderIoCall::Handles,
             ]
         );
+    }
+
+    #[test]
+    fn waits_for_two_stable_polls_before_finalizing_new_handles() {
+        let start = Instant::now();
+        let mut instants = VecDeque::from([start; 12]);
+        let mut io = FakeRenderIo {
+            handles: VecDeque::from([
+                Ok(vec![7]),
+                Ok(vec![7, 42]),
+                Ok(vec![7, 42, 43]),
+                Ok(vec![7, 42, 43]),
+            ]),
+            calls: Vec::new(),
+        };
+
+        let handles = start_and_wait_for_stable_new_handles(
+            &mut io,
+            false,
+            |_| {},
+            || instants.pop_front().expect("test clock exhausted"),
+            RENDER_TIMEOUT,
+        )
+        .expect("stable rendered handles should be returned");
+
+        assert_eq!(handles, [42, 43]);
+    }
+
+    #[test]
+    fn polling_failure_reports_every_observed_new_handle() {
+        let start = Instant::now();
+        let mut instants = VecDeque::from([start; 8]);
+        let mut io = FakeRenderIo {
+            handles: VecDeque::from([
+                Ok(vec![7]),
+                Ok(vec![7, 42, 43]),
+                Err(anyhow!("simulated USB polling failure")),
+            ]),
+            calls: Vec::new(),
+        };
+
+        let error = start_and_wait_for_stable_new_handles(
+            &mut io,
+            false,
+            |_| {},
+            || instants.pop_front().expect("test clock exhausted"),
+            RENDER_TIMEOUT,
+        )
+        .expect_err("polling failure must retain observed recovery handles");
+        let error = error
+            .downcast_ref::<super::RenderHandleDiscoveryError>()
+            .expect("handle discovery failure must remain typed");
+
+        assert_eq!(error.observed_handles(), &[42, 43]);
+    }
+
+    #[test]
+    fn profile_write_rejects_a_readback_mismatch() {
+        let mut io = FakeRawProfileIo {
+            readback: vec![9, 9],
+            writes: Vec::new(),
+        };
+
+        let error = write_profile_verified(&mut io, &[1, 2])
+            .expect_err("profile write must require exact readback");
+
+        assert_eq!(io.writes, [vec![1, 2]]);
+        assert!(error.to_string().contains("readback"));
+    }
+
+    #[test]
+    fn render_and_profile_restore_failures_are_both_preserved() {
+        let error = combine_render_and_restore(
+            Err(anyhow!("simulated render failure")),
+            Err(anyhow!("simulated profile restore failure")),
+        )
+        .expect_err("both failures must keep the command unsuccessful");
+        let error = error
+            .downcast_ref::<super::RenderFailureWithRestoreError>()
+            .expect("combined render/restore failure must remain typed");
+
+        assert!(error.to_string().contains("simulated render failure"));
+        assert!(
+            error
+                .to_string()
+                .contains("simulated profile restore failure")
+        );
+    }
+
+    #[test]
+    fn invalid_raf_is_rejected_before_upload_metadata() {
+        let mut io = FakeRenderUploadIo::default();
+
+        let error = send_image_with_io(&mut io, b"not a RAF")
+            .expect_err("invalid RAF must be rejected before upload");
+
+        assert!(error.to_string().contains("RAF"));
+        assert!(io.calls.is_empty());
     }
 
     #[test]

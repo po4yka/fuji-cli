@@ -28,6 +28,12 @@ pub struct BackupRestore;
 pub struct RawConversion;
 
 #[derive(Debug)]
+pub struct RawRecoveryFetch;
+
+#[derive(Debug)]
+pub struct RawRecoveryCleanup;
+
+#[derive(Debug)]
 pub struct SimulationAccess;
 
 #[derive(Debug)]
@@ -64,8 +70,16 @@ impl OperationMarker for RawConversion {
     const KIND: CameraPreflightOperation = CameraPreflightOperation::RawConversion;
 }
 
+impl OperationMarker for RawRecoveryFetch {
+    const KIND: CameraPreflightOperation = CameraPreflightOperation::RawRecoveryFetch;
+}
+
+impl OperationMarker for RawRecoveryCleanup {
+    const KIND: CameraPreflightOperation = CameraPreflightOperation::RawRecoveryCleanup;
+}
+
 impl OperationMarker for SimulationAccess {
-    const KIND: CameraPreflightOperation = CameraPreflightOperation::SimulationWrite;
+    const KIND: CameraPreflightOperation = CameraPreflightOperation::SimulationAccess;
 }
 
 impl OperationMarker for SimulationWrite {
@@ -111,14 +125,40 @@ impl ValidatedCameraSession<'_, RawConversion> {
         image: &[u8],
         partial: RenderBase,
         draft: bool,
-    ) -> anyhow::Result<Vec<u8>> {
+    ) -> anyhow::Result<crate::features::render::RenderOutcome> {
         self.camera.render_unchecked(image, partial, draft)
+    }
+
+    pub fn cleanup_rendered_object(&mut self, handle: u32) -> anyhow::Result<()> {
+        self.camera.cleanup_rendered_object_unchecked(handle)
+    }
+}
+
+impl ValidatedCameraSession<'_, RawRecoveryFetch> {
+    pub fn recover_rendered_object(
+        &mut self,
+        handle: u32,
+    ) -> anyhow::Result<crate::features::render::RenderedObject> {
+        self.camera.recover_rendered_object_unchecked(handle)
+    }
+}
+
+impl ValidatedCameraSession<'_, RawRecoveryCleanup> {
+    pub fn cleanup_rendered_object(&mut self, handle: u32) -> anyhow::Result<()> {
+        self.camera.cleanup_rendered_object_unchecked(handle)
     }
 }
 
 impl ValidatedCameraSession<'_, SimulationAccess> {
     pub fn get_simulation(&mut self, slot: CustomSetting) -> anyhow::Result<Box<dyn Simulation>> {
         self.camera.get_simulation_unchecked(slot)
+    }
+
+    pub fn get_simulations(
+        &mut self,
+        slots: &[CustomSetting],
+    ) -> anyhow::Result<Vec<(CustomSetting, Box<dyn Simulation>)>> {
+        self.camera.get_simulations_unchecked(slots)
     }
 }
 

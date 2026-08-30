@@ -44,11 +44,20 @@ pub fn generate(cameras: &BTreeMap<String, Camera>) -> anyhow::Result<TokenStrea
                 PreflightOperation::BackupRestore => {
                     quote! { CameraPreflightOperation::BackupRestore }
                 }
+                PreflightOperation::SimulationAccess => {
+                    quote! { CameraPreflightOperation::SimulationAccess }
+                }
                 PreflightOperation::SimulationWrite => {
                     quote! { CameraPreflightOperation::SimulationWrite }
                 }
                 PreflightOperation::RawConversion => {
                     quote! { CameraPreflightOperation::RawConversion }
+                }
+                PreflightOperation::RawRecoveryFetch => {
+                    quote! { CameraPreflightOperation::RawRecoveryFetch }
+                }
+                PreflightOperation::RawRecoveryCleanup => {
+                    quote! { CameraPreflightOperation::RawRecoveryCleanup }
                 }
             };
             let status = match profile.status {
@@ -172,8 +181,11 @@ pub fn generate(cameras: &BTreeMap<String, Camera>) -> anyhow::Result<TokenStrea
         #[derive(Clone, Copy, Debug, Eq, PartialEq)]
         pub enum CameraPreflightOperation {
             BackupRestore,
+            SimulationAccess,
             SimulationWrite,
             RawConversion,
+            RawRecoveryFetch,
+            RawRecoveryCleanup,
         }
 
         #[derive(Clone, Copy, Debug, Eq, PartialEq)]

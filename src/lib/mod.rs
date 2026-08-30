@@ -16,6 +16,7 @@ use anyhow::{anyhow, bail, ensure};
 use features::{
     backup::{BackupArtifact, BackupIdentity, BackupPurpose, sha256_hex},
     base::{CameraBase, info::CameraInfo},
+    render::{RenderOutcome, RenderedObject},
     simulation::{Simulation, SimulationTransactionError, SimulationTransactionSuccess},
 };
 use log::{debug, error};
@@ -34,7 +35,8 @@ use crate::{
         PhysicalUsbIdentity, SerialFingerprint, authorize,
     },
     preflight::{
-        BackupRestore, RawConversion, SimulationAccess, SimulationWrite, ValidatedCameraSession,
+        BackupRestore, RawConversion, RawRecoveryCleanup, RawRecoveryFetch, SimulationAccess,
+        SimulationWrite, ValidatedCameraSession,
     },
 };
 
@@ -402,6 +404,20 @@ impl Camera {
         preflight::run(self, Some(serial_binding))
     }
 
+    pub fn preflight_raw_recovery_fetch(
+        &mut self,
+        serial_binding: &SerialFingerprint,
+    ) -> anyhow::Result<ValidatedCameraSession<'_, RawRecoveryFetch>> {
+        preflight::run(self, Some(serial_binding))
+    }
+
+    pub fn preflight_raw_recovery_cleanup(
+        &mut self,
+        serial_binding: &SerialFingerprint,
+    ) -> anyhow::Result<ValidatedCameraSession<'_, RawRecoveryCleanup>> {
+        preflight::run(self, Some(serial_binding))
+    }
+
     pub fn backup_identity(&mut self) -> anyhow::Result<BackupIdentity> {
         self.authorize(CommandRisk::EmulationForbidden)?;
         let info = self.ptp.get_info()?;
@@ -494,6 +510,17 @@ impl Camera {
         }
     }
 
+    pub(crate) fn get_simulations_unchecked(
+        &mut self,
+        slots: &[CustomSetting],
+    ) -> anyhow::Result<Vec<(CustomSetting, Box<dyn Simulation>)>> {
+        if let Some(sim) = self.r#impl.as_simulation_manager() {
+            sim.get_simulations(&mut self.ptp, slots)
+        } else {
+            bail!(ERROR_CAMERA_DOES_NOT_SUPPORT_SIMULATION_MANAGEMENT);
+        }
+    }
+
     pub(crate) fn update_simulation_unchecked(
         &mut self,
         slot: CustomSetting,
@@ -529,9 +556,28 @@ impl Camera {
         image: &[u8],
         partial: RenderBase,
         draft: bool,
-    ) -> anyhow::Result<Vec<u8>> {
+    ) -> anyhow::Result<RenderOutcome> {
         if let Some(renders) = self.r#impl.as_render_manager() {
             renders.render(&mut self.ptp, image, partial, draft)
+        } else {
+            bail!(ERROR_CAMERA_DOES_NOT_SUPPORT_RENDER_MANAGEMENT);
+        }
+    }
+
+    pub(crate) fn recover_rendered_object_unchecked(
+        &mut self,
+        handle: u32,
+    ) -> anyhow::Result<RenderedObject> {
+        if let Some(renders) = self.r#impl.as_render_manager() {
+            renders.recover_rendered_object(&mut self.ptp, handle)
+        } else {
+            bail!(ERROR_CAMERA_DOES_NOT_SUPPORT_RENDER_MANAGEMENT);
+        }
+    }
+
+    pub(crate) fn cleanup_rendered_object_unchecked(&mut self, handle: u32) -> anyhow::Result<()> {
+        if let Some(renders) = self.r#impl.as_render_manager() {
+            renders.cleanup_rendered_object(&mut self.ptp, handle)
         } else {
             bail!(ERROR_CAMERA_DOES_NOT_SUPPORT_RENDER_MANAGEMENT);
         }

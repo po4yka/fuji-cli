@@ -113,7 +113,7 @@ fn authorize_command(command: &Commands, options: &GlobalOptions) -> anyhow::Res
 mod tests {
     use clap::Parser;
 
-    use super::Cli;
+    use super::{Cli, authorize_command};
 
     #[test]
     fn image_extract_is_not_advertised_until_it_is_implemented() {
@@ -135,6 +135,34 @@ mod tests {
         ]);
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn image_recover_parses_handle_output_and_explicit_cleanup() {
+        let parsed = Cli::try_parse_from([
+            "fujicli",
+            "image",
+            "recover",
+            "--target-serial-sha256",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+            "--delete-after-save",
+            "42",
+            "recovered.jpg",
+        ]);
+
+        assert!(parsed.is_ok(), "recovery command must parse: {parsed:?}");
+    }
+
+    #[test]
+    fn simulation_reads_reject_emulation_without_an_impossible_acknowledgement_hint() {
+        let cli = Cli::try_parse_from(["fujicli", "--emulate", "04cb:02fc", "simulation", "list"])
+            .expect("emulated simulation command must parse before policy authorization");
+
+        let error = authorize_command(&cli.command, &cli.options)
+            .expect_err("temporary selector writes must reject emulation");
+
+        assert!(error.to_string().contains("--emulate is not supported"));
+        assert!(!error.to_string().contains("acknowledgement"));
     }
 
     #[test]

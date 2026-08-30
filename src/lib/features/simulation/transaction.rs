@@ -1,5 +1,6 @@
 use std::fmt;
 
+use anyhow::Context;
 use binrw::{BinRead, BinWrite};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -181,6 +182,161 @@ impl SimulationPropertyIo for crate::ptp::Ptp {
         crate::ptp::Ptp::set_prop(self, code, value)
             .map_err(SimulationPropertyWriteError::unconfirmed)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TemporarySimulationSelectorState {
+    RestoredAndVerified,
+    Unknown,
+}
+
+#[derive(Debug)]
+pub struct TemporarySimulationSelectorError {
+    operation: Option<anyhow::Error>,
+    restore: Option<anyhow::Error>,
+    state: TemporarySimulationSelectorState,
+}
+
+impl TemporarySimulationSelectorError {
+    pub fn operation_error(&self) -> Option<&anyhow::Error> {
+        self.operation.as_ref()
+    }
+
+    pub fn restore_error(&self) -> Option<&anyhow::Error> {
+        self.restore.as_ref()
+    }
+
+    pub fn state(&self) -> TemporarySimulationSelectorState {
+        self.state
+    }
+}
+
+impl fmt::Display for TemporarySimulationSelectorError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match (&self.operation, &self.restore, self.state) {
+            (Some(operation), None, TemporarySimulationSelectorState::RestoredAndVerified) => {
+                write!(
+                    formatter,
+                    "simulation slot read failed: {operation:#}; original slot selector was restored and verified"
+                )
+            }
+            (Some(operation), Some(restore), TemporarySimulationSelectorState::Unknown) => write!(
+                formatter,
+                "simulation slot read failed: {operation:#}; restoring the original slot selector also failed: {restore:#}; selector state is unknown"
+            ),
+            (None, Some(restore), TemporarySimulationSelectorState::Unknown) => write!(
+                formatter,
+                "simulation slot read succeeded, but restoring the original slot selector failed: {restore:#}; selector state is unknown"
+            ),
+            (Some(operation), None, TemporarySimulationSelectorState::Unknown) => write!(
+                formatter,
+                "simulation slot read failed: {operation:#}; the PTP session is unhealthy and selector state is unknown"
+            ),
+            _ => formatter.write_str("temporary simulation selector transaction failed"),
+        }
+    }
+}
+
+impl std::error::Error for TemporarySimulationSelectorError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.operation
+            .as_ref()
+            .or(self.restore.as_ref())
+            .map(std::convert::AsRef::as_ref)
+    }
+}
+
+trait SimulationSelectorIo {
+    fn is_healthy(&self) -> bool;
+
+    fn get_selector_raw(&mut self, property_code: u16) -> anyhow::Result<Vec<u8>>;
+
+    fn set_selector_raw(&mut self, property_code: u16, value: &[u8]) -> anyhow::Result<()>;
+}
+
+impl SimulationSelectorIo for crate::ptp::Ptp {
+    fn is_healthy(&self) -> bool {
+        crate::ptp::Ptp::is_healthy(self)
+    }
+
+    fn get_selector_raw(&mut self, property_code: u16) -> anyhow::Result<Vec<u8>> {
+        crate::ptp::Ptp::get_prop_raw(self, property_code)
+    }
+
+    fn set_selector_raw(&mut self, property_code: u16, value: &[u8]) -> anyhow::Result<()> {
+        crate::ptp::Ptp::set_prop_raw(self, property_code, value).map(|_| ())
+    }
+}
+
+pub(crate) fn with_temporary_simulation_selector<T>(
+    ptp: &mut crate::ptp::Ptp,
+    property_code: u16,
+    operation: impl FnOnce(&mut crate::ptp::Ptp) -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    with_temporary_simulation_selector_io(ptp, property_code, operation)
+}
+
+fn with_temporary_simulation_selector_io<IO, T>(
+    io: &mut IO,
+    property_code: u16,
+    operation: impl FnOnce(&mut IO) -> anyhow::Result<T>,
+) -> anyhow::Result<T>
+where
+    IO: SimulationSelectorIo,
+{
+    let original = io
+        .get_selector_raw(property_code)
+        .context("snapshotting the original simulation slot selector")?;
+    let operation = operation(io);
+
+    if !io.is_healthy() {
+        let operation = operation.err().unwrap_or_else(|| {
+            anyhow::anyhow!("PTP session became unhealthy during simulation slot read")
+        });
+        return Err(TemporarySimulationSelectorError {
+            operation: Some(operation),
+            restore: None,
+            state: TemporarySimulationSelectorState::Unknown,
+        }
+        .into());
+    }
+
+    let restore = restore_selector(io, property_code, &original);
+    match (operation, restore) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(operation), Ok(())) => Err(TemporarySimulationSelectorError {
+            operation: Some(operation),
+            restore: None,
+            state: TemporarySimulationSelectorState::RestoredAndVerified,
+        }
+        .into()),
+        (Ok(_), Err(restore)) => Err(TemporarySimulationSelectorError {
+            operation: None,
+            restore: Some(restore),
+            state: TemporarySimulationSelectorState::Unknown,
+        }
+        .into()),
+        (Err(operation), Err(restore)) => Err(TemporarySimulationSelectorError {
+            operation: Some(operation),
+            restore: Some(restore),
+            state: TemporarySimulationSelectorState::Unknown,
+        }
+        .into()),
+    }
+}
+
+fn restore_selector<IO: SimulationSelectorIo>(
+    io: &mut IO,
+    property_code: u16,
+    original: &[u8],
+) -> anyhow::Result<()> {
+    io.set_selector_raw(property_code, original)?;
+    let readback = io.get_selector_raw(property_code)?;
+    anyhow::ensure!(
+        readback == original,
+        "restored simulation selector readback does not match the original raw value"
+    );
+    Ok(())
 }
 
 pub(crate) struct SelectedSimulationIo<'io, IO, Selector> {
@@ -495,8 +651,10 @@ mod tests {
 
     use super::{
         SelectedSimulationIo, SimulationPropertyChange, SimulationPropertyIo,
-        SimulationPropertyWriteError, SimulationTransactionProfile, SimulationTransactionSuccess,
-        execute_simulation_transaction,
+        SimulationPropertyWriteError, SimulationSelectorIo, SimulationTransactionProfile,
+        SimulationTransactionSuccess, TemporarySimulationSelectorError,
+        TemporarySimulationSelectorState, execute_simulation_transaction,
+        with_temporary_simulation_selector_io,
     };
 
     #[derive(Clone, Copy, PartialEq, BinRead, BinWrite)]
@@ -687,6 +845,46 @@ mod tests {
                 SimulationPropertyWriteError::unconfirmed(anyhow::Error::from(error))
             })?;
             self.properties.insert(code, encoded);
+            Ok(())
+        }
+    }
+
+    impl SimulationSelectorIo for FakeSimulationPropertyIo {
+        fn is_healthy(&self) -> bool {
+            self.healthy
+        }
+
+        fn get_selector_raw(&mut self, property_code: u16) -> anyhow::Result<Vec<u8>> {
+            self.reads.push(property_code);
+            if self.faults.front() == Some(&Fault::PoisonRead(property_code)) {
+                self.faults.pop_front();
+                self.healthy = false;
+                anyhow::bail!("poisoned selector read for 0x{property_code:04x}");
+            }
+            if let Some(Fault::ReturnRead(code, value)) = self.faults.front().copied()
+                && code == property_code
+            {
+                self.faults.pop_front();
+                return Ok(codec::encode(&value)?);
+            }
+            self.properties
+                .get(&property_code)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("missing selector property 0x{property_code:04x}"))
+        }
+
+        fn set_selector_raw(&mut self, property_code: u16, value: &[u8]) -> anyhow::Result<()> {
+            if self.faults.front() == Some(&Fault::RejectWrite(property_code)) {
+                self.faults.pop_front();
+                anyhow::bail!("framed selector rejection for 0x{property_code:04x}");
+            }
+            if self.faults.front() == Some(&Fault::PoisonWrite(property_code)) {
+                self.faults.pop_front();
+                self.healthy = false;
+                anyhow::bail!("poisoned selector write for 0x{property_code:04x}");
+            }
+            self.writes.push(property_code);
+            self.properties.insert(property_code, value.to_vec());
             Ok(())
         }
     }
@@ -1031,6 +1229,188 @@ mod tests {
 
         assert_eq!(io.writes, [0xd000, 0xd001, 0xd000]);
         assert_eq!(io.reads, [0xd000, 0xd000, 0xd000, 0xd002, 0xd000]);
+    }
+
+    #[test]
+    fn temporary_selector_restores_once_after_failure_in_each_batch_slot() {
+        let profile = TestProfile {
+            first: Some(1),
+            second: Some(2),
+            third: Some(5),
+        };
+
+        for failed_slot in 1_u16..=7 {
+            let mut io = FakeSimulationPropertyIo::with_profile(&profile);
+            io.properties
+                .insert(0xd000, codec::encode(&9_u16).expect("test selector"));
+
+            let error = with_temporary_simulation_selector_io::<_, ()>(&mut io, 0xd000, |io| {
+                for slot in 1..=7 {
+                    let mut selected = SelectedSimulationIo::new(io, TestSelector(slot));
+                    let _: u16 = selected.get_prop(0xd001)?;
+                    if slot == failed_slot {
+                        anyhow::bail!("injected failure after C{slot}");
+                    }
+                }
+                Ok(())
+            })
+            .expect_err("the injected slot read must fail");
+            let error = error
+                .downcast_ref::<TemporarySimulationSelectorError>()
+                .expect("selector failure must remain typed");
+
+            assert_eq!(
+                error.state(),
+                TemporarySimulationSelectorState::RestoredAndVerified,
+                "failed slot C{failed_slot}"
+            );
+            assert_eq!(
+                codec::decode_exact::<u16>(io.properties.get(&0xd000).expect("selector"))
+                    .expect("selector value"),
+                9,
+                "raw selector snapshot must be restored after C{failed_slot}"
+            );
+            assert_eq!(
+                io.writes
+                    .iter()
+                    .filter(|property| **property == 0xd000)
+                    .count(),
+                usize::from(failed_slot) + 1,
+                "one select per attempted slot plus one outer restore"
+            );
+        }
+    }
+
+    #[test]
+    fn selector_readback_mismatch_prevents_profile_read_and_restores_original() {
+        let profile = TestProfile {
+            first: Some(1),
+            second: Some(2),
+            third: Some(5),
+        };
+        let mut io = FakeSimulationPropertyIo::with_profile(&profile);
+        io.properties
+            .insert(0xd000, codec::encode(&9_u16).expect("test selector"));
+
+        let error = with_temporary_simulation_selector_io::<_, ()>(&mut io, 0xd000, |io| {
+            io.faults.push_back(Fault::ReturnRead(0xd000, 2));
+            let mut selected = SelectedSimulationIo::new(io, TestSelector(1));
+            let _: u16 = selected.get_prop(0xd001)?;
+            Ok(())
+        })
+        .expect_err("selector mismatch must fail before the profile read");
+        let error = error
+            .downcast_ref::<TemporarySimulationSelectorError>()
+            .expect("selector failure must remain typed");
+
+        assert_eq!(
+            error.state(),
+            TemporarySimulationSelectorState::RestoredAndVerified
+        );
+        assert_eq!(
+            io.reads
+                .iter()
+                .filter(|property| **property == 0xd001)
+                .count(),
+            0,
+            "profile property must not be read after selector mismatch"
+        );
+        assert_eq!(
+            codec::decode_exact::<u16>(io.properties.get(&0xd000).expect("selector"))
+                .expect("selector value"),
+            9
+        );
+    }
+
+    #[test]
+    fn restore_readback_mismatch_reports_unknown_selector_state() {
+        let profile = TestProfile {
+            first: Some(1),
+            second: Some(2),
+            third: Some(5),
+        };
+        let mut io = FakeSimulationPropertyIo::with_profile(&profile);
+        io.properties
+            .insert(0xd000, codec::encode(&9_u16).expect("test selector"));
+
+        let error = with_temporary_simulation_selector_io(&mut io, 0xd000, |io| {
+            io.faults.push_back(Fault::ReturnRead(0xd000, 7));
+            Ok(())
+        })
+        .expect_err("restore readback mismatch must fail");
+        let error = error
+            .downcast_ref::<TemporarySimulationSelectorError>()
+            .expect("selector failure must remain typed");
+
+        assert_eq!(error.state(), TemporarySimulationSelectorState::Unknown);
+        assert!(error.operation_error().is_none());
+        assert!(error.restore_error().is_some());
+    }
+
+    #[test]
+    fn operation_and_restore_failures_are_both_preserved() {
+        let profile = TestProfile {
+            first: Some(1),
+            second: Some(2),
+            third: Some(5),
+        };
+        let mut io = FakeSimulationPropertyIo::with_profile(&profile);
+        io.properties
+            .insert(0xd000, codec::encode(&9_u16).expect("test selector"));
+
+        let error = with_temporary_simulation_selector_io::<_, ()>(&mut io, 0xd000, |io| {
+            io.faults.push_back(Fault::RejectWrite(0xd000));
+            anyhow::bail!("profile read failed");
+        })
+        .expect_err("operation and restore must fail");
+        let error = error
+            .downcast_ref::<TemporarySimulationSelectorError>()
+            .expect("selector failure must remain typed");
+
+        assert_eq!(error.state(), TemporarySimulationSelectorState::Unknown);
+        assert!(
+            error
+                .operation_error()
+                .is_some_and(|error| error.to_string().contains("profile read failed"))
+        );
+        assert!(
+            error
+                .restore_error()
+                .is_some_and(|error| error.to_string().contains("selector rejection"))
+        );
+    }
+
+    #[test]
+    fn poisoned_profile_read_skips_selector_restore() {
+        let profile = TestProfile {
+            first: Some(1),
+            second: Some(2),
+            third: Some(5),
+        };
+        let mut io = FakeSimulationPropertyIo::with_profile(&profile).poison_read(0xd001);
+        io.properties
+            .insert(0xd000, codec::encode(&9_u16).expect("test selector"));
+
+        let error = with_temporary_simulation_selector_io::<_, ()>(&mut io, 0xd000, |io| {
+            let mut selected = SelectedSimulationIo::new(io, TestSelector(1));
+            let _: u16 = selected.get_prop(0xd001)?;
+            Ok(())
+        })
+        .expect_err("poisoned profile read must fail");
+        let error = error
+            .downcast_ref::<TemporarySimulationSelectorError>()
+            .expect("selector failure must remain typed");
+
+        assert_eq!(error.state(), TemporarySimulationSelectorState::Unknown);
+        assert!(error.restore_error().is_none());
+        assert_eq!(
+            io.writes
+                .iter()
+                .filter(|property| **property == 0xd000)
+                .count(),
+            1,
+            "only the target selection may be written on a poisoned session"
+        );
     }
 
     #[test]

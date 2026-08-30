@@ -34,7 +34,7 @@ cameras: [string]: #Camera
 		}
 
 		#PreflightProfile: {
-			operation: "backup_restore" | "simulation_write" | "raw_conversion"
+			operation: "backup_restore" | "simulation_access" | "simulation_write" | "raw_conversion" | "raw_recovery_fetch" | "raw_recovery_cleanup"
 			status:    "verified" | "unverified"
 			firmware:  string & =~".+"
 
@@ -378,6 +378,13 @@ cameras: {
 					{code: options[setting.ref].spec.encoding.prop_code, writable: true}
 				}],
 			])
+			_preflight_simulation_access_properties: list.Concat([
+				_preflight_common_properties,
+				[{code: 0xD18C, data_type: 0x0004, writable: true}],
+				[for setting in features.simulation.settings {
+					{code: options[setting.ref].spec.encoding.prop_code, writable: false}
+				}],
+			])
 			_preflight_render_slot_properties: list.Concat([
 				_preflight_common_properties,
 				[{code: 0xD18C, data_type: 0x0004, writable: true}],
@@ -401,6 +408,15 @@ cameras: {
 					required_properties: _preflight_common_properties
 				},
 				{
+					operation:               "simulation_access"
+					status:                  "verified"
+					firmware:                "4.31"
+					minimum_battery_percent: 100
+					allowed_usb_modes: [0x6]
+					required_operations: [0x1001, 0x1014, 0x1015, 0x1016]
+					required_properties: _preflight_simulation_access_properties
+				},
+				{
 					operation:               "simulation_write"
 					status:                  "verified"
 					firmware:                "4.31"
@@ -415,8 +431,26 @@ cameras: {
 					firmware:                "4.31"
 					minimum_battery_percent: 100
 					allowed_usb_modes: [0x6]
-					required_operations: [0x1001, 0x1007, 0x1009, 0x100B, 0x1014, 0x1015, 0x1016, 0x900C, 0x900D]
+					required_operations: [0x1001, 0x1007, 0x1008, 0x1009, 0x100B, 0x1014, 0x1015, 0x1016, 0x900C, 0x900D]
 					required_properties: _preflight_render_slot_properties
+				},
+				{
+					operation:               "raw_recovery_fetch"
+					status:                  "verified"
+					firmware:                "4.31"
+					minimum_battery_percent: 0
+					allowed_usb_modes: [0x6]
+					required_operations: [0x1001, 0x1008, 0x1009, 0x1014, 0x1015]
+					required_properties: _preflight_common_properties
+				},
+				{
+					operation:               "raw_recovery_cleanup"
+					status:                  "verified"
+					firmware:                "4.31"
+					minimum_battery_percent: 100
+					allowed_usb_modes: [0x6]
+					required_operations: [0x1001, 0x100B, 0x1014, 0x1015]
+					required_properties: _preflight_common_properties
 				},
 			]
 

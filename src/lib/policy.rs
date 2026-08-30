@@ -24,7 +24,7 @@ pub enum ModelBindingKind {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CommandRisk {
     ReadOnly,
-    TransientStateChange,
+    ReadWithTemporaryMutation,
     PersistentSettingsWrite,
     OpaqueRestore,
     DestructiveRecoverySensitive,
@@ -75,7 +75,7 @@ pub fn authorize(
     match binding {
         ModelBindingKind::Native => match risk {
             CommandRisk::ReadOnly | CommandRisk::EmulationForbidden => Ok(()),
-            CommandRisk::TransientStateChange
+            CommandRisk::ReadWithTemporaryMutation
             | CommandRisk::PersistentSettingsWrite
             | CommandRisk::OpaqueRestore
             | CommandRisk::DestructiveRecoverySensitive => {
@@ -87,7 +87,7 @@ pub fn authorize(
         }
         ModelBindingKind::Emulated => match risk {
             CommandRisk::ReadOnly => Ok(()),
-            CommandRisk::TransientStateChange => {
+            CommandRisk::ReadWithTemporaryMutation => {
                 if acknowledgement == EmulationAcknowledgement::Provided {
                     Ok(())
                 } else {
@@ -141,10 +141,10 @@ mod tests {
     }
 
     #[test]
-    fn emulated_transient_state_change_requires_explicit_acknowledgement() {
+    fn emulated_temporary_read_mutation_requires_explicit_acknowledgement() {
         let result = authorize(
             ModelBindingKind::Emulated,
-            CommandRisk::TransientStateChange,
+            CommandRisk::ReadWithTemporaryMutation,
             EmulationAcknowledgement::NotProvided,
         );
 
@@ -152,10 +152,10 @@ mod tests {
     }
 
     #[test]
-    fn emulated_transient_state_change_allows_explicit_acknowledgement() {
+    fn emulated_temporary_read_mutation_allows_explicit_acknowledgement() {
         let result = authorize(
             ModelBindingKind::Emulated,
-            CommandRisk::TransientStateChange,
+            CommandRisk::ReadWithTemporaryMutation,
             EmulationAcknowledgement::Provided,
         );
 

@@ -79,6 +79,46 @@ fn raw_conversion_requires_exact_serial_binding_before_file_or_usb_access() {
 }
 
 #[test]
+fn raw_recovery_requires_exact_serial_binding_before_output_or_usb_access() {
+    let output = run(&[
+        "image",
+        "recover",
+        "42",
+        "/definitely/missing/recovered.jpg",
+        "--device",
+        "255.255",
+    ]);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--target-serial-sha256"));
+    assert!(!stderr.contains("No such file or directory"));
+    assert!(!stderr.contains("No USB device found"));
+}
+
+#[test]
+fn raw_recovery_never_deletes_after_stdout() {
+    let output = run(&[
+        "image",
+        "recover",
+        "--target-serial-sha256",
+        "0000000000000000000000000000000000000000000000000000000000000000",
+        "--delete-after-save",
+        "42",
+        "-",
+        "--device",
+        "255.255",
+    ]);
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("requires a file output"));
+    assert!(!stderr.contains("No USB device found"));
+}
+
+#[test]
 fn emulated_simulation_set_rejects_persistent_write_before_usb_lookup() {
     let output = run(&[
         "simulation",
@@ -223,6 +263,27 @@ fn emulated_image_render_rejects_destructive_access_before_file_or_usb_access() 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("emulated camera access cannot perform destructive operations"));
     assert!(!stderr.contains("reading RAF image metadata"));
+    assert!(!stderr.contains("No such file or directory"));
+    assert!(!stderr.contains("No USB device found"));
+}
+
+#[test]
+fn emulated_image_recovery_is_rejected_before_output_or_usb_access() {
+    let output = run(&[
+        "image",
+        "recover",
+        "42",
+        "/definitely/missing/recovered.jpg",
+        "--emulate",
+        "04cb:02f7",
+        "--device",
+        "255.255",
+    ]);
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("emulated camera access cannot perform destructive operations"));
     assert!(!stderr.contains("No such file or directory"));
     assert!(!stderr.contains("No USB device found"));
 }

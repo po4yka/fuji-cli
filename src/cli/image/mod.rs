@@ -1,30 +1,45 @@
 use fujicli::{
-    features::render::RenderCleanupError,
+    features::render::{RenderSaveError, finish_render_cleanup, raf::validate_xt5_raf},
     generated::{
         cli::RenderArgs, options::CustomSetting, renders::RenderBase, simulations::SimulationBase,
     },
     policy::{EmulationAcknowledgement, SerialFingerprint},
 };
 
-use super::common::file::{Input, Output};
+use super::common::file::{Input, Output, OutputTransaction};
 use crate::cli::{GlobalOptions, common::usb};
 use clap::Subcommand;
 
 const MAX_IMAGE_INPUT_BYTES: usize = 512 * 1024 * 1024;
 
-fn write_render_result(
-    output: &Output,
-    render_result: anyhow::Result<Vec<u8>>,
+fn save_rendered_object(
+    mut output: OutputTransaction,
+    handle: u32,
+    data: &[u8],
+    profile_restore_error: Option<anyhow::Error>,
+    delete_after_save: bool,
+    cleanup: impl FnOnce(u32) -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
-    match render_result {
-        Ok(rendered) => output.write_all(&rendered),
-        Err(error) => {
-            if let Some(cleanup) = error.downcast_ref::<RenderCleanupError>() {
-                output.write_all(cleanup.rendered_data())?;
-            }
-            Err(error)
-        }
+    let mut profile_restore_error = profile_restore_error;
+    if let Err(save) = std::io::Write::write_all(&mut output, data) {
+        return Err(RenderSaveError::new(handle, save.into(), profile_restore_error.take()).into());
     }
+    if let Err(save) = output.commit() {
+        return Err(RenderSaveError::new(handle, save, profile_restore_error.take()).into());
+    }
+
+    if !delete_after_save {
+        let mut stderr = std::io::stderr().lock();
+        std::io::Write::write_fmt(
+            &mut stderr,
+            format_args!(
+                "rendered JPEG saved; camera object {handle} was retained; recover it with `fujicli image recover {handle} OUTPUT --target-serial-sha256 SHA256`\n"
+            ),
+        )?;
+        return finish_render_cleanup(handle, profile_restore_error, Ok(()));
+    }
+
+    finish_render_cleanup(handle, profile_restore_error, cleanup(handle))
 }
 
 #[derive(Subcommand, Debug)]
@@ -57,6 +72,23 @@ pub enum ImageCmd {
         /// Output file (use '-' to write to stdout)
         output: Output,
     },
+
+    /// Recover a retained rendered JPEG by its camera object handle
+    Recover {
+        /// SHA-256 fingerprint of the exact physical camera serial number
+        #[arg(long, required_unless_present = "emulate")]
+        target_serial_sha256: Option<SerialFingerprint>,
+
+        /// Camera object handle reported by a failed render
+        handle: u32,
+
+        /// Output file (use '-' to write to stdout)
+        output: Output,
+
+        /// Delete the camera object after a verified local file save
+        #[arg(long)]
+        delete_after_save: bool,
+    },
 }
 
 struct RenderRequest {
@@ -88,6 +120,7 @@ fn handle_render(options: GlobalOptions, request: RenderRequest) -> anyhow::Resu
     } = options;
 
     let image = input.read_limited(MAX_IMAGE_INPUT_BYTES, "RAF image")?;
+    validate_xt5_raf(&image)?;
     let simulation_json = simulation_file
         .map(|file| {
             file.read_limited(
@@ -96,6 +129,8 @@ fn handle_render(options: GlobalOptions, request: RenderRequest) -> anyhow::Resu
             )
         })
         .transpose()?;
+    let output_transaction = output.begin_write()?;
+    let delete_after_save = !output_transaction.is_stdout();
 
     let mut camera = usb::get_camera(device, emulate, EmulationAcknowledgement::NotProvided)?;
     let simulation_from_file = if let Some(buffer) = simulation_json {
@@ -118,7 +153,57 @@ fn handle_render(options: GlobalOptions, request: RenderRequest) -> anyhow::Resu
     }
     base.merge(render.into());
 
-    write_render_result(&output, session.render(&image, base, draft))
+    let outcome = session.render(&image, base, draft)?;
+    let (rendered, profile_restore_error) = outcome.into_parts();
+    save_rendered_object(
+        output_transaction,
+        rendered.handle(),
+        rendered.data(),
+        profile_restore_error,
+        delete_after_save,
+        |handle| session.cleanup_rendered_object(handle),
+    )
+}
+
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the handler consumes the parsed recovery command"
+)]
+fn handle_recover(
+    options: GlobalOptions,
+    target_serial_sha256: Option<SerialFingerprint>,
+    handle: u32,
+    output: Output,
+    delete_after_save: bool,
+) -> anyhow::Result<()> {
+    let GlobalOptions {
+        device, emulate, ..
+    } = options;
+    anyhow::ensure!(
+        !(delete_after_save && output.is_stdout()),
+        "--delete-after-save requires a file output, not stdout"
+    );
+    let output_transaction = output.begin_write()?;
+    let target_serial_sha256 = target_serial_sha256
+        .ok_or_else(|| anyhow::anyhow!("RAW recovery requires --target-serial-sha256"))?;
+
+    let mut camera = usb::get_camera(device, emulate, EmulationAcknowledgement::NotProvided)?;
+    let rendered = camera
+        .preflight_raw_recovery_fetch(&target_serial_sha256)?
+        .recover_rendered_object(handle)?;
+
+    save_rendered_object(
+        output_transaction,
+        rendered.handle(),
+        rendered.data(),
+        None,
+        delete_after_save,
+        |handle| {
+            camera
+                .preflight_raw_recovery_cleanup(&target_serial_sha256)?
+                .cleanup_rendered_object(handle)
+        },
+    )
 }
 
 pub fn handle(cmd: ImageCmd, options: GlobalOptions) -> anyhow::Result<()> {
@@ -143,32 +228,43 @@ pub fn handle(cmd: ImageCmd, options: GlobalOptions) -> anyhow::Result<()> {
                 output,
             },
         ),
+        ImageCmd::Recover {
+            target_serial_sha256,
+            handle,
+            output,
+            delete_after_save,
+        } => handle_recover(
+            options,
+            target_serial_sha256,
+            handle,
+            output,
+            delete_after_save,
+        ),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{cell::Cell, fs};
 
     use anyhow::anyhow;
-    use fujicli::features::render::RenderCleanupError;
+    use fujicli::features::render::RenderSaveError;
     use tempfile::tempdir;
 
-    use super::{Output, write_render_result};
+    use super::{Output, handle_recover, save_rendered_object};
+    use crate::cli::GlobalOptions;
 
     #[test]
     fn saves_rendered_image_before_returning_camera_cleanup_failure() -> anyhow::Result<()> {
         let directory = tempdir()?;
         let destination = directory.path().join("rendered.jpg");
         let rendered = b"rendered JPEG".to_vec();
-        let render_result = Err(RenderCleanupError::new(
-            rendered.clone(),
-            anyhow!("simulated camera cleanup failure"),
-        )
-        .into());
+        let output = Output::Path(destination.clone()).begin_write()?;
 
-        let error = write_render_result(&Output::Path(destination.clone()), render_result)
-            .expect_err("camera cleanup failure must keep the command unsuccessful");
+        let error = save_rendered_object(output, 42, &rendered, None, true, |_| {
+            Err(anyhow!("simulated camera cleanup failure"))
+        })
+        .expect_err("camera cleanup failure must keep the command unsuccessful");
 
         assert!(
             destination.exists(),
@@ -178,9 +274,83 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("rendered image was fetched, but camera cleanup failed"),
+                .contains("rendered JPEG was saved, but camera cleanup failed"),
             "unexpected cleanup error: {error:#}"
         );
         Ok(())
+    }
+
+    #[test]
+    fn does_not_delete_camera_object_when_local_output_commit_fails() -> anyhow::Result<()> {
+        let directory = tempdir()?;
+        let original_directory = directory.path().join("original");
+        let moved_directory = directory.path().join("moved");
+        fs::create_dir(&original_directory)?;
+        let destination = original_directory.join("rendered.jpg");
+        let rendered = b"rendered JPEG".to_vec();
+        let output = Output::Path(destination).begin_write()?;
+        fs::rename(&original_directory, &moved_directory)?;
+        let cleanup_called = Cell::new(false);
+
+        let error = save_rendered_object(
+            output,
+            42,
+            &rendered,
+            Some(anyhow!("simulated profile restore failure")),
+            true,
+            |_| {
+                cleanup_called.set(true);
+                Ok(())
+            },
+        )
+        .expect_err("failed output commit must retain the camera object");
+
+        assert!(!cleanup_called.get());
+        assert!(error.to_string().contains("camera object 42 was retained"));
+        let save = error
+            .downcast_ref::<RenderSaveError>()
+            .expect("save failure must retain a typed outcome");
+        assert_eq!(save.handle(), 42);
+        assert_eq!(
+            save.profile_restore_error().map(ToString::to_string),
+            Some("simulated profile restore failure".to_owned())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn recovery_keeps_camera_object_by_default_after_file_commit() -> anyhow::Result<()> {
+        let directory = tempdir()?;
+        let destination = directory.path().join("recovered.jpg");
+        let output = Output::Path(destination.clone()).begin_write()?;
+        let cleanup_called = Cell::new(false);
+
+        save_rendered_object(output, 42, b"rendered JPEG", None, false, |_| {
+            cleanup_called.set(true);
+            Ok(())
+        })?;
+
+        assert_eq!(fs::read(destination)?, b"rendered JPEG");
+        assert!(!cleanup_called.get());
+        Ok(())
+    }
+
+    #[test]
+    fn recovery_forbids_delete_after_stdout_before_camera_access() {
+        let error = handle_recover(
+            GlobalOptions {
+                json: false,
+                verbose: 0,
+                device: None,
+                emulate: None,
+            },
+            None,
+            42,
+            Output::Stdout,
+            true,
+        )
+        .expect_err("stdout cannot provide a durable receipt for camera deletion");
+
+        assert!(error.to_string().contains("requires a file output"));
     }
 }

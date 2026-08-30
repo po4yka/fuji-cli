@@ -1,6 +1,6 @@
 use std::{
     fmt,
-    fs::File,
+    fs::{self, File},
     io,
     io::Read as _,
     path::{Path, PathBuf},
@@ -111,7 +111,8 @@ pub enum Output {
     Stdout,
 }
 
-enum OutputTransaction {
+#[derive(Debug)]
+pub enum OutputTransaction {
     Path {
         file: NamedTempFile,
         destination: PathBuf,
@@ -121,7 +122,11 @@ enum OutputTransaction {
 }
 
 impl OutputTransaction {
-    fn commit(self) -> anyhow::Result<()> {
+    pub(crate) const fn is_stdout(&self) -> bool {
+        matches!(self, Self::Stdout(_))
+    }
+
+    pub(crate) fn commit(self) -> anyhow::Result<()> {
         match self {
             Self::Path {
                 mut file,
@@ -172,10 +177,21 @@ impl Output {
         matches!(self, Self::Stdout)
     }
 
-    fn begin_write(&self) -> anyhow::Result<OutputTransaction> {
+    pub(crate) fn begin_write(&self) -> anyhow::Result<OutputTransaction> {
         match self {
             Self::Stdout => Ok(OutputTransaction::Stdout(io::stdout())),
             Self::Path(path) => {
+                match fs::symlink_metadata(path) {
+                    Ok(metadata) if metadata.file_type().is_symlink() => {
+                        bail!("output destination must not be a symbolic link")
+                    }
+                    Ok(metadata) if !metadata.is_file() => {
+                        bail!("output destination must be a regular file")
+                    }
+                    Ok(_) => {}
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error).context("inspecting output destination"),
+                }
                 let directory = path
                     .parent()
                     .filter(|parent| !parent.as_os_str().is_empty())
@@ -287,6 +303,36 @@ mod tests {
         let name = file.path().file_name().expect("temp file must have a name");
 
         assert!(name.to_string_lossy().starts_with(".fujicli-"));
+        Ok(())
+    }
+
+    #[test]
+    fn output_directory_is_rejected_before_a_transaction_is_opened() -> anyhow::Result<()> {
+        let directory = tempdir()?;
+
+        let error = Output::Path(directory.path().to_owned())
+            .begin_write()
+            .expect_err("a directory is not a valid output destination");
+
+        assert!(error.to_string().contains("regular file"));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn output_symlink_is_rejected_before_a_transaction_is_opened() -> anyhow::Result<()> {
+        let directory = tempdir()?;
+        let target = directory.path().join("target.jpg");
+        let link = directory.path().join("link.jpg");
+        fs::write(&target, b"existing")?;
+        std::os::unix::fs::symlink(&target, &link)?;
+
+        let error = Output::Path(link)
+            .begin_write()
+            .expect_err("a symbolic-link destination must be rejected");
+
+        assert!(error.to_string().contains("symbolic link"));
+        assert_eq!(fs::read(target)?, b"existing");
         Ok(())
     }
 

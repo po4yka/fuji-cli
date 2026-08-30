@@ -77,14 +77,14 @@ fn handle_list(options: GlobalOptions) -> anyhow::Result<()> {
     let mut camera = usb::get_camera(device, emulate, EmulationAcknowledgement::NotProvided)?;
     let slots = camera.custom_settings_slots()?;
     let mut session = camera.preflight_simulation_access()?;
-    let slots: Vec<SimulationListItem> = slots
+    let slots: Vec<SimulationListItem> = session
+        .get_simulations(&slots)?
         .into_iter()
-        .map(|slot| -> anyhow::Result<SimulationListItem> {
-            let simulation = session.get_simulation(slot)?;
+        .map(|(slot, simulation)| {
             let name = simulation.name();
-            Ok(SimulationListItem { slot, name })
+            SimulationListItem { slot, name }
         })
-        .collect::<anyhow::Result<Vec<SimulationListItem>>>()?;
+        .collect();
 
     if json {
         write_stdout_line(format_args!("{}", serde_json::to_string_pretty(&slots)?))?;

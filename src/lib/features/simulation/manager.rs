@@ -19,6 +19,12 @@ pub trait CameraSimulationManager: CameraBase + CameraSimulationParser {
         slot: CustomSetting,
     ) -> anyhow::Result<Box<dyn Simulation>>;
 
+    fn get_simulations(
+        &self,
+        ptp: &mut Ptp,
+        slots: &[CustomSetting],
+    ) -> anyhow::Result<Vec<(CustomSetting, Box<dyn Simulation>)>>;
+
     fn update_simulation(
         &self,
         ptp: &mut Ptp,

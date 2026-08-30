@@ -567,6 +567,16 @@ fn generate_manager_impl(
 ) -> TokenStream {
     let struct_name = struct_ident.to_string();
     quote! {
+        impl #struct_ident {
+            fn try_pull_selected(
+                ptp: &mut crate::ptp::Ptp,
+                slot: #options_path::CustomSetting,
+            ) -> ::anyhow::Result<Self> {
+                let mut io = crate::features::simulation::SelectedSimulationIo::new(ptp, slot);
+                <Self as crate::features::simulation::SimulationTransactionProfile>::pull_from(&mut io)
+            }
+        }
+
         impl crate::features::simulation::CameraSimulationManager for #camera_struct_path {
             fn custom_settings_slots(&self) -> Vec<#options_path::CustomSetting> {
                 <#options_path::CustomSetting as ::strum::IntoEnumIterator>::iter()
@@ -579,10 +589,37 @@ fn generate_manager_impl(
                 ptp: &mut crate::ptp::Ptp,
                 slot: #options_path::CustomSetting,
             ) -> ::anyhow::Result<Box<dyn crate::features::simulation::Simulation>> {
-                let mut io = crate::features::simulation::SelectedSimulationIo::new(ptp, slot);
-                Ok(Box::new(
-                    <#struct_ident as crate::features::simulation::SimulationTransactionProfile>::pull_from(&mut io)?,
-                ))
+                crate::features::simulation::with_temporary_simulation_selector(
+                    ptp,
+                    <#options_path::CustomSetting as crate::ptp::option::SimulationSetting>::prop_code(),
+                    |ptp| Ok(Box::new(#struct_ident::try_pull_selected(ptp, slot)?)
+                        as Box<dyn crate::features::simulation::Simulation>),
+                )
+            }
+
+            fn get_simulations(
+                &self,
+                ptp: &mut crate::ptp::Ptp,
+                slots: &[#options_path::CustomSetting],
+            ) -> ::anyhow::Result<Vec<(
+                #options_path::CustomSetting,
+                Box<dyn crate::features::simulation::Simulation>,
+            )>> {
+                crate::features::simulation::with_temporary_simulation_selector(
+                    ptp,
+                    <#options_path::CustomSetting as crate::ptp::option::SimulationSetting>::prop_code(),
+                    |ptp| {
+                        let mut simulations = Vec::with_capacity(slots.len());
+                        for slot in slots.iter().copied() {
+                            simulations.push((
+                                slot,
+                                Box::new(#struct_ident::try_pull_selected(ptp, slot)?)
+                                    as Box<dyn crate::features::simulation::Simulation>,
+                            ));
+                        }
+                        Ok(simulations)
+                    },
+                )
             }
 
             fn update_simulation(
@@ -749,6 +786,24 @@ mod tests {
             !generated.contains("finish_failed_simulation_apply")
                 && !generated.contains("fn try_push_with_rollback"),
             "legacy full-profile rollback bypass must not be generated:\n{generated}",
+        );
+    }
+
+    #[test]
+    fn generated_reads_restore_the_temporary_selector_after_single_and_batch_access() {
+        let (options, cameras) = fixture();
+        let generated = generate(&options, &cameras).unwrap().to_string();
+
+        assert_eq!(
+            generated
+                .matches("with_temporary_simulation_selector")
+                .count(),
+            2,
+            "single and batch reads must each have one outer selector transaction:\n{generated}",
+        );
+        assert!(
+            generated.contains("for slot in slots . iter () . copied ()"),
+            "batch access must read every slot inside one outer transaction:\n{generated}",
         );
     }
 

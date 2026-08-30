@@ -165,6 +165,19 @@ both `--white-balance auto` and `--white-balance Auto` parse to the same
 variant, and most options accept short forms (e.g. `mono` for `monochrome`).
 Pass `--json` for machine-readable output on `get`/`list`.
 
+`get`, `export`, and `list` are reads with a temporary camera mutation. The
+CLI snapshots Fujifilm's custom-setting selector, verifies every slot selection
+by readback, and restores and verifies the original raw selector value before
+publishing output. `list` uses one snapshot and one restore around the complete
+C1-C7 batch. A read or transport failure produces no partial output; if restore
+cannot be verified, the command fails and reports that selector state is
+unknown.
+
+The guard does not change the physical still/movie mode. Still and movie custom
+settings are separate camera namespaces; their D18C behavior and persistence
+across disconnect or power-cycle remain hardware-validation boundaries rather
+than claims made by a local build.
+
 `set` and `import` require the lowercase SHA-256 fingerprint of the connected
 camera's PTP serial. Obtain it from `fujicli device info`; the binding prevents
 a bus/address change or a second attached body from receiving the write.
@@ -198,6 +211,15 @@ fujicli image render --slot c1 \
 fujicli image render --draft \
   --target-serial-sha256 SHA256_FROM_DEVICE_INFO \
   input.raf out.jpg
+
+# Recover a retained JPEG reported by a failed render. Recovery keeps the
+# camera object unless deletion is requested explicitly.
+fujicli image recover \
+  --target-serial-sha256 SHA256_FROM_DEVICE_INFO \
+  424242 recovered.jpg
+fujicli image recover --delete-after-save \
+  --target-serial-sha256 SHA256_FROM_DEVICE_INFO \
+  424242 recovered.jpg
 ```
 
 The render command always layers in this order: simulation source (slot or
@@ -214,12 +236,28 @@ a deliberately conservative project threshold, not a claimed Fujifilm minimum.
 
 Use `-` in place of any input or output filename to read from stdin or write to
 stdout. RAF input is limited to 512 MiB; simulation JSON remains limited to
-1 MiB. Inputs are read before the camera connection is opened.
+1 MiB. Render accepts only a structurally bounded X-T5 RAF. Inputs are read and
+the output transaction is opened before the first camera mutation.
 
-If the camera returns the rendered JPEG but fails to remove its temporary
-object, the CLI still saves the JPEG and then exits unsuccessfully with the
-camera cleanup error. The saved image is usable, but the camera may retain the
-temporary render object until it is cleaned up or restarted.
+RAW conversion snapshots the camera's conversion profile before upload,
+verifies the requested profile by raw readback, and restores and verifies the
+exact snapshot after the rendered object is fetched. A new handle is owned only
+after two stable handle polls and `GetObjectInfo` identify exactly one EXIF/JPEG
+object. The fetched byte count and JPEG structure are validated before local
+publication.
+
+If polling, `GetObjectInfo`, fetch, size validation, or JPEG validation fails,
+the error lists every observed candidate handle and no deletion is attempted.
+`image recover` uses a read-only recovery-fetch preflight; its optional
+`--delete-after-save` cleanup has a separate destructive preflight after the
+local file has committed.
+
+For a path output, the JPEG is written, synced, and atomically committed before
+`DeleteObject`. A fetch, validation, or local-save failure leaves the camera
+object intact and reports its handle. A cleanup or profile-restore failure after
+a successful save keeps the saved JPEG, reports the handle, and exits
+unsuccessfully. Stdout is not a durable receipt, so render output written to
+stdout leaves the camera object available for explicit recovery.
 
 ## Output and Logging
 

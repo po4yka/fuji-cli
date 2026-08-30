@@ -5,10 +5,12 @@ mod transaction;
 pub(crate) use transaction::{
     SelectedSimulationIo, SimulationPropertyChange, SimulationPropertyIo,
     SimulationPropertyWriteError, SimulationTransactionProfile, execute_simulation_transaction,
+    with_temporary_simulation_selector,
 };
 pub use transaction::{
     SimulationFailureState, SimulationTransactionError, SimulationTransactionPhase,
-    SimulationTransactionSuccess, SimulationWriteReceipt,
+    SimulationTransactionSuccess, SimulationWriteReceipt, TemporarySimulationSelectorError,
+    TemporarySimulationSelectorState,
 };
 
 pub use manager::CameraSimulationManager;
