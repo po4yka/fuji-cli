@@ -25,7 +25,7 @@ generations: [string]: #Generation
 			usb_modes: [uint32, ...uint32]
 			camera_state?: "still" | "movie"
 		}
-		read: #RawConversionLayout
+		read:   #RawConversionLayout
 		write?: #RawConversionLayout
 	}
 
