@@ -88,30 +88,60 @@ fn authorize_command(command: &Commands, options: &GlobalOptions) -> anyhow::Res
     } else {
         return Ok(());
     };
-    let risk = match command {
-        Commands::Simulation(SimulationCmd::Set { .. } | SimulationCmd::Import { .. }) => {
-            CommandRisk::PersistentSettingsWrite
-        }
-        Commands::Simulation(
-            SimulationCmd::List | SimulationCmd::Get { .. } | SimulationCmd::Export { .. },
-        )
-        | Commands::Device(DeviceCmd::List) => CommandRisk::EmulationForbidden,
-        Commands::Device(DeviceCmd::Info) => CommandRisk::ReadOnly,
-        Commands::Backup(BackupCmd::Import(_)) => CommandRisk::OpaqueRestore,
-        Commands::Backup(BackupCmd::Export { .. } | BackupCmd::Inspect { .. }) => {
-            CommandRisk::EmulationForbidden
-        }
-        Commands::Image(_) => CommandRisk::DestructiveRecoverySensitive,
+    let policy = command_policy(command);
+    let risk = match policy.emulation {
+        EmulationPolicy::Classified => policy.risk,
+        EmulationPolicy::Forbidden => CommandRisk::EmulationForbidden,
     };
 
     authorize(binding, risk, EmulationAcknowledgement::NotProvided)
+}
+
+struct CommandPolicy {
+    risk: CommandRisk,
+    emulation: EmulationPolicy,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EmulationPolicy {
+    Classified,
+    Forbidden,
+}
+
+const fn command_policy(command: &Commands) -> CommandPolicy {
+    let (risk, emulation) = match command {
+        Commands::Simulation(SimulationCmd::Set { .. } | SimulationCmd::Import { .. }) => (
+            CommandRisk::PersistentSettingsWrite,
+            EmulationPolicy::Classified,
+        ),
+        Commands::Simulation(
+            SimulationCmd::List | SimulationCmd::Get { .. } | SimulationCmd::Export { .. },
+        ) => (
+            CommandRisk::ReadWithTemporaryMutation,
+            EmulationPolicy::Forbidden,
+        ),
+        Commands::Device(DeviceCmd::List) => (CommandRisk::ReadOnly, EmulationPolicy::Forbidden),
+        Commands::Device(DeviceCmd::Info) => (CommandRisk::ReadOnly, EmulationPolicy::Classified),
+        Commands::Backup(BackupCmd::Import(_)) => {
+            (CommandRisk::OpaqueRestore, EmulationPolicy::Classified)
+        }
+        Commands::Backup(BackupCmd::Export { .. } | BackupCmd::Inspect { .. }) => {
+            (CommandRisk::ReadOnly, EmulationPolicy::Forbidden)
+        }
+        Commands::Image(_) => (
+            CommandRisk::DestructiveRecoverySensitive,
+            EmulationPolicy::Classified,
+        ),
+    };
+
+    CommandPolicy { risk, emulation }
 }
 
 #[cfg(test)]
 mod tests {
     use clap::Parser;
 
-    use super::{Cli, authorize_command};
+    use super::{Cli, EmulationPolicy, authorize_command, command_policy};
 
     #[test]
     fn image_extract_is_not_advertised_until_it_is_implemented() {
@@ -161,6 +191,26 @@ mod tests {
 
         assert!(error.to_string().contains("--emulate is not supported"));
         assert!(!error.to_string().contains("acknowledgement"));
+    }
+
+    #[test]
+    fn simulation_reads_are_temporary_mutations_but_remain_unemulatable() {
+        let list = Cli::try_parse_from(["fujicli", "simulation", "list"])
+            .expect("simulation list must parse");
+        let get = Cli::try_parse_from(["fujicli", "simulation", "get", "c1"])
+            .expect("simulation get must parse");
+        let export = Cli::try_parse_from(["fujicli", "simulation", "export", "c1", "-"])
+            .expect("simulation export must parse");
+
+        for command in [&list.command, &get.command, &export.command] {
+            let policy = command_policy(command);
+
+            assert_eq!(
+                policy.risk,
+                fujicli::policy::CommandRisk::ReadWithTemporaryMutation
+            );
+            assert_eq!(policy.emulation, EmulationPolicy::Forbidden);
+        }
     }
 
     #[test]

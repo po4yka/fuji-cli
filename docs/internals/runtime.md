@@ -253,6 +253,11 @@ then restores and verifies the exact raw snapshot. The batch API used by
 `simulation list` performs one outer snapshot/restore around the complete slot
 sequence and returns no partial list on failure.
 
+Risk classification is separate from emulation availability. The production
+CLI still rejects emulation for these reads because validated mutation
+preflight requires a native physical model binding; it must not offer an
+acknowledgement that can never reach an authorized camera session.
+
 `update_simulation` and `set_simulation` snapshot the selected profile, build a
 complete candidate, and pass both to the runtime transaction executor. The
 generated `SimulationTransactionProfile` adapter contributes the camera's
