@@ -14,7 +14,7 @@ pub struct DefaultCameraInfo {
     pub manufacturer: String,
     pub model: String,
     pub device_version: String,
-    pub serial_number: String,
+    pub serial_sha256: String,
     pub mode: UsbMode,
     pub battery: u32,
 }
@@ -24,7 +24,7 @@ impl fmt::Display for DefaultCameraInfo {
         writeln!(f, "Manufacturer: {}", self.manufacturer)?;
         writeln!(f, "Model: {}", self.model)?;
         writeln!(f, "Version: {}", self.device_version)?;
-        writeln!(f, "Serial Number: {}", self.serial_number)?;
+        writeln!(f, "Serial SHA-256: {}", self.serial_sha256)?;
         writeln!(f, "Mode: {}", self.mode)?;
         write!(f, "Battery: {}%", self.battery)
     }
@@ -43,12 +43,11 @@ pub struct CameraInfoListItem {
 
 impl From<&Camera> for CameraInfoListItem {
     fn from(camera: &Camera) -> Self {
-        let physical = camera.physical_usb_identity();
         Self {
-            name: camera.physical_model_name().unwrap_or("Unknown Camera"),
+            name: camera.name(),
             usb_id: camera.connected_usb_id(),
-            vendor_id: format!("0x{:04x}", physical.vendor),
-            product_id: format!("0x{:04x}", physical.product),
+            vendor_id: format!("0x{:04x}", camera.vendor_id()),
+            product_id: format!("0x{:04x}", camera.product_id()),
         }
     }
 }
@@ -60,5 +59,32 @@ impl fmt::Display for CameraInfoListItem {
             "{} ({}:{}) (USB ID: {})",
             self.name, self.vendor_id, self.product_id, self.usb_id
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::generated::options::UsbMode;
+
+    use super::DefaultCameraInfo;
+
+    #[test]
+    fn device_info_exposes_serial_fingerprint_instead_of_raw_serial() {
+        let info = DefaultCameraInfo {
+            manufacturer: "FUJIFILM".to_owned(),
+            model: "X-T5".to_owned(),
+            device_version: "4.31".to_owned(),
+            serial_sha256: "0".repeat(64),
+            mode: UsbMode::RawConversion,
+            battery: 100,
+        };
+
+        let display = info.to_string();
+        let json = serde_json::to_value(&info).unwrap();
+
+        assert!(display.contains("Serial SHA-256: "));
+        assert!(!display.contains("Serial Number"));
+        assert_eq!(json["serialSha256"], "0".repeat(64));
+        assert!(json.get("serialNumber").is_none());
     }
 }

@@ -15,15 +15,12 @@ Commands:
 ```
 
 This subcommand is `hide = true` in the CLI on purpose. It probes the camera for
-capabilities and is useful only when adding support for a new model. It is also
-excluded from normal builds. Build it deliberately with:
-
-```sh
-cargo build --features reverse-tools
-```
-
-Reverse commands always reject `--emulate`; they operate on the explicitly
-selected physical USB device.
+capabilities and is useful only when adding support for a new model. It is not
+included in default builds. Build it explicitly with `--features reverse-tools`;
+the resulting reverse-enabled binary exposes additional read-only discovery
+operations and must not be distributed as the normal user binary. Reverse
+commands reject `--emulate`; the feature does not provide a raw PTP or restore
+escape hatch around the centralized preflight.
 
 ## Prerequisites
 
@@ -42,7 +39,7 @@ selected physical USB device.
 ### Base Info
 
 ```sh
-fujicli device reverse info -vvv
+cargo run --features reverse-tools -- device reverse info -vvv
 ```
 
 A successful `GetDeviceInfo` operation and its response length show that the
@@ -54,44 +51,33 @@ succeed.
 ### Backup
 
 ```sh
-fujicli device reverse backup export /tmp/probe.fbk
-fujicli device reverse backup import /tmp/probe.fbk \
-  --device BUS.ADDRESS \
-  --yes \
-  --allow-unknown-camera
+cargo run --features reverse-tools -- device reverse backup export /tmp/probe.fbk
 ```
 
-Successful round-trip means the camera supports the standard Fuji backup
-commands. Mark `features: backup: true` in the camera spec. Backup bytes are
+A successful export is evidence for the read side of the standard Fuji backup
+exchange only. It is not enough to declare restore support. Backup bytes are
 written only to the selected output; they are never copied into diagnostic
-logs.
-
-Unknown-camera restore accepts a raw opaque payload. It has no envelope,
-integrity, model, firmware, serial, or native-format validation and no rollback.
-The two acknowledgement flags are intentionally mandatory, and the command
-reports the physical USB target on stderr before sending the backup. Do not use
-this escape hatch for normal restore or unattended automation; the main
-`fujicli backup` commands provide the integrity and compatibility boundary.
+logs. Restore must be described by an exact FML preflight profile and exercised
+through the normal guarded command.
 
 ### Simulation
 
 ```sh
-fujicli device reverse simulation
+cargo run --features reverse-tools -- device reverse simulation
 ```
 
-Iterates over every PTP property code known to the schema, across every
-custom-setting slot. Errors on individual codes are expected for cameras that
-don't expose a particular setting, so a partial result remains successful. If
-no property probe succeeds, the command exits unsuccessfully instead of
-reporting an empty discovery as success. The output tells you which props the
-camera actually responds to, which informs the `settings:` list for the camera's
-simulation block. Diagnostics omit the returned property bytes and
-custom-setting names.
+Reads every PTP property code known to the schema in the camera's current slot.
+Errors on individual codes are expected for cameras that don't expose a
+particular setting, so a partial result remains successful. If no property probe
+succeeds, the command exits unsuccessfully instead of reporting an empty
+discovery as success. The output informs the `settings:` list for the camera's
+simulation block. Diagnostics omit returned property bytes and custom-setting
+names.
 
-The reverse mode does **not** verify allowed values. Its simulation probe writes
-the temporary custom-setting selector before reading each slot, so it changes
-transient camera state even though it does not persist simulation properties.
-Writing persistent properties you don't understand is what backups exist for.
+Reverse mode does **not** verify allowed values and deliberately does not write
+the custom-setting selector. Discovering other slots or mutating an unknown
+property requires a separately reviewed probe and physical-device recovery
+plan; it is not exposed by this CLI.
 
 ## Reversing Render Profiles
 

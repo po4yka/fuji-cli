@@ -5,13 +5,10 @@ pub mod image;
 pub mod simulation;
 
 use clap::{ArgAction, Args, Parser, Subcommand};
+use fujicli::policy::{CommandRisk, EmulationAcknowledgement, ModelBindingKind, authorize};
 
 use backup::BackupCmd;
 use device::DeviceCmd;
-use fujicli::policy::{
-    CommandRisk, CommandSpec, EmulationAcknowledgement, EmulationPolicy, ModelBindingKind,
-    authorize,
-};
 use image::ImageCmd;
 use simulation::SimulationCmd;
 
@@ -49,10 +46,6 @@ pub struct GlobalOptions {
     /// Treat device as a different model using <VENDOR_ID>:<PRODUCT_ID>
     #[arg(long, global = true)]
     pub emulate: Option<Identity>,
-
-    /// Allow emulation to change a temporary camera selector while reading
-    #[arg(long, global = true, requires = "emulate")]
-    pub allow_emulated_transient_write: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -76,6 +69,7 @@ pub enum Commands {
 
 pub fn handle(cli: Cli) -> Result<(), anyhow::Error> {
     authorize_command(&cli.command, &cli.options)?;
+
     let () = match cli.command {
         Commands::Device(device_cmd) => device::handle(device_cmd, cli.options)?,
         Commands::Backup(backup_cmd) => backup::handle(backup_cmd, cli.options)?,
@@ -92,50 +86,27 @@ fn authorize_command(command: &Commands, options: &GlobalOptions) -> anyhow::Res
     let binding = if options.emulate.is_some() {
         ModelBindingKind::Emulated
     } else {
-        ModelBindingKind::Native
+        return Ok(());
     };
-    let acknowledgement = if options.allow_emulated_transient_write {
-        EmulationAcknowledgement::Provided
-    } else {
-        EmulationAcknowledgement::NotProvided
-    };
-    let spec = match command {
-        Commands::Device(DeviceCmd::List) => CommandSpec {
-            risk: CommandRisk::ReadOnly,
-            emulation: EmulationPolicy::Forbidden,
-        },
-        Commands::Device(DeviceCmd::Info) => CommandSpec {
-            risk: CommandRisk::ReadOnly,
-            emulation: EmulationPolicy::Allowed,
-        },
-        #[cfg(feature = "reverse-tools")]
-        Commands::Device(DeviceCmd::Reverse(command)) => CommandSpec {
-            risk: command.command_risk(),
-            emulation: EmulationPolicy::Forbidden,
-        },
+    let risk = match command {
+        Commands::Simulation(SimulationCmd::Set { .. } | SimulationCmd::Import { .. }) => {
+            CommandRisk::PersistentSettingsWrite
+        }
         Commands::Simulation(
             SimulationCmd::List | SimulationCmd::Get { .. } | SimulationCmd::Export { .. },
-        ) => CommandSpec {
-            risk: CommandRisk::TransientStateChange,
-            emulation: EmulationPolicy::RequireTransientWriteAcknowledgement,
-        },
-        Commands::Simulation(SimulationCmd::Set { .. } | SimulationCmd::Import { .. }) => {
-            CommandSpec {
-                risk: CommandRisk::PersistentSettingsWrite,
-                emulation: EmulationPolicy::Forbidden,
-            }
+        ) => CommandRisk::EmulationForbidden,
+        Commands::Device(DeviceCmd::Info) => CommandRisk::ReadOnly,
+        Commands::Device(DeviceCmd::List) => CommandRisk::EmulationForbidden,
+        #[cfg(feature = "reverse-tools")]
+        Commands::Device(DeviceCmd::Reverse(_)) => CommandRisk::EmulationForbidden,
+        Commands::Backup(BackupCmd::Import(_)) => CommandRisk::OpaqueRestore,
+        Commands::Backup(BackupCmd::Export { .. } | BackupCmd::Inspect { .. }) => {
+            CommandRisk::EmulationForbidden
         }
-        Commands::Backup(command) => CommandSpec {
-            risk: command.command_risk(),
-            emulation: EmulationPolicy::Forbidden,
-        },
-        Commands::Image(ImageCmd::Render { .. }) => CommandSpec {
-            risk: CommandRisk::DestructiveRecoverySensitive,
-            emulation: EmulationPolicy::Forbidden,
-        },
+        Commands::Image(_) => CommandRisk::DestructiveRecoverySensitive,
     };
 
-    authorize(binding, spec, acknowledgement)
+    authorize(binding, risk, EmulationAcknowledgement::NotProvided)
 }
 
 #[cfg(test)]
@@ -238,26 +209,17 @@ mod tests {
     }
 
     #[test]
-    fn transient_write_acknowledgement_requires_emulation() {
-        let error = Cli::try_parse_from([
-            "fujicli",
-            "simulation",
-            "get",
-            "c1",
-            "--allow-emulated-transient-write",
-        ])
-        .expect_err("transient acknowledgement must be scoped to --emulate");
+    #[cfg(not(feature = "reverse-tools"))]
+    fn reverse_commands_are_absent_from_default_builds() {
+        let error = Cli::try_parse_from(["fujicli", "device", "reverse", "info"])
+            .expect_err("default builds must not expose reverse commands");
 
-        assert_eq!(
-            error.kind(),
-            clap::error::ErrorKind::MissingRequiredArgument
-        );
-        assert!(error.to_string().contains("--emulate"));
+        assert_eq!(error.kind(), clap::error::ErrorKind::InvalidSubcommand);
     }
 
-    #[cfg(feature = "reverse-tools")]
     #[test]
-    fn reverse_backup_import_requires_unknown_camera_opt_in() {
+    #[cfg(feature = "reverse-tools")]
+    fn reverse_backup_import_is_not_exposed_as_a_preflight_bypass() {
         let error = Cli::try_parse_from([
             "fujicli",
             "device",
@@ -269,11 +231,8 @@ mod tests {
             "1.2",
             "--yes",
         ])
-        .expect_err("reverse restore must require --allow-unknown-camera");
+        .expect_err("reverse restore must not bypass centralized preflight");
 
-        assert_eq!(
-            error.kind(),
-            clap::error::ErrorKind::MissingRequiredArgument
-        );
+        assert_eq!(error.kind(), clap::error::ErrorKind::InvalidSubcommand);
     }
 }

@@ -4,6 +4,7 @@ pub mod features;
 include!(concat!(env!("OUT_DIR"), "/generated_module.rs"));
 pub mod input;
 pub mod policy;
+pub mod preflight;
 pub mod ptp;
 
 #[cfg(test)]
@@ -29,8 +30,11 @@ use crate::{
         simulations::SimulationBase,
     },
     policy::{
-        CommandRisk, CommandSpec, EmulationAcknowledgement, EmulationPolicy, ModelBindingKind,
-        authorize,
+        CommandRisk, EmulationAcknowledgement, LogicalCameraIdentity, ModelBindingKind,
+        PhysicalUsbIdentity, SerialFingerprint, authorize,
+    },
+    preflight::{
+        BackupRestore, RawConversion, SimulationAccess, SimulationWrite, ValidatedCameraSession,
     },
 };
 
@@ -58,19 +62,6 @@ pub struct Camera {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct PhysicalUsbIdentity {
-    pub vendor: u16,
-    pub product: u16,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct LogicalCameraIdentity {
-    pub name: &'static str,
-    pub vendor: u16,
-    pub product: u16,
-}
-
-#[derive(Clone, Copy, Debug)]
 pub enum CameraMode {
     Supported,
     Emulated {
@@ -84,61 +75,71 @@ pub enum CameraMode {
 
 #[derive(Clone, Copy)]
 struct ResolvedCamera {
-    definition: &'static SupportedCamera,
+    factory: CameraFactory,
+    logical_identity: LogicalCameraIdentity,
     binding: ModelBindingKind,
     acknowledgement: EmulationAcknowledgement,
 }
 
-fn find_supported(identity: PhysicalUsbIdentity) -> Option<&'static SupportedCamera> {
+fn supported_camera(identity: PhysicalUsbIdentity) -> Option<&'static SupportedCamera> {
     SUPPORTED
         .iter()
-        .find(|camera| camera.vendor == identity.vendor && camera.product == identity.product)
+        .find(|camera| camera.vendor == identity.vendor_id && camera.product == identity.product_id)
 }
 
-#[cfg(feature = "reverse-tools")]
-fn authorize_reverse_transport(binding: ModelBindingKind) -> anyhow::Result<()> {
-    ensure!(
-        binding == ModelBindingKind::Unknown,
-        "raw reverse transport requires an unknown-camera session"
-    );
-    Ok(())
-}
-
-fn resolve_supported_camera(
-    physical: PhysicalUsbIdentity,
+fn resolve_camera(
     mode: CameraMode,
-) -> anyhow::Result<Option<ResolvedCamera>> {
+    physical_identity: PhysicalUsbIdentity,
+) -> anyhow::Result<ResolvedCamera> {
+    let native = supported_camera(physical_identity);
+
     match mode {
-        #[cfg(feature = "reverse-tools")]
-        CameraMode::Unknown => Ok(None),
         CameraMode::Supported => {
-            let definition =
-                find_supported(physical).ok_or_else(|| anyhow!(ERROR_DEVICE_NOT_SUPPORTED))?;
-            Ok(Some(ResolvedCamera {
-                definition,
+            let camera = native.ok_or_else(|| anyhow!(ERROR_DEVICE_NOT_SUPPORTED))?;
+            Ok(ResolvedCamera {
+                factory: camera.camera_factory,
+                logical_identity: LogicalCameraIdentity {
+                    vendor_id: camera.vendor,
+                    product_id: camera.product,
+                },
                 binding: ModelBindingKind::Native,
                 acknowledgement: EmulationAcknowledgement::NotProvided,
-            }))
+            })
         }
         CameraMode::Emulated {
             vendor,
             product,
             acknowledgement,
         } => {
-            ensure!(
-                find_supported(physical).is_some(),
-                "Physical USB device {:04x}:{:04x} is not a supported camera",
-                physical.vendor,
-                physical.product
+            anyhow::ensure!(
+                native.is_some(),
+                "--emulate requires a physically connected supported camera"
             );
-            let definition = find_supported(PhysicalUsbIdentity { vendor, product })
-                .ok_or_else(|| anyhow!(ERROR_DEVICE_NOT_SUPPORTED))?;
-            Ok(Some(ResolvedCamera {
-                definition,
+            let camera = supported_camera(PhysicalUsbIdentity {
+                vendor_id: vendor,
+                product_id: product,
+            })
+            .ok_or_else(|| anyhow!(ERROR_DEVICE_NOT_SUPPORTED))?;
+            Ok(ResolvedCamera {
+                factory: camera.camera_factory,
+                logical_identity: LogicalCameraIdentity {
+                    vendor_id: camera.vendor,
+                    product_id: camera.product,
+                },
                 binding: ModelBindingKind::Emulated,
                 acknowledgement,
-            }))
+            })
         }
+        #[cfg(feature = "reverse-tools")]
+        CameraMode::Unknown => Ok(ResolvedCamera {
+            factory: UNKNOWN_CAMERA.camera_factory,
+            logical_identity: LogicalCameraIdentity {
+                vendor_id: physical_identity.vendor_id,
+                product_id: physical_identity.product_id,
+            },
+            binding: ModelBindingKind::Unknown,
+            acknowledgement: EmulationAcknowledgement::NotProvided,
+        }),
     }
 }
 
@@ -161,31 +162,18 @@ impl Camera {
         device: &rusb::Device<GlobalContext>,
     ) -> anyhow::Result<Self> {
         let descriptor = device.device_descriptor()?;
+
         let physical_identity = PhysicalUsbIdentity {
-            vendor: descriptor.vendor_id(),
-            product: descriptor.product_id(),
+            vendor_id: descriptor.vendor_id(),
+            product_id: descriptor.product_id(),
         };
-        let resolved = resolve_supported_camera(physical_identity, mode)?;
-        let (definition, binding, emulation_acknowledgement, factory) = match resolved {
-            Some(resolved) => {
-                debug!("Using logical camera model: {}", resolved.definition.name);
-                (
-                    resolved.definition,
-                    resolved.binding,
-                    resolved.acknowledgement,
-                    resolved.definition.camera_factory,
-                )
-            }
-            #[cfg(feature = "reverse-tools")]
-            None => (
-                &UNKNOWN_CAMERA,
-                ModelBindingKind::Unknown,
-                EmulationAcknowledgement::NotProvided,
-                UNKNOWN_CAMERA.camera_factory,
-            ),
-            #[cfg(not(feature = "reverse-tools"))]
-            None => return Err(anyhow!("camera definition resolution failed")),
-        };
+        let resolved = resolve_camera(mode, physical_identity)?;
+        if let Some(camera) = supported_camera(PhysicalUsbIdentity {
+            vendor_id: resolved.logical_identity.vendor_id,
+            product_id: resolved.logical_identity.product_id,
+        }) {
+            debug!("Selected logical camera model: {}", camera.name);
+        }
 
         let bus = device.bus_number();
         let address = device.address();
@@ -222,7 +210,7 @@ impl Camera {
         debug!("Found Bulk Out endpoint");
 
         let transaction_id = 0;
-        let r#impl = (factory)();
+        let r#impl = (resolved.factory)();
         let chunk_size = r#impl.chunk_size();
         validate_bulk_read_geometry(chunk_size, bulk_in_max_packet_size)?;
 
@@ -236,6 +224,7 @@ impl Camera {
             transaction_id,
             chunk_size,
             poisoned: false,
+            mutation_authorization: None,
         };
 
         ptp.open_session(SESSION)?;
@@ -244,13 +233,9 @@ impl Camera {
             ptp,
             r#impl,
             physical_identity,
-            logical_identity: LogicalCameraIdentity {
-                name: definition.name,
-                vendor: definition.vendor,
-                product: definition.product,
-            },
-            binding,
-            emulation_acknowledgement,
+            logical_identity: resolved.logical_identity,
+            binding: resolved.binding,
+            emulation_acknowledgement: resolved.acknowledgement,
             session_open: true,
         })
     }
@@ -278,6 +263,33 @@ impl Camera {
     #[cfg(feature = "reverse-tools")]
     pub fn open_unknown(device: &rusb::Device<GlobalContext>) -> anyhow::Result<Self> {
         Self::open_with(CameraMode::Unknown, device)
+    }
+
+    #[doc(hidden)]
+    #[cfg(feature = "reverse-tools")]
+    pub fn reverse_device_info(&mut self) -> anyhow::Result<ptp::DeviceInfo> {
+        self.ptp.get_info()
+    }
+
+    #[doc(hidden)]
+    #[cfg(feature = "reverse-tools")]
+    pub fn reverse_device_property(&mut self, code: u16) -> anyhow::Result<Vec<u8>> {
+        self.ptp.get_prop_raw(code)
+    }
+
+    #[doc(hidden)]
+    #[cfg(feature = "reverse-tools")]
+    pub fn reverse_export_backup_raw(&mut self) -> anyhow::Result<Vec<u8>> {
+        self.ptp.send(
+            ptp::CommandCode::GetObjectInfo,
+            &features::backup::EXPORT_OBJECT_INFO_HANDLE,
+            None,
+        )?;
+        self.ptp.send(
+            ptp::CommandCode::GetObject,
+            &features::backup::OBJECT_HANDLE,
+            None,
+        )
     }
 
     pub fn close(mut self) -> anyhow::Result<()> {
@@ -328,44 +340,30 @@ pub struct SupportedCamera {
     pub name: &'static str,
     pub vendor: u16,
     pub product: u16,
+    pub ptp_identity: Option<generated::cameras::CameraPtpIdentity>,
+    pub preflight_profiles: &'static [generated::cameras::CameraPreflightProfile],
     pub camera_factory: CameraFactory,
 }
 
 impl Camera {
-    fn authorize(&self, risk: CommandRisk, emulation: EmulationPolicy) -> anyhow::Result<()> {
-        authorize(
-            self.binding,
-            CommandSpec { risk, emulation },
-            self.emulation_acknowledgement,
-        )
+    pub fn name(&self) -> &'static str {
+        self.r#impl.camera_definition().name
     }
 
-    pub fn logical_name(&self) -> &'static str {
-        self.logical_identity.name
+    pub const fn vendor_id(&self) -> u16 {
+        self.physical_identity.vendor_id
     }
 
-    pub fn logical_vendor_id(&self) -> u16 {
-        self.logical_identity.vendor
-    }
-
-    pub fn logical_product_id(&self) -> u16 {
-        self.logical_identity.product
+    pub const fn product_id(&self) -> u16 {
+        self.physical_identity.product_id
     }
 
     pub const fn physical_usb_identity(&self) -> PhysicalUsbIdentity {
         self.physical_identity
     }
 
-    pub fn physical_model_name(&self) -> Option<&'static str> {
-        find_supported(self.physical_identity).map(|camera| camera.name)
-    }
-
     pub const fn logical_camera_identity(&self) -> LogicalCameraIdentity {
         self.logical_identity
-    }
-
-    pub const fn model_binding_kind(&self) -> ModelBindingKind {
-        self.binding
     }
 
     pub fn connected_usb_id(&self) -> String {
@@ -373,22 +371,49 @@ impl Camera {
     }
 
     pub fn get_info(&mut self) -> anyhow::Result<Box<dyn CameraInfo>> {
-        self.authorize(CommandRisk::ReadOnly, EmulationPolicy::Allowed)?;
+        self.authorize(CommandRisk::ReadOnly)?;
         self.r#impl.get_info(&mut self.ptp)
     }
 
+    pub fn preflight_backup_restore(
+        &mut self,
+        serial_binding: &SerialFingerprint,
+    ) -> anyhow::Result<ValidatedCameraSession<'_, BackupRestore>> {
+        preflight::run(self, Some(serial_binding))
+    }
+
+    pub fn preflight_simulation_access(
+        &mut self,
+    ) -> anyhow::Result<ValidatedCameraSession<'_, SimulationAccess>> {
+        preflight::run(self, None)
+    }
+
+    pub fn preflight_simulation_write(
+        &mut self,
+        serial_binding: &SerialFingerprint,
+    ) -> anyhow::Result<ValidatedCameraSession<'_, SimulationWrite>> {
+        preflight::run(self, Some(serial_binding))
+    }
+
+    pub fn preflight_raw_conversion(
+        &mut self,
+        serial_binding: &SerialFingerprint,
+    ) -> anyhow::Result<ValidatedCameraSession<'_, RawConversion>> {
+        preflight::run(self, Some(serial_binding))
+    }
+
     pub fn backup_identity(&mut self) -> anyhow::Result<BackupIdentity> {
-        self.authorize(CommandRisk::ReadOnly, EmulationPolicy::Forbidden)?;
+        self.authorize(CommandRisk::EmulationForbidden)?;
         let info = self.ptp.get_info()?;
         ensure_backup_identity_fields(&info)?;
 
-        let physical_definition = find_supported(self.physical_identity)
+        let physical_camera = supported_camera(self.physical_identity)
             .ok_or_else(|| anyhow!(ERROR_DEVICE_NOT_SUPPORTED))?;
 
         Ok(BackupIdentity {
-            camera_name: physical_definition.name.to_owned(),
-            vendor_id: self.physical_identity.vendor,
-            product_id: self.physical_identity.product,
+            camera_name: physical_camera.name.to_owned(),
+            vendor_id: self.physical_identity.vendor_id,
+            product_id: self.physical_identity.product_id,
             manufacturer: info.manufacturer,
             model: info.model,
             firmware: info.device_version,
@@ -397,7 +422,13 @@ impl Camera {
     }
 
     pub fn export_backup(&mut self, purpose: BackupPurpose) -> anyhow::Result<BackupArtifact> {
-        self.authorize(CommandRisk::ReadOnly, EmulationPolicy::Forbidden)?;
+        self.export_backup_unchecked(purpose)
+    }
+
+    pub(crate) fn export_backup_unchecked(
+        &mut self,
+        purpose: BackupPurpose,
+    ) -> anyhow::Result<BackupArtifact> {
         let identity = self.backup_identity()?;
         if let Some(backups) = self.r#impl.as_backup_manager() {
             let payload = backups.export_backup(&mut self.ptp)?;
@@ -412,19 +443,15 @@ impl Camera {
         artifact: &BackupArtifact,
         expected_target_serial_sha256: Option<&str>,
     ) -> anyhow::Result<BackupIdentity> {
-        self.authorize(CommandRisk::ReadOnly, EmulationPolicy::Forbidden)?;
         let target = self.backup_identity()?;
         artifact.validate_target(&target, expected_target_serial_sha256)?;
         Ok(target)
     }
 
-    pub fn import_backup(
+    pub(crate) fn import_backup_unchecked(
         &mut self,
         artifact: &BackupArtifact,
-        expected_target_serial_sha256: Option<&str>,
     ) -> anyhow::Result<()> {
-        self.authorize(CommandRisk::OpaqueRestore, EmulationPolicy::Forbidden)?;
-        drop(self.validate_backup(artifact, expected_target_serial_sha256)?);
         if let Some(backups) = self.r#impl.as_backup_manager() {
             backups.import_backup(&mut self.ptp, artifact)
         } else {
@@ -456,11 +483,10 @@ impl Camera {
         }
     }
 
-    pub fn get_simulation(&mut self, slot: CustomSetting) -> anyhow::Result<Box<dyn Simulation>> {
-        self.authorize(
-            CommandRisk::TransientStateChange,
-            EmulationPolicy::RequireTransientWriteAcknowledgement,
-        )?;
+    pub(crate) fn get_simulation_unchecked(
+        &mut self,
+        slot: CustomSetting,
+    ) -> anyhow::Result<Box<dyn Simulation>> {
         if let Some(sim) = self.r#impl.as_simulation_manager() {
             sim.get_simulation(&mut self.ptp, slot)
         } else {
@@ -468,15 +494,11 @@ impl Camera {
         }
     }
 
-    pub fn update_simulation(
+    pub(crate) fn update_simulation_unchecked(
         &mut self,
         slot: CustomSetting,
         partial: SimulationBase,
     ) -> anyhow::Result<()> {
-        self.authorize(
-            CommandRisk::PersistentSettingsWrite,
-            EmulationPolicy::Forbidden,
-        )?;
         if let Some(sim) = self.r#impl.as_simulation_manager() {
             sim.update_simulation(&mut self.ptp, slot, partial)
         } else {
@@ -484,15 +506,11 @@ impl Camera {
         }
     }
 
-    pub fn set_simulation(
+    pub(crate) fn set_simulation_unchecked(
         &mut self,
         slot: CustomSetting,
         simulation: &dyn Simulation,
     ) -> anyhow::Result<()> {
-        self.authorize(
-            CommandRisk::PersistentSettingsWrite,
-            EmulationPolicy::Forbidden,
-        )?;
         if let Some(sim) = self.r#impl.as_simulation_manager() {
             sim.set_simulation(&mut self.ptp, slot, simulation)
         } else {
@@ -500,16 +518,12 @@ impl Camera {
         }
     }
 
-    pub fn render(
+    pub(crate) fn render_unchecked(
         &mut self,
         image: &[u8],
         partial: RenderBase,
         draft: bool,
     ) -> anyhow::Result<Vec<u8>> {
-        self.authorize(
-            CommandRisk::DestructiveRecoverySensitive,
-            EmulationPolicy::Forbidden,
-        )?;
         if let Some(renders) = self.r#impl.as_render_manager() {
             renders.render(&mut self.ptp, image, partial, draft)
         } else {
@@ -517,11 +531,8 @@ impl Camera {
         }
     }
 
-    #[cfg(feature = "reverse-tools")]
-    #[doc(hidden)]
-    pub fn reverse_ptp(&mut self) -> anyhow::Result<&mut Ptp> {
-        authorize_reverse_transport(self.binding)?;
-        Ok(&mut self.ptp)
+    fn authorize(&self, risk: CommandRisk) -> anyhow::Result<()> {
+        authorize(self.binding, risk, self.emulation_acknowledgement)
     }
 }
 

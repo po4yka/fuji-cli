@@ -174,12 +174,6 @@ fn import_validated_backup_with_transport(
     import_backup_with_transport(transport, &object_info, artifact.payload())
 }
 
-pub fn import_backup_over_ptp_unchecked(ptp: &mut Ptp, buffer: &[u8]) -> anyhow::Result<()> {
-    let object_info = BackupObjectInfo::new(buffer.len())?;
-    let object_info = crate::ptp::codec::encode(&object_info)?;
-    import_backup_with_transport(ptp, &object_info, buffer)
-}
-
 // NOTE: Naively assuming that all cameras backup/restore in the same way.
 pub trait CameraBackupManager: CameraBase {
     fn export_backup(&self, ptp: &mut Ptp) -> anyhow::Result<Vec<u8>> {

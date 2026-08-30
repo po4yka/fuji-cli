@@ -13,7 +13,9 @@ cameras: [string]: #Camera
 
 		_generation: generations["\(generation)"].spec
 
-		usb: #USB
+		usb:  #USB
+		ptp?: #PTPIdentity
+		preflight?: [...#PreflightProfile]
 
 		features?: #Features
 
@@ -24,6 +26,38 @@ cameras: [string]: #Camera
 			vendor_id:  uint16 | *#FujifilmVendorID
 			product_id: uint16
 			chunk_size: uint | *#DefaultCameraUSBChunkSize
+		}
+
+		#PTPIdentity: {
+			manufacturer: string & =~".+"
+			model:        string & =~".+"
+		}
+
+		#PreflightProfile: {
+			operation: "backup_restore" | "simulation_write" | "raw_conversion"
+			status:    "verified" | "unverified"
+			firmware:  string & =~".+"
+
+			minimum_battery_percent: uint8 & <=100
+			allowed_usb_modes: [...uint32]
+			required_operations: [uint16, ...uint16]
+			required_properties: [#RequiredProperty, ...#RequiredProperty]
+
+			if status == "verified" {
+				allowed_usb_modes: [uint32, ...uint32]
+			}
+
+			#RequiredProperty: {
+				code:       uint16
+				data_type?: uint16
+				writable:   bool
+			}
+
+			_validation: {
+				allowed_usb_modes:   list.UniqueItems & allowed_usb_modes
+				required_operations: list.UniqueItems & required_operations
+				required_properties: list.UniqueItems & [for property in required_properties {property.code}]
+			}
 		}
 
 		#Features: {
@@ -328,6 +362,63 @@ cameras: {
 				product_id: 0x02fc
 				chunk_size: 16128 * 1024
 			}
+			ptp: {
+				manufacturer: "FUJIFILM"
+				model:        "X-T5"
+			}
+
+			_preflight_common_properties: [
+				{code: 0xD16E, data_type: 0x0004, writable: false},
+				{code: 0xD36B, data_type: 0xFFFF, writable: false},
+			]
+			_preflight_simulation_properties: list.Concat([
+				_preflight_common_properties,
+				[{code: 0xD18C, data_type: 0x0004, writable: true}],
+				[for setting in features.simulation.settings {
+					{code: options[setting.ref].spec.encoding.prop_code, writable: true}
+				}],
+			])
+			_preflight_render_slot_properties: list.Concat([
+				_preflight_common_properties,
+				[{code: 0xD18C, data_type: 0x0004, writable: true}],
+				[for setting in features.simulation.settings {
+					{code: options[setting.ref].spec.encoding.prop_code, writable: false}
+				}],
+				[
+					{code: 0xD183, data_type: 0x0004, writable: true},
+					{code: 0xD185, writable: true},
+				],
+			])
+
+			preflight: [
+				{
+					operation:               "backup_restore"
+					status:                  "verified"
+					firmware:                "4.31"
+					minimum_battery_percent: 100
+					allowed_usb_modes: [0x6]
+					required_operations: [0x1001, 0x1008, 0x1009, 0x100C, 0x100D, 0x1014, 0x1015]
+					required_properties: _preflight_common_properties
+				},
+				{
+					operation:               "simulation_write"
+					status:                  "verified"
+					firmware:                "4.31"
+					minimum_battery_percent: 100
+					allowed_usb_modes: [0x6]
+					required_operations: [0x1001, 0x1014, 0x1015, 0x1016]
+					required_properties: _preflight_simulation_properties
+				},
+				{
+					operation:               "raw_conversion"
+					status:                  "verified"
+					firmware:                "4.31"
+					minimum_battery_percent: 100
+					allowed_usb_modes: [0x6]
+					required_operations: [0x1001, 0x1007, 0x1009, 0x100B, 0x1014, 0x1015, 0x1016, 0x900C, 0x900D]
+					required_properties: _preflight_render_slot_properties
+				},
+			]
 
 			features: {
 				backup: true

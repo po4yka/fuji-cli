@@ -1,21 +1,17 @@
 use anyhow::ensure;
 use clap::{Args, Subcommand};
-#[cfg(feature = "reverse-tools")]
-use fujicli::features::backup::MAX_BACKUP_PAYLOAD_BYTES;
 use fujicli::{
     features::backup::{
-        BACKUP_ARTIFACT_FORMAT_VERSION, BackupArtifact, BackupPurpose, MAX_BACKUP_ARTIFACT_BYTES,
+        BACKUP_ARTIFACT_FORMAT_VERSION, BackupArtifact, BackupIdentity, BackupPurpose,
+        MAX_BACKUP_ARTIFACT_BYTES,
     },
-    policy::CommandRisk,
+    policy::{EmulationAcknowledgement, SerialFingerprint},
 };
 use log::warn;
 
 use crate::cli::{GlobalOptions, common::usb};
 
 use super::common::file::{Input, Output, write_stdout_line};
-
-#[cfg(feature = "reverse-tools")]
-pub const MAX_BACKUP_INPUT_BYTES: usize = MAX_BACKUP_PAYLOAD_BYTES;
 
 fn ensure_import_confirmation(yes: bool, dry_run: bool, emulated: bool) -> anyhow::Result<()> {
     ensure!(
@@ -67,18 +63,6 @@ fn ensure_import_input_policy(
     Ok(())
 }
 
-#[cfg(any(feature = "reverse-tools", test))]
-pub fn backup_import_target_warning(camera_name: &str, usb_id: &str, emulated: bool) -> String {
-    let mode = if emulated {
-        " using an emulated camera model"
-    } else {
-        ""
-    };
-    format!(
-        "Restoring opaque backup to {camera_name} at USB {usb_id}{mode}; a failed restore may leave camera state unknown"
-    )
-}
-
 fn validated_backup_import_target_warning(camera_name: &str, usb_id: &str) -> String {
     format!(
         "Restoring an integrity-checked backup artifact payload to {camera_name} at USB {usb_id}; a wire failure may leave camera state unknown and must not be retried automatically"
@@ -93,6 +77,42 @@ fn restore_after_recovery_saved(
 ) -> anyhow::Result<()> {
     save_recovery(recovery.as_bytes())?;
     restore(backup)
+}
+
+fn report_dry_run(
+    backup: &BackupArtifact,
+    target: &BackupIdentity,
+    explicitly_bound: bool,
+    json: bool,
+) -> anyhow::Result<()> {
+    backup.validate_target_compatibility(target)?;
+    let serial_bound =
+        target.serial_sha256 == backup.manifest().source.serial_sha256 || explicitly_bound;
+    if json {
+        let result = serde_json::json!({
+            "compatible": true,
+            "serialBound": serial_bound,
+            "artifactSha256": backup.fingerprint(),
+            "target": target,
+        });
+        write_stdout_line(format_args!("{}", serde_json::to_string_pretty(&result)?))?;
+    } else {
+        write_stdout_line(format_args!(
+            "Compatible target: {} ({}, firmware {})\nTarget serial SHA-256: {}\nArtifact SHA-256: {}",
+            target.camera_name,
+            target.model,
+            target.firmware,
+            target.serial_sha256,
+            backup.fingerprint(),
+        ))?;
+        if !serial_bound {
+            write_stdout_line(format_args!(
+                "Destructive import requires --target-serial-sha256 {}",
+                target.serial_sha256
+            ))?;
+        }
+    }
+    Ok(())
 }
 
 #[derive(Args, Debug, Clone)]
@@ -145,30 +165,23 @@ pub enum BackupCmd {
     Import(BackupImportArgs),
 }
 
-impl BackupCmd {
-    pub(super) const fn command_risk(&self) -> CommandRisk {
-        match self {
-            Self::Export { .. } | Self::Inspect { .. } => CommandRisk::ReadOnly,
-            Self::Import(args) if args.dry_run => CommandRisk::ReadOnly,
-            Self::Import(_) => CommandRisk::OpaqueRestore,
-        }
-    }
-}
-
 #[expect(
     clippy::needless_pass_by_value,
     reason = "command handlers consume parsed CLI values"
 )]
 fn handle_export(options: GlobalOptions, output: Output) -> anyhow::Result<()> {
-    let device = options.device;
-    let emulate = options.emulate;
-    let json = options.json;
+    let GlobalOptions {
+        device,
+        emulate,
+        json,
+        ..
+    } = options;
     ensure!(
         emulate.is_none(),
         "safe backup export does not support --emulate; use device reverse only for explicit protocol research"
     );
 
-    let mut camera = usb::get_camera(device, emulate, false)?;
+    let mut camera = usb::get_camera(device, emulate, EmulationAcknowledgement::NotProvided)?;
 
     let backup = camera.export_backup(BackupPurpose::Portable)?;
     let artifact_sha256 = backup.fingerprint();
@@ -239,9 +252,12 @@ fn handle_import(options: GlobalOptions, args: BackupImportArgs) -> anyhow::Resu
         target_serial_sha256,
         allow_stdin,
     } = args;
-    let device = options.device;
-    let emulate = options.emulate;
-    let json = options.json;
+    let GlobalOptions {
+        device,
+        emulate,
+        json,
+        ..
+    } = options;
     let emulated = emulate.is_some();
     ensure_import_confirmation(yes, dry_run, emulated)?;
     if let Some(recovery_backup) = &recovery_backup {
@@ -272,59 +288,39 @@ fn handle_import(options: GlobalOptions, args: BackupImportArgs) -> anyhow::Resu
     if let Some(expected) = &expect_sha256 {
         backup.verify_fingerprint(expected)?;
     }
-    let mut camera = usb::get_camera(device, emulate, false)?;
+    let mut camera = usb::get_camera(device, emulate, EmulationAcknowledgement::NotProvided)?;
+    let usb_id = camera.connected_usb_id();
+    let binding = target_serial_sha256
+        .as_deref()
+        .unwrap_or(&backup.manifest().source.serial_sha256)
+        .parse::<SerialFingerprint>()?;
+    let mut session = camera.preflight_backup_restore(&binding)?;
     if dry_run {
-        let target = camera.backup_identity()?;
-        backup.validate_target_compatibility(&target)?;
+        let target = session.target_identity();
         if target_serial_sha256.is_some() {
             backup.validate_target(&target, target_serial_sha256.as_deref())?;
         }
-        let serial_bound = target.serial_sha256 == backup.manifest().source.serial_sha256
-            || target_serial_sha256.is_some();
-        if json {
-            let result = serde_json::json!({
-                "compatible": true,
-                "serialBound": serial_bound,
-                "artifactSha256": backup.fingerprint(),
-                "target": target,
-            });
-            write_stdout_line(format_args!("{}", serde_json::to_string_pretty(&result)?))?;
-        } else {
-            write_stdout_line(format_args!(
-                "Compatible target: {} ({}, firmware {})\nTarget serial SHA-256: {}\nArtifact SHA-256: {}",
-                target.camera_name,
-                target.model,
-                target.firmware,
-                target.serial_sha256,
-                backup.fingerprint(),
-            ))?;
-            if !serial_bound {
-                write_stdout_line(format_args!(
-                    "Destructive import requires --target-serial-sha256 {}",
-                    target.serial_sha256
-                ))?;
-            }
-        }
-        return Ok(());
+        return report_dry_run(&backup, &target, target_serial_sha256.is_some(), json);
     }
-    drop(camera.validate_backup(&backup, target_serial_sha256.as_deref())?);
+    backup.validate_target(&session.target_identity(), target_serial_sha256.as_deref())?;
     let recovery_backup = recovery_backup
         .ok_or_else(|| anyhow::anyhow!("backup import requires --recovery-backup"))?;
-    let recovery = camera.export_backup(BackupPurpose::Recovery)?;
+    let recovery = session.export_recovery()?;
+    let camera_name = session.evidence().camera_name;
     restore_after_recovery_saved(
         &recovery,
         &backup,
         |bytes| recovery_backup.write_all_new(bytes),
         |backup| {
-            let usb_id = camera.connected_usb_id();
-            let warning = validated_backup_import_target_warning(camera.logical_name(), &usb_id);
-            warn!("{warning}");
-            camera.import_backup(backup, target_serial_sha256.as_deref())
+            warn!(
+                "{}",
+                validated_backup_import_target_warning(camera_name, &usb_id)
+            );
+            session.restore(backup, target_serial_sha256.as_deref())
         },
     )?;
     warn!(
-        "PTP restore was accepted by {}; verify settings on the camera after it reconnects",
-        camera.logical_name()
+        "PTP restore was accepted by {camera_name}; verify settings on the camera after it reconnects"
     );
 
     Ok(())
@@ -341,8 +337,8 @@ pub fn handle(cmd: BackupCmd, options: GlobalOptions) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ImportMode, ImportSource, StdinPermission, backup_import_target_warning,
-        ensure_import_confirmation, ensure_import_input_policy, restore_after_recovery_saved,
+        ImportMode, ImportSource, StdinPermission, ensure_import_confirmation,
+        ensure_import_input_policy, restore_after_recovery_saved,
     };
     use fujicli::features::backup::{BackupArtifact, BackupIdentity, BackupPurpose, sha256_hex};
 
@@ -352,15 +348,6 @@ mod tests {
             .expect_err("safe import must not authorize an emulated restore target");
 
         assert!(error.to_string().contains("--emulate"));
-    }
-
-    #[test]
-    fn restore_warning_identifies_physical_usb_target_and_emulation() {
-        let warning = backup_import_target_warning("FUJIFILM X-T5", "3.7", true);
-
-        assert!(warning.contains("FUJIFILM X-T5"));
-        assert!(warning.contains("USB 3.7"));
-        assert!(warning.contains("emulated"));
     }
 
     #[test]

@@ -47,24 +47,29 @@ blank elsewhere means the FML spec for that camera does not yet declare the
 feature; see [adding a camera](../contributors/adding-cameras.md) to fill that
 in.
 
+The feature table records historical physical-device coverage; it is not the
+state-changing compatibility matrix. Mutating commands are currently enabled
+only for the Fujifilm X-T5 with exact PTP firmware `4.31`, USB mode `0x6`, and a
+fully charged battery. Every other model, firmware, mode, or incomplete
+capability/descriptor set fails closed before a write. Adding a row requires
+captured device evidence and an explicit FML preflight profile; a nearby
+firmware version is never assumed compatible.
+
 ## Emulation Mode
 
-The `--emulate VENDOR:PRODUCT` flag selects a different generated logical model
-while retaining the connected camera's physical USB identity. The physical
-vendor/product pair must itself be in the supported-camera registry, including
-when the device is selected explicitly with `--device BUS.ADDRESS`.
+The `--emulate VENDOR:PRODUCT` flag selects a different generated logical model.
+It never overrides the physical USB vendor / product identity, and the physical
+device must itself be a supported camera.
 
 - Emulation does not add support for cameras that aren't yet in the schema; it
   only changes which generated implementation is invoked.
-- `device info` is the only emulated operation that requires no extra
-  acknowledgement because it is read-only.
-- Simulation `list`, `get`, and `export` write a temporary slot selector before
-  reading. They require `--allow-emulated-transient-write`.
-- Simulation `set` and `import`, every backup operation, and image rendering are
-  forbidden under emulation. The runtime enforces the same policy before PTP
-  operations, independently of CLI dispatch.
-- `device list` and feature-gated reverse commands reject `--emulate` because
-  the option is not meaningful for them.
+- `device info` is the only purely read-only emulated command.
+- Simulation access writes the transient custom-setting selector, so every
+  simulation command rejects emulation.
+- Every backup command, RAW rendering, and all reverse commands reject
+  emulation.
+- Selecting a USB device explicitly with `--device BUS.ADDRESS` does not bypass
+  physical identity validation.
 
 If you're not actively debugging or contributing, you probably don't want this
 flag.

@@ -52,17 +52,19 @@ If anything fails, the CUE error will pinpoint the bad field.
 
 ## 2. Enable Backup
 
-Probe with
-[`fujicli device reverse backup export`/`import`](reversing.md#backup)
-**first**; the non-reverse `fujicli backup` commands won't run until the feature
-is declared. Once you've round-tripped a backup that way, set:
+Probe the read side with
+[`fujicli device reverse backup export`](reversing.md#backup) **first**; the
+non-reverse `fujicli backup` commands won't run until the feature is declared.
+Then capture and physically verify the restore exchange through a reviewed FML
+preflight profile before setting:
 
 ```cue
 features: backup: true
 ```
 
-That's the entire feature block. It enables the versioned guarded backup workflow,
-but only after the reverse round-trip has established the model's native PTP
+That enables the versioned guarded backup workflow, but state-changing restore
+also requires an exact PTP identity and verified firmware profile. A reverse
+export establishes only the model's native PTP
 dance, object handles, object-info layout, and padding. A fixture or another
 camera model is not sufficient evidence.
 

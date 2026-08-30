@@ -9,7 +9,7 @@ use crate::cli::{
     GlobalOptions,
     common::{file::write_stdout_line, usb},
 };
-use fujicli::features::base::info::CameraInfoListItem;
+use fujicli::{features::base::info::CameraInfoListItem, policy::EmulationAcknowledgement};
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum DeviceCmd {
@@ -21,12 +21,12 @@ pub enum DeviceCmd {
     #[command(alias = "i")]
     Info,
 
-    #[cfg(feature = "reverse-tools")]
     /// Reverse engineer device communication
     ///
     /// Only run this if you have a full device backup and know what
     /// you are doing. Misuse can corrupt your camera or void your warranty.
     #[command(alias = "r", subcommand, hide = true)]
+    #[cfg(feature = "reverse-tools")]
     Reverse(ReverseCmd),
 }
 
@@ -65,11 +65,10 @@ fn handle_info(options: GlobalOptions) -> anyhow::Result<()> {
         json,
         device,
         emulate,
-        allow_emulated_transient_write,
         ..
     } = options;
 
-    let mut camera = usb::get_camera(device, emulate, allow_emulated_transient_write)?;
+    let mut camera = usb::get_camera(device, emulate, EmulationAcknowledgement::NotProvided)?;
 
     let repr = camera.get_info()?;
 

@@ -34,6 +34,39 @@ Set `chunk_size` higher than the default if the camera tolerates it (the X-T5
 uses ~16 MiB and renders noticeably faster as a result). Reverse-engineer by
 experiment: too-large chunks cause timeouts or errors.
 
+## PTP Identity and Preflight Profiles
+
+State-changing support is separate from the feature toggle. An exact PTP
+identity and one profile per verified firmware/operation describe the safety
+gate:
+
+```cue
+ptp: {
+    manufacturer: "FUJIFILM"
+    model:        "X-T5"
+}
+preflight: [{
+    operation:               "simulation_write"
+    status:                  "verified"
+    firmware:                "4.31"
+    minimum_battery_percent: 100
+    allowed_usb_modes:       [0x6]
+    required_operations:     [0x1001, 0x1014, 0x1015, 0x1016]
+    required_properties: [
+        {code: 0xD16E, data_type: 0x0004, writable: false},
+        {code: 0xD36B, data_type: 0xFFFF, writable: false},
+    ]
+}]
+```
+
+The runtime requires an exact firmware string and a `verified` profile. Each
+operation/property must also be advertised by `GetDeviceInfo`; every property
+is inspected with `GetDevicePropDesc`. Optional `data_type` pins the PTP type,
+while `writable: true` requires a writable descriptor (`false` permits either
+because some read paths share a property with a write profile). Do not copy a
+profile to another firmware or model without captured
+traffic and a physical-device run.
+
 ## Features
 
 ```cue

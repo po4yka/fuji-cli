@@ -16,6 +16,10 @@ pub struct CameraSpec {
     pub name: String,
     pub generation: String,
     pub usb: Usb,
+    #[serde(default)]
+    pub ptp: Option<PtpIdentity>,
+    #[serde(default)]
+    pub preflight: Vec<PreflightProfile>,
     pub features: Option<Features>,
 }
 
@@ -25,6 +29,48 @@ pub struct Usb {
     pub vendor_id: u16,
     pub product_id: u16,
     pub chunk_size: u32,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PtpIdentity {
+    pub manufacturer: String,
+    pub model: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PreflightProfile {
+    pub operation: PreflightOperation,
+    pub status: PreflightStatus,
+    pub firmware: String,
+    pub minimum_battery_percent: u8,
+    pub allowed_usb_modes: Vec<u32>,
+    pub required_operations: Vec<u16>,
+    pub required_properties: Vec<PreflightProperty>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PreflightOperation {
+    BackupRestore,
+    SimulationWrite,
+    RawConversion,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PreflightStatus {
+    Verified,
+    Unverified,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PreflightProperty {
+    pub code: u16,
+    pub data_type: Option<u16>,
+    pub writable: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -321,5 +367,41 @@ mod tests {
         assert!(!only_render.backup);
         assert!(only_render.simulation.is_none());
         assert!(only_render.render.is_some());
+    }
+
+    #[test]
+    fn camera_spec_accepts_preflight_profiles() {
+        let result = serde_json::from_str::<CameraSpec>(
+            r#"{
+                "name": "Demo",
+                "generation": "gen_a",
+                "usb": { "vendor_id": 1227, "product_id": 764, "chunk_size": 1024 },
+                "preflight": [{
+                    "operation": "backup_restore",
+                    "status": "verified",
+                    "firmware": "4.31",
+                    "minimum_battery_percent": 100,
+                    "allowed_usb_modes": [6],
+                    "required_operations": [4097, 4116, 4117],
+                    "required_properties": [{ "code": 53614, "writable": false }]
+                }]
+            }"#,
+        );
+
+        assert!(result.is_ok(), "preflight profile must parse: {result:?}");
+    }
+
+    #[test]
+    fn camera_spec_accepts_exact_ptp_identity() {
+        let result = serde_json::from_str::<CameraSpec>(
+            r#"{
+                "name": "Demo",
+                "generation": "gen_a",
+                "usb": { "vendor_id": 1227, "product_id": 764, "chunk_size": 1024 },
+                "ptp": { "manufacturer": "FUJIFILM", "model": "X-T5" }
+            }"#,
+        );
+
+        assert!(result.is_ok(), "PTP identity must parse: {result:?}");
     }
 }

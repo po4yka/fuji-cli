@@ -64,7 +64,7 @@ pub trait CameraBase {
             manufacturer: info.manufacturer,
             model: info.model,
             device_version: info.device_version,
-            serial_number: info.serial_number,
+            serial_sha256: crate::features::backup::sha256_hex(info.serial_number.as_bytes()),
             mode,
             battery,
         };
@@ -79,6 +79,8 @@ pub const UNKNOWN_CAMERA: SupportedCamera = SupportedCamera {
     name: "Unknown Camera",
     vendor: 0x0000,
     product: 0x0000,
+    ptp_identity: None,
+    preflight_profiles: &[],
     camera_factory: || Box::new(UnknownCamera),
 };
 

@@ -3,6 +3,7 @@ use fujicli::{
     generated::{
         cli::RenderArgs, options::CustomSetting, renders::RenderBase, simulations::SimulationBase,
     },
+    policy::{EmulationAcknowledgement, SerialFingerprint},
 };
 
 use super::common::file::{Input, Output};
@@ -31,6 +32,10 @@ pub enum ImageCmd {
     /// Render image
     #[command(alias = "r")]
     Render {
+        /// SHA-256 fingerprint of the exact physical camera serial number
+        #[arg(long, required_unless_present = "emulate")]
+        target_serial_sha256: Option<SerialFingerprint>,
+
         /// Simulation slot number
         #[arg(long, conflicts_with = "simulation_file")]
         slot: Option<CustomSetting>,
@@ -54,24 +59,32 @@ pub enum ImageCmd {
     },
 }
 
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "the handler consumes the flattened CLI render command"
-)]
-fn handle_render(
-    options: GlobalOptions,
+struct RenderRequest {
+    target_serial_sha256: Option<SerialFingerprint>,
     slot: Option<CustomSetting>,
     simulation_file: Option<Input>,
     draft: bool,
     render: RenderArgs,
     input: Input,
     output: Output,
-) -> anyhow::Result<()> {
+}
+
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the handler consumes the flattened CLI render command"
+)]
+fn handle_render(options: GlobalOptions, request: RenderRequest) -> anyhow::Result<()> {
+    let RenderRequest {
+        target_serial_sha256,
+        slot,
+        simulation_file,
+        draft,
+        render,
+        input,
+        output,
+    } = request;
     let GlobalOptions {
-        device,
-        emulate,
-        allow_emulated_transient_write,
-        ..
+        device, emulate, ..
     } = options;
 
     let image = input.read_limited(MAX_IMAGE_INPUT_BYTES, "RAF image")?;
@@ -84,14 +97,19 @@ fn handle_render(
         })
         .transpose()?;
 
-    let mut camera = usb::get_camera(device, emulate, allow_emulated_transient_write)?;
-
-    let simulation_base: Option<SimulationBase> = if let Some(slot) = slot {
-        Some(camera.get_simulation(slot)?.to_base())
-    } else if let Some(buffer) = simulation_json {
+    let mut camera = usb::get_camera(device, emulate, EmulationAcknowledgement::NotProvided)?;
+    let simulation_from_file = if let Some(buffer) = simulation_json {
         Some(camera.deserialize_simulation(&buffer)?.to_base())
     } else {
         None
+    };
+    let target_serial_sha256 = target_serial_sha256
+        .ok_or_else(|| anyhow::anyhow!("RAW conversion requires --target-serial-sha256"))?;
+    let mut session = camera.preflight_raw_conversion(&target_serial_sha256)?;
+    let simulation_base: Option<SimulationBase> = if let Some(slot) = slot {
+        Some(session.get_simulation(slot)?.to_base())
+    } else {
+        simulation_from_file
     };
 
     let mut base = RenderBase::default();
@@ -100,19 +118,31 @@ fn handle_render(
     }
     base.merge(render.into());
 
-    write_render_result(&output, camera.render(&image, base, draft))
+    write_render_result(&output, session.render(&image, base, draft))
 }
 
 pub fn handle(cmd: ImageCmd, options: GlobalOptions) -> anyhow::Result<()> {
     match cmd {
         ImageCmd::Render {
+            target_serial_sha256,
             slot,
             simulation_file,
             draft,
             render,
             input,
             output,
-        } => handle_render(options, slot, simulation_file, draft, render, input, output),
+        } => handle_render(
+            options,
+            RenderRequest {
+                target_serial_sha256,
+                slot,
+                simulation_file,
+                draft,
+                render,
+                input,
+                output,
+            },
+        ),
     }
 }
 

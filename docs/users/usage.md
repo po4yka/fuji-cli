@@ -17,8 +17,6 @@ Options:
   -v, --verbose...         Log extra debugging information (multiple instances increase verbosity)
   -d, --device <DEVICE>    Manually specify target device using USB <BUS>.<ADDRESS>
       --emulate <EMULATE>  Treat device as a different model using <VENDOR_ID>:<PRODUCT_ID>
-      --allow-emulated-transient-write
-                            Allow emulation to change a temporary camera selector while reading
   -h, --help               Print help
   -V, --version            Print version
 ```
@@ -30,9 +28,11 @@ aliased (`list -> l`, `get -> g`, `set -> s`, `export -> e`, `import -> i`,
 
 The `-d / --device` flag accepts a USB bus/address pair (e.g. `1.4`) and is only
 needed when more than one supported camera is plugged in.
-`--emulate VENDOR:PRODUCT` selects another generated logical model without
-changing the connected camera's physical USB identity. The physical device must
-still be a supported camera. Emulation is restricted by command risk; see
+`--emulate VENDOR:PRODUCT` selects another generated logical model while the
+physical USB identity remains unchanged and must identify a supported camera.
+Only `device info` is read-only under emulation. Simulation access first writes
+Fujifilm's custom-setting selector, so all simulation commands, backups, RAW
+rendering, and reverse commands reject emulation; see
 [camera support](support.md#emulation-mode).
 
 ## Devices
@@ -79,8 +79,13 @@ complete artifact is read and cryptographically checked before the CLI opens a
 camera connection. Import then requires an exact source/target schema camera,
 USB product, live PTP model, manufacturer, and firmware match. By default it
 also requires the source camera serial fingerprint. To transfer settings to a
-different body of the same model and firmware, first run `--dry-run`; then pin
-the reported target explicitly:
+different body of the same model and firmware, obtain its fingerprint with
+`fujicli device info`, then pin that target during the dry run and restore:
+
+```sh
+fujicli backup import camera.fbk --dry-run \
+  --target-serial-sha256 SHA256_FROM_DEVICE_INFO
+```
 
 ```sh
 fujicli backup import camera.fbk \
@@ -104,9 +109,8 @@ Fujifilm exposes no signature or public parser here, so the value passed to
 of the artifact being imported. A hash supplied by the same untrusted party as
 the file does not establish provenance.
 
-All backup commands, including offline inspection and dry-run, reject
-`--emulate`. This fail-closed rule keeps opaque backup identity and restore
-behavior bound to the physical model.
+All backup commands reject `--emulate`, including offline `backup inspect`,
+where the option is meaningless.
 
 Destructive import from stdin is additionally disabled unless `--allow-stdin`
 is supplied. The external artifact fingerprint, explicit serial binding,
@@ -127,11 +131,6 @@ no `fujicli` process is still writing there, that temporary file can be removed.
 A _simulation_ is one of the camera's custom-setting slots (e.g. C1-C7). The
 number of slots is per-camera (`SLOTS` in the generated code).
 
-Reading a slot first writes Fujifilm's temporary custom-setting selector.
-Therefore emulated `list`, `get`, and `export` require both `--emulate` and the
-explicit `--allow-emulated-transient-write` acknowledgement. Emulated `set` and
-`import` are always rejected because they write persistent settings.
-
 ```sh
 # List slots with their assigned names.
 fujicli simulation list
@@ -142,13 +141,15 @@ fujicli simulation get c1
 # Update fields on a slot. Any subset is allowed; the rest is read from
 # the camera and the result validated.
 fujicli simulation set c1 \
+  --target-serial-sha256 SHA256_FROM_DEVICE_INFO \
   --film-simulation reala-ace \
   --grain-effect weak-small \
   --white-balance auto
 
 # Round-trip JSON to disk.
 fujicli simulation export c1 c1.json
-fujicli simulation import c1 c1.json
+fujicli simulation import c1 c1.json \
+  --target-serial-sha256 SHA256_FROM_DEVICE_INFO
 ```
 
 Simulation imports accept complete profiles exported for the connected camera;
@@ -164,31 +165,52 @@ both `--white-balance auto` and `--white-balance Auto` parse to the same
 variant, and most options accept short forms (e.g. `mono` for `monochrome`).
 Pass `--json` for machine-readable output on `get`/`list`.
 
+`set` and `import` require the lowercase SHA-256 fingerprint of the connected
+camera's PTP serial. Obtain it from `fujicli device info`; the binding prevents
+a bus/address change or a second attached body from receiving the write.
+
 ## Images
 
 ```sh
 # Render a RAF in-camera using the active settings.
-fujicli image render input.raf out.jpg
+fujicli image render \
+  --target-serial-sha256 SHA256_FROM_DEVICE_INFO \
+  input.raf out.jpg
 
 # Render using slot C1's settings.
-fujicli image render --slot c1 input.raf out.jpg
+fujicli image render --slot c1 \
+  --target-serial-sha256 SHA256_FROM_DEVICE_INFO \
+  input.raf out.jpg
 
 # Render using a previously-exported simulation.
-fujicli image render --simulation-file c1.json input.raf out.jpg
+fujicli image render --simulation-file c1.json \
+  --target-serial-sha256 SHA256_FROM_DEVICE_INFO \
+  input.raf out.jpg
 
 # Override individual fields on top of any of the above.
 fujicli image render --slot c1 \
+  --target-serial-sha256 SHA256_FROM_DEVICE_INFO \
   --film-simulation classic-chrome \
   --grain-effect off \
   input.raf out.jpg
 
 # Faster but lower quality preview render.
-fujicli image render --draft input.raf out.jpg
+fujicli image render --draft \
+  --target-serial-sha256 SHA256_FROM_DEVICE_INFO \
+  input.raf out.jpg
 ```
 
 The render command always layers in this order: simulation source (slot or
 file), then any inline `--<field>` overrides. Fields your CLI flags don't set
 are pulled from the camera's current state.
+
+Before backup restore, simulation access/write, or RAW conversion, the CLI
+checks the physical USB identity, exact PTP identity and serial, firmware
+matrix entry, USB mode, battery, advertised operations/properties, and live
+property descriptors. Unknown firmware and unverified matrix entries fail
+closed; normal commands have no experimental override. The current X-T5 policy
+requires firmware `4.31`, USB mode `0x6`, and 100% battery. The battery value is
+a deliberately conservative project threshold, not a claimed Fujifilm minimum.
 
 Use `-` in place of any input or output filename to read from stdin or write to
 stdout. RAF input is limited to 512 MiB; simulation JSON remains limited to

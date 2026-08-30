@@ -1,5 +1,6 @@
 pub mod codec;
 pub mod container;
+mod descriptor;
 pub mod error;
 pub mod option;
 pub mod props;
@@ -9,8 +10,11 @@ pub use container::*;
 pub use props::*;
 pub use structs::*;
 
+pub(crate) use descriptor::*;
+
 use std::{
     cmp::min,
+    collections::{BTreeMap, BTreeSet},
     io::Cursor,
     time::{Duration, Instant},
 };
@@ -98,6 +102,51 @@ pub struct Ptp {
     pub(crate) transaction_id: u32,
     pub(crate) chunk_size: usize,
     pub(crate) poisoned: bool,
+    pub(crate) mutation_authorization: Option<MutationAuthorization>,
+}
+
+#[derive(Debug)]
+pub(crate) struct MutationAuthorization {
+    operations: BTreeSet<u16>,
+    properties: BTreeMap<u16, DevicePropDesc>,
+}
+
+impl MutationAuthorization {
+    fn new(operations: &[u16], properties: Vec<DevicePropDesc>) -> Self {
+        Self {
+            operations: operations.iter().copied().collect(),
+            properties: properties
+                .into_iter()
+                .map(|descriptor| (descriptor.property_code, descriptor))
+                .collect(),
+        }
+    }
+
+    fn validate(
+        &self,
+        code: CommandCode,
+        params: &[u32],
+        data: Option<&[u8]>,
+    ) -> anyhow::Result<()> {
+        let operation = u16::from(code);
+        ensure!(
+            self.operations.contains(&operation),
+            "PTP mutation 0x{operation:04x} is not authorized by the validated preflight profile"
+        );
+        if code == CommandCode::SetDevicePropValue {
+            let property = params
+                .first()
+                .and_then(|value| u16::try_from(*value).ok())
+                .ok_or_else(|| anyhow!("SetDevicePropValue requires one u16 property code"))?;
+            let descriptor = self.properties.get(&property).ok_or_else(|| {
+                anyhow!("PTP property 0x{property:04x} was not validated by preflight")
+            })?;
+            descriptor.validate_serialized_candidate(
+                data.ok_or_else(|| anyhow!("SetDevicePropValue requires serialized data"))?,
+            )?;
+        }
+        Ok(())
+    }
 }
 
 impl Ptp {
@@ -105,12 +154,13 @@ impl Ptp {
         !self.poisoned && self.transaction_id != u32::MAX
     }
 
-    pub fn send(
+    pub(crate) fn send(
         &mut self,
         code: CommandCode,
         params: &[u32],
         data: Option<&[u8]>,
     ) -> anyhow::Result<Vec<u8>> {
+        self.validate_mutation(code, params, data)?;
         let response = send_with_transport(
             &self.handle,
             self.bulk_in,
@@ -134,6 +184,7 @@ impl Ptp {
         params: &[u32],
         data: Option<&[u8]>,
     ) -> anyhow::Result<Vec<u8>> {
+        self.validate_mutation(code, params, data)?;
         let response = send_with_transport_until(
             &self.handle,
             self.bulk_in,
@@ -151,13 +202,13 @@ impl Ptp {
         Ok(response)
     }
 
-    pub fn open_session(&mut self, session_id: u32) -> anyhow::Result<()> {
+    pub(crate) fn open_session(&mut self, session_id: u32) -> anyhow::Result<()> {
         debug!("Opening PTP session");
         self.send(CommandCode::OpenSession, &[session_id], None)?;
         Ok(())
     }
 
-    pub fn close_session(&mut self, _: u32) -> anyhow::Result<()> {
+    pub(crate) fn close_session(&mut self, _: u32) -> anyhow::Result<()> {
         debug!("Closing PTP session");
         self.send(CommandCode::CloseSession, &[], None)?;
         Ok(())
@@ -169,21 +220,39 @@ impl Ptp {
         Ok(())
     }
 
-    pub fn get_info(&mut self) -> anyhow::Result<DeviceInfo> {
+    pub(crate) fn get_info(&mut self) -> anyhow::Result<DeviceInfo> {
         debug!("Retrieving device info");
         let response = self.send(CommandCode::GetDeviceInfo, &[], None)?;
         let info = codec::decode_exact(&response)?;
         Ok(info)
     }
 
-    pub fn get_prop_raw(&mut self, prop: impl Into<u16>) -> anyhow::Result<Vec<u8>> {
+    pub(crate) fn get_prop_raw(&mut self, prop: impl Into<u16>) -> anyhow::Result<Vec<u8>> {
         let prop = prop.into();
         debug!("Getting device prop: 0x{prop:04x}");
         let response = self.send(CommandCode::GetDevicePropValue, &[u32::from(prop)], None)?;
         Ok(response)
     }
 
-    pub fn set_prop_raw(&mut self, prop: impl Into<u16>, value: &[u8]) -> anyhow::Result<Vec<u8>> {
+    pub(crate) fn get_prop_desc(&mut self, prop: impl Into<u16>) -> anyhow::Result<DevicePropDesc> {
+        let prop = prop.into();
+        debug!("Getting device prop descriptor: 0x{prop:04x}");
+        let response = self.send(CommandCode::GetDevicePropDesc, &[u32::from(prop)], None)?;
+        let descriptor = DevicePropDesc::decode(&response)
+            .with_context(|| format!("decoding PTP device prop descriptor 0x{prop:04x}"))?;
+        ensure!(
+            descriptor.property_code == prop,
+            "PTP device property descriptor code mismatch: requested 0x{prop:04x}, received 0x{:04x}",
+            descriptor.property_code
+        );
+        Ok(descriptor)
+    }
+
+    pub(crate) fn set_prop_raw(
+        &mut self,
+        prop: impl Into<u16>,
+        value: &[u8],
+    ) -> anyhow::Result<Vec<u8>> {
         let prop = prop.into();
         debug!("Setting device prop: 0x{prop:04x}");
         let response = self.send(
@@ -194,7 +263,7 @@ impl Ptp {
         Ok(response)
     }
 
-    pub fn get_prop<T>(&mut self, code: impl Into<u16>) -> anyhow::Result<T>
+    pub(crate) fn get_prop<T>(&mut self, code: impl Into<u16>) -> anyhow::Result<T>
     where
         T: for<'a> BinRead<Args<'a> = ()>,
     {
@@ -203,7 +272,7 @@ impl Ptp {
         Ok(value)
     }
 
-    pub fn set_prop<T>(&mut self, code: impl Into<u16>, value: &T) -> anyhow::Result<()>
+    pub(crate) fn set_prop<T>(&mut self, code: impl Into<u16>, value: &T) -> anyhow::Result<()>
     where
         T: for<'a> BinWrite<Args<'a> = ()>,
     {
@@ -211,6 +280,53 @@ impl Ptp {
         self.set_prop_raw(code, &bytes)?;
         Ok(())
     }
+
+    pub(crate) fn authorize_mutations(
+        &mut self,
+        operations: &[u16],
+        properties: Vec<DevicePropDesc>,
+    ) {
+        self.mutation_authorization = Some(MutationAuthorization::new(operations, properties));
+    }
+
+    pub(crate) fn clear_mutation_authorization(&mut self) {
+        self.mutation_authorization = None;
+    }
+
+    fn validate_mutation(
+        &self,
+        code: CommandCode,
+        params: &[u32],
+        data: Option<&[u8]>,
+    ) -> anyhow::Result<()> {
+        if !is_mutating_command(code) {
+            return Ok(());
+        }
+        validate_mutation_authorization(self.mutation_authorization.as_ref(), code, params, data)
+    }
+}
+
+const fn is_mutating_command(code: CommandCode) -> bool {
+    matches!(
+        code,
+        CommandCode::DeleteObject
+            | CommandCode::SendObjectInfo
+            | CommandCode::SendObject
+            | CommandCode::SetDevicePropValue
+            | CommandCode::FujiSendObjectInfo
+            | CommandCode::FujiSendObject
+    )
+}
+
+fn validate_mutation_authorization(
+    authorization: Option<&MutationAuthorization>,
+    code: CommandCode,
+    params: &[u32],
+    data: Option<&[u8]>,
+) -> anyhow::Result<()> {
+    authorization
+        .ok_or_else(|| anyhow!("PTP mutation requires a validated camera preflight"))?
+        .validate(code, params, data)
 }
 
 #[expect(
@@ -662,11 +778,44 @@ mod tests {
 
     use super::{
         BulkTransport, Clock, CommandCode, ContainerCode, ContainerInfo, ContainerType, Deadline,
-        MAX_PTP_CONTAINER_PAYLOAD_BYTES, PTP_BULK_TIMEOUT, PTP_TRANSACTION_TIMEOUT, ResponseCode,
-        encode_command_params, read_container, read_container_with_deadline, send_with_transport,
-        send_with_transport_and_clock, send_with_transport_until_and_clock,
-        validate_bulk_read_geometry, write_container,
+        DevicePropDataType, DevicePropDesc, DevicePropForm, DevicePropValue,
+        MAX_PTP_CONTAINER_PAYLOAD_BYTES, MutationAuthorization, PTP_BULK_TIMEOUT,
+        PTP_TRANSACTION_TIMEOUT, ResponseCode, encode_command_params, read_container,
+        read_container_with_deadline, send_with_transport, send_with_transport_and_clock,
+        send_with_transport_until_and_clock, validate_bulk_read_geometry,
+        validate_mutation_authorization, write_container,
     };
+
+    #[test]
+    fn state_changing_ptp_command_requires_preflight_authorization() {
+        let error =
+            validate_mutation_authorization(None, CommandCode::SendObject, &[0], Some(b"opaque"))
+                .expect_err("SendObject must not run without a validated session");
+
+        assert!(error.to_string().contains("validated camera preflight"));
+    }
+
+    #[test]
+    fn authorized_property_write_still_enforces_dynamic_enumeration() {
+        let descriptor = DevicePropDesc {
+            property_code: 0xD001,
+            data_type: DevicePropDataType::UInt16,
+            writable: true,
+            factory_default: DevicePropValue::UInt(1),
+            current: DevicePropValue::UInt(1),
+            form: DevicePropForm::Enumeration(vec![DevicePropValue::UInt(1)]),
+        };
+        let authorization = MutationAuthorization::new(&[0x1016], vec![descriptor]);
+
+        let result = validate_mutation_authorization(
+            Some(&authorization),
+            CommandCode::SetDevicePropValue,
+            &[0xD001],
+            Some(&2_u16.to_le_bytes()),
+        );
+
+        assert!(result.is_err());
+    }
 
     #[test]
     fn binrw_encodes_command_parameters_in_wire_order() {

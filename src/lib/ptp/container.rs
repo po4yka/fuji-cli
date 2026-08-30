@@ -97,6 +97,11 @@ mod tests {
         );
         assert_eq!(decoded.transaction_id, 0x01020304);
     }
+
+    #[test]
+    fn get_device_prop_desc_uses_standard_ptp_operation_code() {
+        assert_eq!(u16::from(CommandCode::GetDevicePropDesc), 0x1014);
+    }
 }
 
 #[repr(u16)]
@@ -112,6 +117,7 @@ pub enum CommandCode {
     DeleteObject = 0x100B,
     SendObjectInfo = 0x100C,
     SendObject = 0x100D,
+    GetDevicePropDesc = 0x1014,
     GetDevicePropValue = 0x1015,
     SetDevicePropValue = 0x1016,
     FujiSendObjectInfo = 0x900c,

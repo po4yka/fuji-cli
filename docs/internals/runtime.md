@@ -4,23 +4,6 @@ The runtime is the small Rust crate that mounts the generated module from
 Cargo's build `OUT_DIR` and dispatches user requests through trait objects.
 There is deliberately not much here; the heavy lifting is at build time.
 
-## Physical and logical camera identity
-
-`Camera` retains two distinct identities. `PhysicalUsbIdentity` always comes
-from the connected USB descriptor. `LogicalCameraIdentity` identifies the
-generated implementation selected for dispatch. Native mode makes them match;
-emulation may select a different logical model but never replaces the physical
-identity. Both the physical and emulated vendor/product pairs must exist in the
-generated `SUPPORTED` registry.
-
-Before CLI I/O and again before high-level library PTP operations, the
-`CommandRisk` policy authorizes the binding. Read-only device info is allowed;
-simulation reads require acknowledgement because selecting a slot is a
-transient write; persistent settings, opaque restore, and render operations are
-denied. The raw `Ptp` inside `Camera` is private. A deliberate `reverse-tools`
-Cargo feature exposes the reverse-only escape hatch and is absent from default
-builds.
-
 ## The Trait Hierarchy
 
 `CameraBase` is the root. Every camera struct implements it; feature
@@ -89,6 +72,50 @@ The CLI doesn't see the per-camera types at all; it always goes through
 `Camera`. Adding a new camera to the schema automatically extends the dispatch
 surface; nothing in `src/cli/` needs to know.
 
+## Physical and Logical Camera Identity
+
+`Camera` records the physical USB VID:PID read from the connected descriptor
+separately from the logical generated implementation. Native mode binds both to
+the same supported registry entry. Emulation may choose a different logical
+entry, but it cannot replace the physical identity or open an unsupported USB
+Image/PTP device selected by bus and address.
+
+Every high-level operation is classified before file or USB I/O and is checked
+again at the `Camera` boundary. Emulated read-only access is allowed; transient
+selector writes, persistent settings writes, opaque restore, and
+destructive/recovery-sensitive operations are denied.
+`reverse-tools` adds discovery commands, but does not expose raw PTP or a restore
+bypass.
+
+## State-Changing Preflight
+
+Backup restore, simulation selector access/writes, and RAW conversion start in
+one centralized preflight. `Camera::preflight_*` validates the physical USB
+VID/PID, the exact PTP manufacturer/model/serial/firmware returned by
+`GetDeviceInfo`, the advertised operation and property lists, the current USB
+mode and battery level, and the firmware-specific FML profile. Unknown or
+unverified firmware fails closed; there is deliberately no experimental
+override for a normal binary.
+
+Preflight also sends `GetDevicePropDesc` for every required property. Its parser
+supports scalar and array PTP datatypes plus no-form, range, and enum
+constraints. The descriptor's property code, datatype, current/default values,
+and writability must be internally consistent with the generated policy. Every
+subsequent property write is checked dynamically against that descriptor before
+the command is sent.
+
+Success returns `ValidatedCameraSession<Operation>`. Only that typestate exposes
+the relevant mutation, and dropping it removes the PTP mutation authorization.
+The transport independently rejects `SetDevicePropValue`, object upload/delete,
+and Fuji vendor write operations unless the current authorization allows their
+operation code. This makes bypassing preflight from another high-level caller a
+compile-time and transport-boundary failure rather than a CLI convention.
+
+Dangerous operations also bind to the SHA-256 fingerprint of the live PTP
+serial. Backup restore uses the source artifact's binding unless an explicit
+target is supplied; simulation write and RAW conversion require an explicit
+`--target-serial-sha256`.
+
 ## Feature Traits
 
 ### `CameraBackupManager`
@@ -114,8 +141,9 @@ manifest and digest supplied together by an attacker remain forgeable.
 
 Export validates that `GetObjectInfo` describes `FujiBackup`, has the expected
 1020-byte zero padding, and reports the exact subsequent payload length. Import
-checks live model and firmware plus serial policy before the CLI durably creates
-a no-clobber recovery artifact. Transport or framing failures poison the PTP
+checks live identity, capabilities, firmware policy, USB mode, battery,
+property descriptors, and serial binding before the CLI durably creates a
+no-clobber recovery artifact. Transport or framing failures poison the PTP
 session; backup import classifies both metadata and data failures as unknown
 camera state and never retries automatically.
 

@@ -200,13 +200,8 @@ fn select_only<T>(candidates: Vec<T>) -> anyhow::Result<T> {
 pub fn get_camera(
     device: Option<Location>,
     emulate: Option<Identity>,
-    allow_emulated_transient_write: bool,
+    acknowledgement: EmulationAcknowledgement,
 ) -> anyhow::Result<Camera> {
-    let acknowledgement = if allow_emulated_transient_write {
-        EmulationAcknowledgement::Provided
-    } else {
-        EmulationAcknowledgement::NotProvided
-    };
     if let Some(location) = device {
         let device = get_usb_device_by_location(location)?;
 
