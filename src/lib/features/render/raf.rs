@@ -70,7 +70,7 @@ fn read_be_u32(data: &[u8], offset: usize) -> anyhow::Result<u32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{RAF_SIGNATURE, validate_xt5_raf};
+    use super::{RAF_SIGNATURE, read_be_u32, validate_xt5_raf};
 
     fn minimal_raf() -> Vec<u8> {
         let mut data = vec![0; 108];
@@ -131,5 +131,48 @@ mod tests {
             .expect_err("a RAF header without RAW image bytes must be rejected");
 
         assert!(error.to_string().contains("RAW image region"));
+    }
+
+    #[test]
+    fn rejects_raf_region_with_an_incomplete_offset_length_pair() {
+        let mut data = minimal_raf();
+        data[0x54..0x58].copy_from_slice(&108_u32.to_be_bytes());
+        data[0x58..0x5c].copy_from_slice(&0_u32.to_be_bytes());
+
+        let error = validate_xt5_raf(&data)
+            .expect_err("a RAF region with an incomplete offset/length pair must be rejected");
+
+        assert!(error.to_string().contains("incomplete offset/length pair"));
+    }
+
+    #[test]
+    fn rejects_raf_region_overlapping_the_header() {
+        let mut data = minimal_valid_raf();
+        data[0x54..0x58].copy_from_slice(&4_u32.to_be_bytes());
+        data[0x58..0x5c].copy_from_slice(&8_u32.to_be_bytes());
+
+        let error = validate_xt5_raf(&data)
+            .expect_err("a RAF region overlapping the header must be rejected");
+
+        assert!(error.to_string().contains("overlaps the RAF header"));
+    }
+
+    #[test]
+    fn rejects_raf_region_whose_end_overflows() {
+        let mut data = minimal_valid_raf();
+        data[0x54..0x58].copy_from_slice(&u32::MAX.to_be_bytes());
+        data[0x58..0x5c].copy_from_slice(&1_u32.to_be_bytes());
+
+        let error =
+            validate_xt5_raf(&data).expect_err("a RAF region whose end overflows must be rejected");
+
+        assert!(error.to_string().contains("overflows"));
+    }
+
+    #[test]
+    fn read_be_u32_rejects_a_truncated_directory() {
+        let error = read_be_u32(&[0u8; 2], 0).expect_err("a truncated directory must be rejected");
+
+        assert!(error.to_string().contains("truncated"));
     }
 }
