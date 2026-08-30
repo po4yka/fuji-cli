@@ -132,6 +132,65 @@ serial correlation fingerprint, pre-backup digest, and outcome. It must not
 contain raw serials, argv, full paths, property or backup payloads, custom
 setting names, arbitrary camera strings, or full error chains.
 
+## Design: the `simulation-namespace` Probe
+
+This section designs (but does not yet implement) the still/movie namespace
+probe called for in `docs/users/support.md` and `docs/users/usage.md`: does
+selector `0xD18C` address the X-T5's still C1-C7 custom-setting slots, its
+movie C1-C7 slots, or something else. The command name is
+`fujicli-dev probe simulation-namespace`, gated behind the
+`dangerous-reverse-engineering` feature described above.
+
+What it writes: exactly one explicit C1-C7 slot value to `0xD18C`, exactly
+once per invocation, as the single mutating PTP container required by the
+guard sequence above.
+
+What it reads before the write: the current raw value of `0xD18C` (the prior
+selector, to be restored and verified afterward) plus the existing read-only
+discovery surface (`GetDeviceInfo`, `0xD16E` USB mode, `0xD36B` battery info)
+for identity display and the pre-backup.
+
+What it reads after the write: ideally, one or more properties whose value
+differs depending on whether the write landed in the still or the movie
+custom-setting namespace. No such property is currently known.
+
+Decision table (as designed; the "observed still/movie signal" column is the
+open question below):
+
+| Observed still/movie signal | Verdict |
+| --- | --- |
+| Signal indicates only the still namespace changed | still |
+| Signal indicates only the movie namespace changed | movie |
+| Signal indicates both, neither, or is unreadable/times out | ambiguous — print `DO NOT RETRY AUTOMATICALLY` |
+
+### OPEN QUESTIONS for the maintainer
+
+1. **No known read-back observable.** Nothing in `fml/`, `docs/`, or the
+   capture-free `support/` directory identifies a PTP property (or property
+   pair) whose value distinguishes still-mode custom-setting state from
+   movie-mode custom-setting state after `0xD18C` is written. Inventing a
+   property code to fill this gap would violate `AGENTS.md`'s prohibition on
+   inventing PTP property codes, so this design does not propose one. A
+   physical run may need to pair the probe's PTP-level log with a human
+   reading the camera's own C1-C7 menu (LCD) before and after the write,
+   rather than relying on a wire-level signal alone.
+2. **No raw single-property write/read primitive is reachable from
+   `fujicli-dev`.** `Ptp::set_prop_raw` in `src/lib/ptp/mod.rs` is
+   `pub(super)`, and the only code path that ever constructs a
+   `MutationPermit` (`preflight::run` in `src/lib/preflight.rs`) requires
+   `camera.binding == ModelBindingKind::Native` (never true for
+   `Camera::open_unknown`, the only camera `fujicli-dev` can construct) and a
+   `CameraPreflightProfile` whose `status` is `Verified` for the requested
+   firmware and operation. X-T5 firmware 4.31's `SimulationAccess` and
+   `SimulationWrite` profiles are `Unverified`
+   (`tests/xt5_simulation_domain.rs`), so `select_profile` refuses to hand out
+   a permit before this probe could even run. Reaching `0xD18C` therefore
+   needs a new library primitive that bypasses this permit machinery for an
+   explicitly unverified property — exactly the raw mutation surface commit
+   `124aa4f` ("fix: seal raw PTP mutation access") deliberately closed. Adding
+   it is a maintainer decision, not something this design authorizes
+   unilaterally; see the executor report for the exact API shape considered.
+
 ## Reversing Render Profiles
 
 Rendering is the hard one. Fujifilm doesn't document the conversion profile wire

@@ -4,7 +4,6 @@ use fujicli::{Camera, generated::cli::SIMULATION_PROP_CODES};
 use log::debug;
 
 use crate::{
-    Command,
     output::NewOutput,
     usb::{self, Location},
 };
@@ -111,15 +110,11 @@ fn render_profile(location: Location, output: &NewOutput) -> anyhow::Result<()> 
     output.write_all(&json)
 }
 
-pub fn handle(command: Command, location: Location) -> anyhow::Result<()> {
+pub fn handle(command: DiscoverCommand, location: Location) -> anyhow::Result<()> {
     match command {
-        Command::Discover(DiscoverCommand::Info) => info(location),
-        Command::Discover(DiscoverCommand::Simulation) => simulation(location),
-        Command::Discover(DiscoverCommand::Backup(BackupCommand::Export { output })) => {
-            backup(location, &output)
-        }
-        Command::Discover(DiscoverCommand::RenderProfile { output }) => {
-            render_profile(location, &output)
-        }
+        DiscoverCommand::Info => info(location),
+        DiscoverCommand::Simulation => simulation(location),
+        DiscoverCommand::Backup(BackupCommand::Export { output }) => backup(location, &output),
+        DiscoverCommand::RenderProfile { output } => render_profile(location, &output),
     }
 }

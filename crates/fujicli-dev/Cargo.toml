@@ -12,6 +12,7 @@ workspace = true
 [features]
 default = []
 reverse-tools = ["fujicli/reverse-tools"]
+dangerous-reverse-engineering = ["reverse-tools"]
 
 [[bin]]
 name = "fujicli-dev"

@@ -7,11 +7,15 @@
 
 mod log;
 mod output;
+#[cfg(feature = "dangerous-reverse-engineering")]
+mod probe;
 mod reverse;
 mod usb;
 
 use clap::{ArgAction, Parser, Subcommand};
 
+#[cfg(feature = "dangerous-reverse-engineering")]
+use crate::probe::ProbeCommand;
 use crate::{reverse::DiscoverCommand, usb::Location};
 
 #[derive(Debug, Parser)]
@@ -34,12 +38,20 @@ enum Command {
     /// Run read-only discovery against an explicitly selected camera
     #[command(subcommand)]
     Discover(DiscoverCommand),
+    /// Run a gated, state-changing reverse-engineering probe
+    #[cfg(feature = "dangerous-reverse-engineering")]
+    #[command(subcommand)]
+    Probe(ProbeCommand),
 }
 
 fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
     log::init(cli.verbose)?;
-    reverse::handle(cli.command, cli.device)
+    match cli.command {
+        Command::Discover(command) => reverse::handle(command, cli.device),
+        #[cfg(feature = "dangerous-reverse-engineering")]
+        Command::Probe(command) => probe::handle(&command, cli.device),
+    }
 }
 
 fn main() -> anyhow::Result<()> {
@@ -94,5 +106,34 @@ mod tests {
         ])
         .expect_err("lossless wire artifacts must not be written to stdout");
         assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+    }
+
+    #[test]
+    #[cfg(not(feature = "dangerous-reverse-engineering"))]
+    fn probe_is_absent_without_the_dangerous_feature() {
+        let error = Cli::try_parse_from([
+            "fujicli-dev",
+            "--device",
+            "1.2",
+            "probe",
+            "simulation-namespace",
+            "c1",
+        ])
+        .expect_err("probe must not exist without dangerous-reverse-engineering");
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::InvalidSubcommand);
+    }
+
+    #[test]
+    #[cfg(feature = "dangerous-reverse-engineering")]
+    fn probe_simulation_namespace_still_requires_an_explicit_device() {
+        let error = Cli::try_parse_from(["fujicli-dev", "probe", "simulation-namespace", "c1"])
+            .expect_err("the dangerous probe must never auto-select a camera either");
+
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+        assert!(error.to_string().contains("--device"));
     }
 }
