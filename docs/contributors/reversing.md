@@ -31,7 +31,7 @@ boundary.
 The current discovery surface is deliberately limited:
 
 | Command | PTP operations | Classification |
-|---|---|---|
+| --- | --- | --- |
 | every command | `OpenSession`, `CloseSession` | transient state-selecting session control |
 | `discover info` | `GetDeviceInfo`, `GetDevicePropValue` | read-only |
 | `discover simulation` | `GetDevicePropValue` | read-only |
