@@ -166,6 +166,62 @@ pub(crate) trait SimulationPropertyIo {
     }
 }
 
+pub(crate) struct AuthorizedSimulationIo<'io> {
+    authorized: crate::camera::AuthorizedPtp<'io>,
+}
+
+impl<'io> AuthorizedSimulationIo<'io> {
+    pub(crate) fn new(authorized: crate::camera::AuthorizedPtp<'io>) -> Self {
+        Self { authorized }
+    }
+
+    pub(crate) fn firmware_capability_profile(
+        &self,
+    ) -> anyhow::Result<&'static crate::generated::cameras::CameraFirmwareCapabilityProfile> {
+        self.authorized.firmware_capability_profile()
+    }
+
+    pub(crate) fn is_healthy(&self) -> bool {
+        self.authorized.is_healthy()
+    }
+}
+
+impl SimulationPropertyIo for AuthorizedSimulationIo<'_> {
+    fn is_healthy(&self) -> bool {
+        self.authorized.is_healthy()
+    }
+    fn get_prop<T>(&mut self, code: u16) -> anyhow::Result<T>
+    where
+        T: for<'a> BinRead<Args<'a> = ()>,
+    {
+        self.authorized.get_prop(code)
+    }
+    fn set_prop<T>(&mut self, code: u16, value: &T) -> Result<(), SimulationPropertyWriteError>
+    where
+        T: for<'a> BinWrite<Args<'a> = ()>,
+    {
+        self.authorized
+            .set_prop(code, value)
+            .map_err(SimulationPropertyWriteError::unconfirmed)
+    }
+    fn firmware_option_write_value(
+        &self,
+        option: &str,
+        logical_value: &str,
+    ) -> anyhow::Result<i32> {
+        self.authorized
+            .firmware_option_write_value(option, logical_value)
+    }
+    fn firmware_option_read_logical_value(
+        &self,
+        option: &str,
+        wire_value: i32,
+    ) -> anyhow::Result<&'static str> {
+        self.authorized
+            .firmware_option_read_logical_value(option, wire_value)
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct SimulationPropertyWriteError {
     cause: anyhow::Error,
@@ -207,43 +263,6 @@ impl SimulationPropertyWriteError {
 
     pub(crate) fn into_cause(self) -> anyhow::Error {
         self.cause
-    }
-}
-
-impl SimulationPropertyIo for crate::ptp::Ptp {
-    fn is_healthy(&self) -> bool {
-        crate::ptp::Ptp::is_healthy(self)
-    }
-
-    fn get_prop<T>(&mut self, code: u16) -> anyhow::Result<T>
-    where
-        T: for<'a> BinRead<Args<'a> = ()>,
-    {
-        crate::ptp::Ptp::get_prop(self, code)
-    }
-
-    fn set_prop<T>(&mut self, code: u16, value: &T) -> Result<(), SimulationPropertyWriteError>
-    where
-        T: for<'a> BinWrite<Args<'a> = ()>,
-    {
-        crate::ptp::Ptp::set_prop(self, code, value)
-            .map_err(SimulationPropertyWriteError::unconfirmed)
-    }
-
-    fn firmware_option_write_value(
-        &self,
-        option: &str,
-        logical_value: &str,
-    ) -> anyhow::Result<i32> {
-        crate::ptp::Ptp::firmware_option_write_value(self, option, logical_value)
-    }
-
-    fn firmware_option_read_logical_value(
-        &self,
-        option: &str,
-        wire_value: i32,
-    ) -> anyhow::Result<&'static str> {
-        crate::ptp::Ptp::firmware_option_read_logical_value(self, option, wire_value)
     }
 }
 
@@ -317,26 +336,28 @@ trait SimulationSelectorIo {
     fn set_selector_raw(&mut self, property_code: u16, value: &[u8]) -> anyhow::Result<()>;
 }
 
-impl SimulationSelectorIo for crate::ptp::Ptp {
+impl SimulationSelectorIo for AuthorizedSimulationIo<'_> {
     fn is_healthy(&self) -> bool {
-        crate::ptp::Ptp::is_healthy(self)
+        self.authorized.is_healthy()
     }
 
     fn get_selector_raw(&mut self, property_code: u16) -> anyhow::Result<Vec<u8>> {
-        crate::ptp::Ptp::get_prop_raw(self, property_code)
+        self.authorized.get_prop_raw(property_code)
     }
 
     fn set_selector_raw(&mut self, property_code: u16, value: &[u8]) -> anyhow::Result<()> {
-        crate::ptp::Ptp::set_prop_raw(self, property_code, value).map(|_| ())
+        self.authorized
+            .set_prop_raw(property_code, value)
+            .map(|_| ())
     }
 }
 
 pub(crate) fn with_temporary_simulation_selector<T>(
-    ptp: &mut crate::ptp::Ptp,
+    io: &mut AuthorizedSimulationIo<'_>,
     property_code: u16,
-    operation: impl FnOnce(&mut crate::ptp::Ptp) -> anyhow::Result<T>,
+    operation: impl FnOnce(&mut AuthorizedSimulationIo<'_>) -> anyhow::Result<T>,
 ) -> anyhow::Result<T> {
-    with_temporary_simulation_selector_io(ptp, property_code, operation)
+    with_temporary_simulation_selector_io(io, property_code, operation)
 }
 
 fn with_temporary_simulation_selector_io<IO, T>(

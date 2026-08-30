@@ -7,8 +7,7 @@ use std::{
 
 use anyhow::{Context as _, anyhow, bail};
 use fujicli::{
-    Camera,
-    features::base::info::CameraInfoListItem,
+    Camera, CameraInfoListItem,
     policy::{EmulationAcknowledgement, SerialFingerprint},
 };
 use log::trace;

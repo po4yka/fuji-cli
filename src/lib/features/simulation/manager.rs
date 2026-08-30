@@ -7,34 +7,33 @@ use crate::{
         },
     },
     generated::{options::CustomSetting, simulations::SimulationBase},
-    ptp::Ptp,
 };
 
-pub trait CameraSimulationManager: CameraBase + CameraSimulationParser {
+pub(crate) trait CameraSimulationManager: CameraBase + CameraSimulationParser {
     fn custom_settings_slots(&self) -> Vec<CustomSetting>;
 
     fn get_simulation(
         &self,
-        ptp: &mut Ptp,
+        io: &mut crate::features::simulation::AuthorizedSimulationIo<'_>,
         slot: CustomSetting,
     ) -> anyhow::Result<Box<dyn Simulation>>;
 
     fn get_simulations(
         &self,
-        ptp: &mut Ptp,
+        io: &mut crate::features::simulation::AuthorizedSimulationIo<'_>,
         slots: &[CustomSetting],
     ) -> anyhow::Result<Vec<(CustomSetting, Box<dyn Simulation>)>>;
 
     fn update_simulation(
         &self,
-        ptp: &mut Ptp,
+        io: &mut crate::features::simulation::AuthorizedSimulationIo<'_>,
         slot: CustomSetting,
         partial: SimulationBase,
     ) -> Result<SimulationTransactionSuccess, SimulationTransactionError>;
 
     fn set_simulation(
         &self,
-        ptp: &mut Ptp,
+        io: &mut crate::features::simulation::AuthorizedSimulationIo<'_>,
         slot: CustomSetting,
         simulation: &dyn Simulation,
     ) -> Result<SimulationTransactionSuccess, SimulationTransactionError>;

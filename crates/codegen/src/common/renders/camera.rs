@@ -676,20 +676,20 @@ fn generate_camera_render_manager_impl(
         impl crate::features::render::CameraRenderManager for #camera_struct_path {
             fn render(
                 &self,
-                ptp: &mut crate::ptp::Ptp,
+                io: &mut dyn crate::features::render::manager::RenderTransport,
                 image: &[u8],
                 partial: #renders_path::RenderBase,
                 draft: bool,
             ) -> ::anyhow::Result<crate::features::render::RenderOutcome> {
-                let firmware_profile = ptp.firmware_capability_profile()?;
+                let firmware_profile = io.firmware_capability_profile()?;
                 partial.validate_firmware_capabilities(firmware_profile)?;
                 let original_profile =
-                    crate::features::render::manager::snapshot_raw_conversion_profile(ptp)?;
+                    crate::features::render::manager::snapshot_raw_conversion_profile(io)?;
                 let mut profile = #struct_ident::decode_for_firmware(
                     &original_profile,
                     firmware_profile,
                 )?;
-                ptp.validate_raw_conversion_read_fingerprint(
+                io.validate_raw_conversion_read_fingerprint(
                     #struct_ident::PROFILE_CODE,
                     #struct_ident::HEADER_PADDING,
                     #n_props,
@@ -704,7 +704,7 @@ fn generate_camera_render_manager_impl(
                     &[#(#field_ids),*],
                     candidate_profile.len(),
                 )?;
-                ptp.validate_raw_conversion_profile(
+                io.validate_raw_conversion_profile(
                     #struct_ident::PROFILE_CODE,
                     #struct_ident::HEADER_PADDING,
                     &[#(#field_ids),*],
@@ -712,31 +712,31 @@ fn generate_camera_render_manager_impl(
                 )?;
 
                 <Self as crate::features::render::CameraRenderManager>::send_image(
-                    self, ptp, image,
+                    self, io, image,
                 )?;
 
                 if candidate_profile == original_profile {
                     let render =
                         <Self as crate::features::render::CameraRenderManager>::render_object(
-                            self, ptp, draft,
+                            self, io, draft,
                         );
                     return crate::features::render::combine_render_and_restore(render, Ok(()));
                 }
 
                 let render = (|| {
                     crate::features::render::manager::write_raw_conversion_profile_verified(
-                        ptp,
+                        io,
                         &candidate_profile,
                     )?;
                     <Self as crate::features::render::CameraRenderManager>::render_object(
-                        self, ptp, draft,
+                            self, io, draft,
                     )
                 })();
 
-                let restore = if ptp.is_healthy() {
+                let restore = if io.is_healthy() {
                     ::anyhow::Context::context(
                         crate::features::render::manager::write_raw_conversion_profile_verified(
-                            ptp,
+                            io,
                             &original_profile,
                         ),
                         "restoring the original RAW conversion profile",
@@ -877,25 +877,29 @@ mod tests {
         .expect("render fixture must generate")
         .to_string();
 
-        let capability_validation = generated
+        let render = generated
+            .find("fn render")
+            .expect("generated render manager must implement rendering");
+        let render = &generated[render..];
+        let capability_validation = render
             .find("validate_firmware_capabilities")
             .expect("generated render must validate firmware values");
-        let read_fingerprint_validation = generated
+        let read_fingerprint_validation = render
             .find("validate_raw_conversion_read_fingerprint")
             .expect("generated render must validate the live read fingerprint");
-        let profile_read = generated
+        let profile_read = render
             .find("snapshot_raw_conversion_profile")
             .expect("generated render must read the conversion profile");
         let profile_decode = profile_read
-            + generated[profile_read..]
+            + render[profile_read..]
                 .find("decode_for_firmware")
                 .expect("generated render must decode the observed payload");
         let profile_encode = profile_decode
-            + generated[profile_decode..]
+            + render[profile_decode..]
                 .find("encode_for_firmware")
                 .expect("generated render must encode a write candidate");
         let signature_validation = profile_encode
-            + generated[profile_encode..]
+            + render[profile_encode..]
                 .find("validate_raw_conversion_signature")
                 .expect("generated render must validate the write descriptor");
 

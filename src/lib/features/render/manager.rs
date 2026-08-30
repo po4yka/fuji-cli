@@ -9,36 +9,26 @@ use crate::{
         outcome::{OutcomeStatus, StateChangeAudit},
     },
     generated::renders::RenderBase,
-    ptp::{CommandCode, DevicePropCode, ObjectFormat, ObjectInfo, Ptp, PtpOperation},
+    ptp::{CommandCode, DevicePropCode, ObjectFormat, ObjectInfo, PtpOperation},
 };
 use log::debug;
 
-pub const OUTGOING_OBJECT_HANDLE: [u32; 3] = [0x0, 0x0, 0x0];
-pub const INCOMING_OBJECT_HANDLE: [u32; 3] = [u32::MAX, 0x0, 0x0];
+pub(crate) const OUTGOING_OBJECT_HANDLE: [u32; 3] = [0x0, 0x0, 0x0];
 const RENDER_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Debug)]
 pub struct RenderedObject {
     handle: u32,
-    object_info: ObjectInfo,
     data: Vec<u8>,
 }
 
 impl RenderedObject {
-    fn new(handle: u32, object_info: ObjectInfo, data: Vec<u8>) -> Self {
-        Self {
-            handle,
-            object_info,
-            data,
-        }
+    fn new(handle: u32, data: Vec<u8>) -> Self {
+        Self { handle, data }
     }
 
     pub fn handle(&self) -> u32 {
         self.handle
-    }
-
-    pub fn object_info(&self) -> &ObjectInfo {
-        &self.object_info
     }
 
     pub fn data(&self) -> &[u8] {
@@ -319,41 +309,92 @@ pub fn finish_render_cleanup(
     }
 }
 
-trait RenderIo {
+pub(crate) trait RenderIo {
     fn start_render(&mut self, draft: bool) -> anyhow::Result<()>;
     fn object_handles(&mut self, deadline: Instant) -> anyhow::Result<Vec<u32>>;
 
     fn mark_processing_complete(&mut self) {}
 }
 
-trait RawProfileIo {
+pub(crate) trait RawProfileIo {
     fn get_profile_raw(&mut self) -> anyhow::Result<Vec<u8>>;
     fn set_profile_raw(&mut self, value: &[u8]) -> anyhow::Result<()>;
 }
 
-impl RawProfileIo for Ptp {
+pub(crate) trait RenderObjectIo {
+    fn object_info(&mut self, handle: u32) -> anyhow::Result<ObjectInfo>;
+    fn fetch_object(&mut self, handle: u32) -> anyhow::Result<Vec<u8>>;
+    fn delete_object(&mut self, handle: u32) -> anyhow::Result<()>;
+}
+
+pub(crate) trait RenderUploadIo {
+    fn send_object_info(&mut self, data: &[u8]) -> anyhow::Result<()>;
+    fn send_object(&mut self, data: &[u8]) -> anyhow::Result<()>;
+}
+
+pub(crate) trait RenderTransport:
+    RawProfileIo + RenderIo + RenderObjectIo + RenderUploadIo
+{
+    fn is_healthy(&self) -> bool;
+    fn firmware_capability_profile(
+        &self,
+    ) -> anyhow::Result<&'static crate::generated::cameras::CameraFirmwareCapabilityProfile>;
+    fn validate_raw_conversion_profile(
+        &mut self,
+        profile_code: u32,
+        header_padding: usize,
+        fields: &[&str],
+        bytes: &[u8],
+    ) -> anyhow::Result<()>;
+    fn validate_raw_conversion_read_fingerprint(
+        &mut self,
+        profile_code: u32,
+        header_padding: usize,
+        declared_field_count: u16,
+        fields: &[&str],
+        bytes: &[u8],
+    ) -> anyhow::Result<()>;
+}
+
+pub(crate) struct AuthorizedRenderIo<'io> {
+    authorized: crate::camera::AuthorizedPtp<'io>,
+}
+impl<'io> AuthorizedRenderIo<'io> {
+    pub(crate) fn new(authorized: crate::camera::AuthorizedPtp<'io>) -> Self {
+        Self { authorized }
+    }
+}
+
+impl RawProfileIo for AuthorizedRenderIo<'_> {
     fn get_profile_raw(&mut self) -> anyhow::Result<Vec<u8>> {
-        self.get_prop_raw(DevicePropCode::FujiRawConversionProfile)
+        self.authorized
+            .get_prop_raw(DevicePropCode::FujiRawConversionProfile)
     }
 
     fn set_profile_raw(&mut self, value: &[u8]) -> anyhow::Result<()> {
-        self.set_prop_raw(DevicePropCode::FujiRawConversionProfile, value)?;
+        self.authorized
+            .set_prop_raw(DevicePropCode::FujiRawConversionProfile, value)?;
         Ok(())
     }
 }
 
-pub(crate) fn snapshot_raw_conversion_profile(ptp: &mut Ptp) -> anyhow::Result<Vec<u8>> {
-    ptp.get_profile_raw()
+pub(crate) fn snapshot_raw_conversion_profile(
+    io: &mut (impl RawProfileIo + ?Sized),
+) -> anyhow::Result<Vec<u8>> {
+    io.get_profile_raw()
 }
 
 pub(crate) fn write_raw_conversion_profile_verified(
-    ptp: &mut Ptp,
+    io: &mut (impl RawProfileIo + ?Sized),
     value: &[u8],
 ) -> anyhow::Result<()> {
-    write_profile_verified(ptp, value)
+    write_profile_verified(io, value)
 }
 
-fn write_profile_verified(io: &mut impl RawProfileIo, value: &[u8]) -> anyhow::Result<()> {
+fn write_profile_verified(
+    io: &mut (impl RawProfileIo + ?Sized),
+    value: &[u8],
+) -> anyhow::Result<()> {
     io.set_profile_raw(value)?;
     let readback = io.get_profile_raw()?;
     anyhow::ensure!(
@@ -363,19 +404,19 @@ fn write_profile_verified(io: &mut impl RawProfileIo, value: &[u8]) -> anyhow::R
     Ok(())
 }
 
-impl RenderIo for Ptp {
+impl RenderIo for AuthorizedRenderIo<'_> {
     fn start_render(&mut self, draft: bool) -> anyhow::Result<()> {
-        self.set_prop_for_operation(
+        self.authorized.set_prop_for_operation(
             PtpOperation::CameraProcessing,
             DevicePropCode::FujiRawConversionRun,
             &u16::from(!draft),
         )?;
-        self.mark_camera_processing_active();
+        self.authorized.mark_camera_processing_active();
         Ok(())
     }
 
     fn object_handles(&mut self, deadline: Instant) -> anyhow::Result<Vec<u32>> {
-        let response = self.send_until(
+        let response = self.authorized.send_until(
             deadline,
             CommandCode::GetObjectHandles,
             &[u32::MAX, 0, 0],
@@ -388,24 +429,13 @@ impl RenderIo for Ptp {
     }
 
     fn mark_processing_complete(&mut self) {
-        self.mark_camera_processing_complete();
+        self.authorized.mark_camera_processing_complete();
     }
 }
 
-trait RenderObjectIo {
-    fn object_info(&mut self, handle: u32) -> anyhow::Result<ObjectInfo>;
-    fn fetch_object(&mut self, handle: u32) -> anyhow::Result<Vec<u8>>;
-    fn delete_object(&mut self, handle: u32) -> anyhow::Result<()>;
-}
-
-trait RenderUploadIo {
-    fn send_object_info(&mut self, data: &[u8]) -> anyhow::Result<()>;
-    fn send_object(&mut self, data: &[u8]) -> anyhow::Result<()>;
-}
-
-impl RenderUploadIo for Ptp {
+impl RenderUploadIo for AuthorizedRenderIo<'_> {
     fn send_object_info(&mut self, data: &[u8]) -> anyhow::Result<()> {
-        self.send_for_operation(
+        self.authorized.send_mutating_for_operation(
             PtpOperation::CameraProcessing,
             CommandCode::FujiSendObjectInfo,
             &OUTGOING_OBJECT_HANDLE,
@@ -415,7 +445,7 @@ impl RenderUploadIo for Ptp {
     }
 
     fn send_object(&mut self, data: &[u8]) -> anyhow::Result<()> {
-        self.send_for_operation(
+        self.authorized.send_mutating_for_operation(
             PtpOperation::LargeTransfer,
             CommandCode::FujiSendObject,
             &[],
@@ -425,7 +455,7 @@ impl RenderUploadIo for Ptp {
     }
 }
 
-fn send_image_with_io(io: &mut impl RenderUploadIo, image: &[u8]) -> anyhow::Result<()> {
+fn send_image_with_io(io: &mut (impl RenderUploadIo + ?Sized), image: &[u8]) -> anyhow::Result<()> {
     crate::features::render::raf::validate_xt5_raf(image)?;
     let object_info = ObjectInfo {
         object_format: ObjectFormat::FujiRAF,
@@ -438,14 +468,16 @@ fn send_image_with_io(io: &mut impl RenderUploadIo, image: &[u8]) -> anyhow::Res
     io.send_object(image)
 }
 
-impl RenderObjectIo for Ptp {
+impl RenderObjectIo for AuthorizedRenderIo<'_> {
     fn object_info(&mut self, handle: u32) -> anyhow::Result<ObjectInfo> {
-        let response = self.send(CommandCode::GetObjectInfo, &[handle], None)?;
+        let response = self
+            .authorized
+            .send(CommandCode::GetObjectInfo, &[handle], None)?;
         Ok(crate::ptp::codec::decode_exact(&response)?)
     }
 
     fn fetch_object(&mut self, handle: u32) -> anyhow::Result<Vec<u8>> {
-        self.send_for_operation(
+        self.authorized.send_for_operation(
             PtpOperation::LargeTransfer,
             CommandCode::GetObject,
             &[handle],
@@ -454,12 +486,51 @@ impl RenderObjectIo for Ptp {
     }
 
     fn delete_object(&mut self, handle: u32) -> anyhow::Result<()> {
-        self.send(CommandCode::DeleteObject, &[handle], None)?;
+        self.authorized
+            .send_mutating(CommandCode::DeleteObject, &[handle], None)?;
         Ok(())
     }
 }
 
-fn fetch_unique_rendered_object<I: RenderObjectIo>(
+impl RenderTransport for AuthorizedRenderIo<'_> {
+    fn is_healthy(&self) -> bool {
+        self.authorized.is_healthy()
+    }
+    fn firmware_capability_profile(
+        &self,
+    ) -> anyhow::Result<&'static crate::generated::cameras::CameraFirmwareCapabilityProfile> {
+        self.authorized.firmware_capability_profile()
+    }
+    fn validate_raw_conversion_profile(
+        &mut self,
+        profile_code: u32,
+        header_padding: usize,
+        fields: &[&str],
+        bytes: &[u8],
+    ) -> anyhow::Result<()> {
+        self.authorized
+            .validate_raw_conversion_profile(profile_code, header_padding, fields, bytes)
+    }
+
+    fn validate_raw_conversion_read_fingerprint(
+        &mut self,
+        profile_code: u32,
+        header_padding: usize,
+        declared_field_count: u16,
+        fields: &[&str],
+        bytes: &[u8],
+    ) -> anyhow::Result<()> {
+        self.authorized.validate_raw_conversion_read_fingerprint(
+            profile_code,
+            header_padding,
+            declared_field_count,
+            fields,
+            bytes,
+        )
+    }
+}
+
+fn fetch_unique_rendered_object<I: RenderObjectIo + ?Sized>(
     io: &mut I,
     handles: &[u32],
 ) -> anyhow::Result<RenderedObject> {
@@ -467,7 +538,7 @@ fn fetch_unique_rendered_object<I: RenderObjectIo>(
         .map_err(|cause| RenderObjectRetentionError::new(handles, cause).into())
 }
 
-fn fetch_unique_rendered_object_inner<I: RenderObjectIo>(
+fn fetch_unique_rendered_object_inner<I: RenderObjectIo + ?Sized>(
     io: &mut I,
     handles: &[u32],
 ) -> anyhow::Result<RenderedObject> {
@@ -505,24 +576,27 @@ fn fetch_unique_rendered_object_inner<I: RenderObjectIo>(
         "rendered JPEG length does not match GetObjectInfo"
     );
     crate::features::render::validate_jpeg(&data)?;
-    Ok(RenderedObject::new(handle, object_info, data))
+    Ok(RenderedObject::new(handle, data))
 }
 
-fn recover_rendered_object_with_io<I: RenderObjectIo>(
+fn recover_rendered_object_with_io<I: RenderObjectIo + ?Sized>(
     io: &mut I,
     handle: u32,
 ) -> anyhow::Result<RenderedObject> {
     fetch_unique_rendered_object(io, &[handle])
 }
 
-fn fetch_rendered_object<I: RenderObjectIo>(io: &mut I, handle: u32) -> anyhow::Result<Vec<u8>> {
+fn fetch_rendered_object<I: RenderObjectIo + ?Sized>(
+    io: &mut I,
+    handle: u32,
+) -> anyhow::Result<Vec<u8>> {
     debug!("Fetching rendered image");
     let image = io.fetch_object(handle)?;
     debug!("Fetched rendered image");
     Ok(image)
 }
 
-fn delete_object_verified<I: RenderIo + RenderObjectIo>(
+fn delete_object_verified<I: RenderIo + RenderObjectIo + ?Sized>(
     io: &mut I,
     handle: u32,
 ) -> anyhow::Result<StateChangeAudit> {
@@ -579,7 +653,7 @@ fn start_and_wait_for_new_rendered_handle<I, S, N>(
     timeout: Duration,
 ) -> anyhow::Result<u32>
 where
-    I: RenderIo,
+    I: RenderIo + ?Sized,
     S: FnMut(Duration),
     N: FnMut() -> Instant,
 {
@@ -613,7 +687,7 @@ fn start_and_wait_for_stable_new_handles<I, S, N>(
     timeout: Duration,
 ) -> anyhow::Result<Vec<u32>>
 where
-    I: RenderIo,
+    I: RenderIo + ?Sized,
     S: FnMut(Duration),
     N: FnMut() -> Instant,
 {
@@ -694,45 +768,49 @@ fn is_device_busy(error: &anyhow::Error) -> bool {
 }
 
 // NOTE: Naively assuming that all cameras render in a similar way.
-pub trait CameraRenderManager: CameraBase {
-    fn send_image(&self, ptp: &mut Ptp, image: &[u8]) -> anyhow::Result<()> {
+pub(crate) trait CameraRenderManager: CameraBase {
+    fn send_image(&self, io: &mut dyn RenderTransport, image: &[u8]) -> anyhow::Result<()> {
         debug!("Sending image to camera");
-        send_image_with_io(ptp, image)?;
+        send_image_with_io(io, image)?;
         debug!("Sent image to camera");
 
         Ok(())
     }
 
-    fn render_object(&self, ptp: &mut Ptp, draft: bool) -> anyhow::Result<RenderedObject> {
+    fn render_object(
+        &self,
+        io: &mut dyn RenderTransport,
+        draft: bool,
+    ) -> anyhow::Result<RenderedObject> {
         debug!("Starting image render");
         let handles =
-            start_and_wait_for_stable_new_handles(ptp, draft, sleep, Instant::now, RENDER_TIMEOUT)?;
+            start_and_wait_for_stable_new_handles(io, draft, sleep, Instant::now, RENDER_TIMEOUT)?;
 
-        fetch_unique_rendered_object(ptp, &handles)
+        fetch_unique_rendered_object(io, &handles)
     }
 
     fn recover_rendered_object(
         &self,
-        ptp: &mut Ptp,
+        io: &mut dyn RenderTransport,
         handle: u32,
     ) -> anyhow::Result<RenderedObject> {
-        recover_rendered_object_with_io(ptp, handle)
+        recover_rendered_object_with_io(io, handle)
     }
 
     fn cleanup_rendered_object(
         &self,
-        ptp: &mut Ptp,
+        io: &mut dyn RenderTransport,
         handle: u32,
     ) -> anyhow::Result<StateChangeAudit> {
         debug!("Cleaning up rendered image on camera");
-        let audit = delete_object_verified(ptp, handle)?;
+        let audit = delete_object_verified(io, handle)?;
         debug!("Cleaned up rendered image on camera");
         Ok(audit)
     }
 
     fn render(
         &self,
-        ptp: &mut Ptp,
+        io: &mut dyn RenderTransport,
         image: &[u8],
         partial: RenderBase,
         draft: bool,

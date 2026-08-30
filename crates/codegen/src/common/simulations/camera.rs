@@ -401,10 +401,6 @@ fn generate_simulation_impl(struct_ident: &Ident, options_path: &TokenStream) ->
                 <Self>::try_update_from(self, partial)
             }
 
-            fn try_pull(ptp: &mut crate::ptp::Ptp) -> ::anyhow::Result<Self> {
-                <Self as crate::features::simulation::SimulationTransactionProfile>::pull_from(ptp)
-            }
-
             fn to_base(&self) -> crate::generated::simulations::SimulationBase {
                 <crate::generated::simulations::SimulationBase as ::std::convert::From<&#struct_ident>>::from(self)
             }
@@ -615,10 +611,10 @@ fn generate_manager_impl(
     quote! {
         impl #struct_ident {
             fn try_pull_selected(
-                ptp: &mut crate::ptp::Ptp,
+                io: &mut crate::features::simulation::AuthorizedSimulationIo<'_>,
                 slot: #options_path::CustomSetting,
             ) -> ::anyhow::Result<Self> {
-                let mut io = crate::features::simulation::SelectedSimulationIo::new(ptp, slot);
+                let mut io = crate::features::simulation::SelectedSimulationIo::new(io, slot);
                 <Self as crate::features::simulation::SimulationTransactionProfile>::pull_from(&mut io)
             }
         }
@@ -632,34 +628,34 @@ fn generate_manager_impl(
 
             fn get_simulation(
                 &self,
-                ptp: &mut crate::ptp::Ptp,
+                io: &mut crate::features::simulation::AuthorizedSimulationIo<'_>,
                 slot: #options_path::CustomSetting,
             ) -> ::anyhow::Result<Box<dyn crate::features::simulation::Simulation>> {
                 crate::features::simulation::with_temporary_simulation_selector(
-                    ptp,
+                    io,
                     <#options_path::CustomSetting as crate::ptp::option::SimulationSetting>::prop_code(),
-                    |ptp| Ok(Box::new(#struct_ident::try_pull_selected(ptp, slot)?)
+                    |io| Ok(Box::new(#struct_ident::try_pull_selected(io, slot)?)
                         as Box<dyn crate::features::simulation::Simulation>),
                 )
             }
 
             fn get_simulations(
                 &self,
-                ptp: &mut crate::ptp::Ptp,
+                io: &mut crate::features::simulation::AuthorizedSimulationIo<'_>,
                 slots: &[#options_path::CustomSetting],
             ) -> ::anyhow::Result<Vec<(
                 #options_path::CustomSetting,
                 Box<dyn crate::features::simulation::Simulation>,
             )>> {
                 crate::features::simulation::with_temporary_simulation_selector(
-                    ptp,
+                    io,
                     <#options_path::CustomSetting as crate::ptp::option::SimulationSetting>::prop_code(),
-                    |ptp| {
+                    |io| {
                         let mut simulations = Vec::with_capacity(slots.len());
                         for slot in slots.iter().copied() {
                             simulations.push((
                                 slot,
-                                Box::new(#struct_ident::try_pull_selected(ptp, slot)?)
+                                Box::new(#struct_ident::try_pull_selected(io, slot)?)
                                     as Box<dyn crate::features::simulation::Simulation>,
                             ));
                         }
@@ -670,26 +666,26 @@ fn generate_manager_impl(
 
             fn update_simulation(
                 &self,
-                ptp: &mut crate::ptp::Ptp,
+                io: &mut crate::features::simulation::AuthorizedSimulationIo<'_>,
                 slot: #options_path::CustomSetting,
                 partial: crate::generated::simulations::SimulationBase,
             ) -> ::std::result::Result<
                 crate::features::simulation::SimulationTransactionSuccess,
                 crate::features::simulation::SimulationTransactionError,
             > {
-                let firmware_profile = ptp.firmware_capability_profile().map_err(|error| {
+                let firmware_profile = io.firmware_capability_profile().map_err(|error| {
                     crate::features::simulation::SimulationTransactionError::preparation(
-                        ptp.is_healthy(),
+                        io.is_healthy(),
                         error,
                     )
                 })?;
                 partial.validate_firmware_capabilities(firmware_profile).map_err(|error| {
                     crate::features::simulation::SimulationTransactionError::preparation(
-                        ptp.is_healthy(),
+                        io.is_healthy(),
                         error,
                     )
                 })?;
-                let mut io = crate::features::simulation::SelectedSimulationIo::new(ptp, slot);
+                let mut io = crate::features::simulation::SelectedSimulationIo::new(io, slot);
                 let original =
                     <#struct_ident as crate::features::simulation::SimulationTransactionProfile>::pull_from(&mut io)
                         .map_err(|error| {
@@ -722,7 +718,7 @@ fn generate_manager_impl(
 
             fn set_simulation(
                 &self,
-                ptp: &mut crate::ptp::Ptp,
+                io: &mut crate::features::simulation::AuthorizedSimulationIo<'_>,
                 slot: #options_path::CustomSetting,
                 simulation: &dyn crate::features::simulation::Simulation,
             ) -> ::std::result::Result<
@@ -737,13 +733,13 @@ fn generate_manager_impl(
                     ))
                     .map_err(|error| {
                         crate::features::simulation::SimulationTransactionError::preparation(
-                            ptp.is_healthy(),
+                            io.is_healthy(),
                             error,
                         )
                     })?;
-                let firmware_profile = ptp.firmware_capability_profile().map_err(|error| {
+                let firmware_profile = io.firmware_capability_profile().map_err(|error| {
                     crate::features::simulation::SimulationTransactionError::preparation(
-                        ptp.is_healthy(),
+                        io.is_healthy(),
                         error,
                     )
                 })?;
@@ -751,11 +747,11 @@ fn generate_manager_impl(
                     .validate_firmware_capabilities(firmware_profile)
                     .map_err(|error| {
                         crate::features::simulation::SimulationTransactionError::preparation(
-                            ptp.is_healthy(),
+                            io.is_healthy(),
                             error,
                         )
                     })?;
-                let mut io = crate::features::simulation::SelectedSimulationIo::new(ptp, slot);
+                let mut io = crate::features::simulation::SelectedSimulationIo::new(io, slot);
                 let original =
                     <#struct_ident as crate::features::simulation::SimulationTransactionProfile>::pull_from(&mut io)
                         .map_err(|error| {
@@ -873,7 +869,7 @@ mod tests {
             .find("validate_firmware_capabilities")
             .expect("generated write path must validate firmware values");
         let slot_write = update_path
-            .find("SelectedSimulationIo :: new (ptp , slot)")
+            .find("SelectedSimulationIo :: new (io , slot)")
             .expect("generated write path must prepare selected-slot I/O");
 
         assert!(
@@ -897,7 +893,7 @@ mod tests {
             "transactional property I/O must preserve firmware-aware setting codecs:\n{generated}",
         );
         assert!(
-            generated.contains("SelectedSimulationIo :: new (ptp , slot)")
+            generated.contains("SelectedSimulationIo :: new (io , slot)")
                 && generated.contains(
                     "execute_simulation_transaction (& mut io , & original , & candidate"
                 ),

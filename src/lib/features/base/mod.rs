@@ -15,7 +15,7 @@ use crate::{
     ptp::{DevicePropCode, Ptp, option::SimulationSetting},
 };
 
-pub trait CameraBase {
+pub(crate) trait CameraBase {
     type Context: rusb::UsbContext;
 
     fn camera_definition(&self) -> &'static SupportedCamera;
@@ -73,9 +73,11 @@ pub trait CameraBase {
     }
 }
 
-pub struct UnknownCamera;
+#[cfg(any(test, feature = "reverse-tools"))]
+pub(crate) struct UnknownCamera;
 
-pub const UNKNOWN_CAMERA: SupportedCamera = SupportedCamera {
+#[cfg(any(test, feature = "reverse-tools"))]
+pub(crate) const UNKNOWN_CAMERA: SupportedCamera = SupportedCamera {
     name: "Unknown Camera",
     vendor: 0x0000,
     product: 0x0000,
@@ -85,6 +87,7 @@ pub const UNKNOWN_CAMERA: SupportedCamera = SupportedCamera {
     camera_factory: || Box::new(UnknownCamera),
 };
 
+#[cfg(any(test, feature = "reverse-tools"))]
 impl CameraBase for UnknownCamera {
     type Context = rusb::GlobalContext;
 

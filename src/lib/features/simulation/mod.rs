@@ -1,9 +1,9 @@
-pub mod manager;
-pub mod parser;
+pub(crate) mod manager;
+pub(crate) mod parser;
 mod transaction;
 
 pub(crate) use transaction::{
-    SelectedSimulationIo, SimulationPropertyChange, SimulationPropertyIo,
+    AuthorizedSimulationIo, SelectedSimulationIo, SimulationPropertyChange, SimulationPropertyIo,
     SimulationPropertyWriteError, SimulationTransactionProfile, execute_simulation_transaction,
     with_temporary_simulation_selector,
 };
@@ -13,8 +13,8 @@ pub use transaction::{
     TemporarySimulationSelectorState,
 };
 
-pub use manager::CameraSimulationManager;
-pub use parser::CameraSimulationParser;
+pub(crate) use manager::CameraSimulationManager;
+pub(crate) use parser::CameraSimulationParser;
 
 use std::{any::Any, fmt};
 
@@ -32,10 +32,6 @@ pub trait Simulation: fmt::Display + erased_serde::Serialize {
     fn name(&self) -> Option<CustomSettingName>;
 
     fn try_update_from(&mut self, partial: SimulationBase) -> anyhow::Result<()>;
-
-    fn try_pull(ptp: &mut crate::ptp::Ptp) -> anyhow::Result<Self>
-    where
-        Self: Sized;
 
     fn to_base(&self) -> SimulationBase;
 }

@@ -17,7 +17,6 @@ pub(crate) use descriptor::*;
 use std::{
     cell::Cell,
     cmp::min,
-    collections::{BTreeMap, BTreeSet},
     fmt,
     io::Cursor,
     time::{Duration, Instant},
@@ -27,6 +26,8 @@ use anyhow::{Context, anyhow, bail, ensure};
 use binrw::{BinRead, BinWrite, Endian};
 use log::{debug, error, trace, warn};
 use rusb::GlobalContext;
+
+use super::preflight::MutationPermit;
 
 const PTP_BULK_TIMEOUT: Duration = Duration::from_secs(10);
 const MIN_PTP_BULK_TIMEOUT: Duration = Duration::from_millis(1);
@@ -340,142 +341,77 @@ impl BulkTransport for rusb::DeviceHandle<GlobalContext> {
     }
 }
 
-pub struct Ptp {
-    pub(crate) bus: u8,
-    pub(crate) address: u8,
-    pub(crate) interface: u8,
-    pub(crate) bulk_in: u8,
-    pub(crate) bulk_out: u8,
-    pub(crate) handle: rusb::DeviceHandle<GlobalContext>,
-    pub(crate) transaction_id: u32,
-    pub(crate) chunk_policy: ChunkPolicy,
-    pub(crate) bulk_read_state: BulkReadState,
-    pub(crate) poisoned: bool,
-    pub(crate) camera_processing_active: bool,
-    pub(crate) mutation_authorization: Option<MutationAuthorization>,
+pub(crate) struct Ptp {
+    bus: u8,
+    address: u8,
+    interface: u8,
+    bulk_in: u8,
+    bulk_out: u8,
+    handle: rusb::DeviceHandle<GlobalContext>,
+    transaction_id: u32,
+    chunk_policy: ChunkPolicy,
+    bulk_read_state: BulkReadState,
+    poisoned: bool,
+    camera_processing_active: bool,
+    next_session_control_permit_id: u64,
+    active_session_control_permit_id: Option<u64>,
+    next_mutation_permit_id: u64,
+    active_mutation_permit_id: Option<u64>,
 }
 
 #[derive(Debug)]
-pub(crate) struct MutationAuthorization {
-    operations: BTreeSet<u16>,
-    properties: BTreeMap<u16, DevicePropDesc>,
-    capability_profile: &'static crate::generated::cameras::CameraFirmwareCapabilityProfile,
-    raw_conversion_read_fingerprint_validated: bool,
-    raw_conversion_profile_validated: bool,
+pub(super) struct SessionControlPermit {
+    id: u64,
+    bus: u8,
+    address: u8,
+    interface: u8,
 }
 
-impl MutationAuthorization {
-    fn new(
-        operations: &[u16],
-        properties: Vec<DevicePropDesc>,
-        capability_profile: &'static crate::generated::cameras::CameraFirmwareCapabilityProfile,
-    ) -> Self {
-        Self {
-            operations: operations.iter().copied().collect(),
-            properties: properties
-                .into_iter()
-                .map(|descriptor| (descriptor.property_code, descriptor))
-                .collect(),
-            capability_profile,
-            raw_conversion_read_fingerprint_validated: false,
-            raw_conversion_profile_validated: false,
-        }
-    }
-
-    fn validate(
-        &self,
-        code: CommandCode,
-        params: &[u32],
-        data: Option<&[u8]>,
-    ) -> anyhow::Result<()> {
-        let operation = u16::from(code);
-        ensure!(
-            self.operations.contains(&operation),
-            "PTP mutation 0x{operation:04x} is not authorized by the validated preflight profile"
-        );
-        if matches!(
-            code,
-            CommandCode::FujiSendObjectInfo | CommandCode::FujiSendObject
-        ) {
-            ensure!(
-                self.raw_conversion_profile_validated,
-                "RAW image upload requires a validated firmware conversion profile"
-            );
-        }
-        if code == CommandCode::SetDevicePropValue {
-            let property = params
-                .first()
-                .and_then(|value| u16::try_from(*value).ok())
-                .ok_or_else(|| anyhow!("SetDevicePropValue requires one u16 property code"))?;
-            self.validate_property_candidate(
-                property,
-                data.ok_or_else(|| anyhow!("SetDevicePropValue requires serialized data"))?,
-            )?;
-        }
-        Ok(())
-    }
-
-    fn validate_property_candidate(&self, property: u16, data: &[u8]) -> anyhow::Result<()> {
-        let descriptor = self.properties.get(&property).ok_or_else(|| {
-            anyhow!("PTP property 0x{property:04x} was not validated by preflight")
-        })?;
-        descriptor.validate_serialized_candidate(data)
-    }
-
-    fn validate_raw_conversion_profile(
-        &mut self,
-        profile_code: u32,
-        header_padding: usize,
-        fields: &[&str],
-        bytes: &[u8],
-    ) -> anyhow::Result<()> {
-        self.capability_profile.validate_raw_conversion_signature(
-            profile_code,
-            header_padding,
-            fields,
-            bytes.len(),
-        )?;
-        ensure!(
-            self.raw_conversion_read_fingerprint_validated,
-            "RAW conversion write requires a matching live read fingerprint"
-        );
-        self.validate_property_candidate(
-            u16::from(DevicePropCode::FujiRawConversionProfile),
-            bytes,
-        )?;
-        self.raw_conversion_profile_validated = true;
-        Ok(())
-    }
-
-    fn validate_raw_conversion_read_fingerprint(
-        &mut self,
-        profile_code: u32,
-        header_padding: usize,
-        declared_field_count: u16,
-        fields: &[&str],
-        bytes: &[u8],
-    ) -> anyhow::Result<()> {
-        self.capability_profile
-            .validate_raw_conversion_read_fingerprint(
-                profile_code,
-                header_padding,
-                declared_field_count,
-                fields,
-                bytes.len(),
-            )?;
-        validate_raw_conversion_live_envelope(
-            bytes,
-            profile_code,
-            header_padding,
-            declared_field_count,
-            fields.len(),
-        )?;
-        self.raw_conversion_read_fingerprint_validated = true;
-        Ok(())
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CommandRisk {
+    ReadOnly,
+    SessionControl,
+    StateChanging,
 }
 
 impl Ptp {
+    pub(super) fn new(
+        bus: u8,
+        address: u8,
+        interface: u8,
+        bulk_in: u8,
+        bulk_out: u8,
+        handle: rusb::DeviceHandle<GlobalContext>,
+        chunk_policy: ChunkPolicy,
+    ) -> anyhow::Result<Self> {
+        let initial_read_chunk = chunk_policy.read.initial_bytes;
+        Ok(Self {
+            bus,
+            address,
+            interface,
+            bulk_in,
+            bulk_out,
+            handle,
+            transaction_id: 0,
+            chunk_policy,
+            bulk_read_state: BulkReadState::new(initial_read_chunk)?,
+            poisoned: false,
+            camera_processing_active: false,
+            next_session_control_permit_id: 1,
+            active_session_control_permit_id: None,
+            next_mutation_permit_id: 1,
+            active_mutation_permit_id: None,
+        })
+    }
+
+    pub(super) const fn transport_binding(&self) -> (u8, u8, u8) {
+        (self.bus, self.address, self.interface)
+    }
+
+    pub(super) fn usb_id(&self) -> String {
+        format!("{}.{}", self.bus, self.address)
+    }
+
     pub(crate) fn is_healthy(&self) -> bool {
         session_is_safe_to_close(
             self.poisoned,
@@ -484,11 +420,11 @@ impl Ptp {
         )
     }
 
-    pub(crate) fn mark_camera_processing_active(&mut self) {
+    pub(super) fn mark_camera_processing_active(&mut self) {
         self.camera_processing_active = true;
     }
 
-    pub(crate) fn mark_camera_processing_complete(&mut self) {
+    pub(super) fn mark_camera_processing_complete(&mut self) {
         self.camera_processing_active = false;
     }
 
@@ -508,7 +444,43 @@ impl Ptp {
         params: &[u32],
         data: Option<&[u8]>,
     ) -> anyhow::Result<Vec<u8>> {
-        self.validate_mutation(code, params, data)?;
+        validate_read_only_send(code, params)?;
+        self.send_unchecked_for_operation(operation, code, params, data)
+    }
+
+    pub(super) fn send_mutating(
+        &mut self,
+        permit: &mut MutationPermit,
+        code: CommandCode,
+        params: &[u32],
+        data: Option<&[u8]>,
+    ) -> anyhow::Result<Vec<u8>> {
+        self.send_mutating_for_operation(permit, PtpOperation::Standard, code, params, data)
+    }
+
+    pub(super) fn send_mutating_for_operation(
+        &mut self,
+        permit: &mut MutationPermit,
+        operation: PtpOperation,
+        code: CommandCode,
+        params: &[u32],
+        data: Option<&[u8]>,
+    ) -> anyhow::Result<Vec<u8>> {
+        ensure!(
+            command_risk(code, params) == CommandRisk::StateChanging,
+            "PTP command {code:?} is not a state-changing command"
+        );
+        self.validate_mutation_permit(permit, code, params, data)?;
+        self.send_unchecked_for_operation(operation, code, params, data)
+    }
+
+    fn send_unchecked_for_operation(
+        &mut self,
+        operation: PtpOperation,
+        code: CommandCode,
+        params: &[u32],
+        data: Option<&[u8]>,
+    ) -> anyhow::Result<Vec<u8>> {
         let started = Instant::now();
         let read_chunk_size = self.chunk_policy.read.effective_bytes;
         let write_chunk_size = self.chunk_policy.write.effective_bytes;
@@ -535,7 +507,7 @@ impl Ptp {
         params: &[u32],
         data: Option<&[u8]>,
     ) -> anyhow::Result<Vec<u8>> {
-        self.validate_mutation(code, params, data)?;
+        validate_read_only_send(code, params)?;
         let started = Instant::now();
         let read_chunk_size = self.chunk_policy.read.effective_bytes;
         let write_chunk_size = self.chunk_policy.write.effective_bytes;
@@ -615,22 +587,67 @@ impl Ptp {
         }
     }
 
-    pub(crate) fn open_session(&mut self, session_id: u32) -> anyhow::Result<()> {
+    pub(super) fn open_session(&mut self, session_id: u32) -> anyhow::Result<SessionControlPermit> {
         debug!("Opening PTP session");
-        self.send(CommandCode::OpenSession, &[session_id], None)?;
-        Ok(())
+        ensure!(
+            self.active_session_control_permit_id.is_none(),
+            "PTP session is already open"
+        );
+        let id = self.next_session_control_permit_id;
+        let next_id = id
+            .checked_add(1)
+            .ok_or_else(|| anyhow!("PTP session-control permit identifier overflow"))?;
+        self.send_unchecked_for_operation(
+            PtpOperation::Standard,
+            CommandCode::OpenSession,
+            &[session_id],
+            None,
+        )?;
+        self.next_session_control_permit_id = next_id;
+        self.active_session_control_permit_id = Some(id);
+        Ok(SessionControlPermit {
+            id,
+            bus: self.bus,
+            address: self.address,
+            interface: self.interface,
+        })
     }
 
-    pub(crate) fn close_session(&mut self, _: u32) -> anyhow::Result<()> {
+    pub(super) fn close_session(&mut self, permit: &SessionControlPermit) -> anyhow::Result<()> {
         debug!("Closing PTP session");
-        self.send(CommandCode::CloseSession, &[], None)?;
-        Ok(())
+        self.validate_session_control_permit(permit)?;
+        let result = self.send_unchecked_for_operation(
+            PtpOperation::Standard,
+            CommandCode::CloseSession,
+            &[],
+            None,
+        );
+        self.active_session_control_permit_id = None;
+        result.map(|_| ())
     }
 
-    pub(crate) fn close_session_until(&mut self, deadline: Instant) -> anyhow::Result<()> {
+    pub(super) fn close_session_until(
+        &mut self,
+        permit: &SessionControlPermit,
+        deadline: Instant,
+    ) -> anyhow::Result<()> {
         debug!("Closing PTP session");
-        self.send_until(deadline, CommandCode::CloseSession, &[], None)?;
-        Ok(())
+        self.validate_session_control_permit(permit)?;
+        let result = send_with_transport_until_and_read_state(
+            &self.handle,
+            self.bulk_in,
+            self.bulk_out,
+            self.chunk_policy.write.effective_bytes,
+            &mut self.bulk_read_state,
+            &mut self.transaction_id,
+            &mut self.poisoned,
+            CommandCode::CloseSession,
+            &[],
+            None,
+            deadline,
+        );
+        self.active_session_control_permit_id = None;
+        result.map(|_| ())
     }
 
     pub(crate) fn get_info(&mut self) -> anyhow::Result<DeviceInfo> {
@@ -666,14 +683,16 @@ impl Ptp {
         self.send(CommandCode::GetDevicePropDesc, &[u32::from(prop)], None)
     }
 
-    pub(crate) fn set_prop_raw(
+    pub(super) fn set_prop_raw(
         &mut self,
+        permit: &mut MutationPermit,
         prop: impl Into<u16>,
         value: &[u8],
     ) -> anyhow::Result<Vec<u8>> {
         let prop = prop.into();
         debug!("Setting device prop: 0x{prop:04x}");
-        let response = self.send(
+        let response = self.send_mutating(
+            permit,
             CommandCode::SetDevicePropValue,
             &[u32::from(prop)],
             Some(value),
@@ -690,17 +709,23 @@ impl Ptp {
         Ok(value)
     }
 
-    pub(crate) fn set_prop<T>(&mut self, code: impl Into<u16>, value: &T) -> anyhow::Result<()>
+    pub(super) fn set_prop<T>(
+        &mut self,
+        permit: &mut MutationPermit,
+        code: impl Into<u16>,
+        value: &T,
+    ) -> anyhow::Result<()>
     where
         T: for<'a> BinWrite<Args<'a> = ()>,
     {
         let bytes = codec::encode(value)?;
-        self.set_prop_raw(code, &bytes)?;
+        self.set_prop_raw(permit, code, &bytes)?;
         Ok(())
     }
 
-    pub(crate) fn set_prop_for_operation<T>(
+    pub(super) fn set_prop_for_operation<T>(
         &mut self,
+        permit: &mut MutationPermit,
         operation: PtpOperation,
         code: impl Into<u16>,
         value: &T,
@@ -710,7 +735,8 @@ impl Ptp {
     {
         let prop = code.into();
         let bytes = codec::encode(value)?;
-        self.send_for_operation(
+        self.send_mutating_for_operation(
+            permit,
             operation,
             CommandCode::SetDevicePropValue,
             &[u32::from(prop)],
@@ -719,81 +745,70 @@ impl Ptp {
         Ok(())
     }
 
-    pub(crate) fn authorize_mutations(
-        &mut self,
-        operations: &[u16],
-        properties: Vec<DevicePropDesc>,
-        capability_profile: &'static crate::generated::cameras::CameraFirmwareCapabilityProfile,
-    ) {
-        self.mutation_authorization = Some(MutationAuthorization::new(
-            operations,
-            properties,
-            capability_profile,
-        ));
+    pub(super) fn activate_mutation_permit(&mut self) -> anyhow::Result<u64> {
+        let id = self.next_mutation_permit_id;
+        self.next_mutation_permit_id = id
+            .checked_add(1)
+            .ok_or_else(|| anyhow!("PTP mutation permit identifier overflow"))?;
+        self.active_mutation_permit_id = Some(id);
+        Ok(id)
     }
 
-    pub(crate) fn clear_mutation_authorization(&mut self) {
-        self.mutation_authorization = None;
+    pub(super) fn clear_mutation_permit(&mut self) {
+        self.active_mutation_permit_id = None;
     }
 
-    pub(crate) fn firmware_option_write_value(
+    pub(super) fn firmware_option_write_value(
         &self,
+        permit: &MutationPermit,
         option: &str,
         logical_value: &str,
     ) -> anyhow::Result<i32> {
-        self.mutation_authorization
-            .as_ref()
-            .ok_or_else(|| anyhow!("firmware option encoding requires camera preflight"))?
-            .capability_profile
-            .write_wire_value(option, logical_value)
+        self.validate_permit(permit)?;
+        permit.firmware_option_write_value(option, logical_value)
     }
 
-    pub(crate) fn firmware_capability_profile(
+    pub(super) fn firmware_capability_profile(
         &self,
+        permit: &MutationPermit,
     ) -> anyhow::Result<&'static crate::generated::cameras::CameraFirmwareCapabilityProfile> {
-        self.mutation_authorization
-            .as_ref()
-            .map(|authorization| authorization.capability_profile)
-            .ok_or_else(|| anyhow!("firmware capability validation requires camera preflight"))
+        self.validate_permit(permit)?;
+        Ok(permit.firmware_capability_profile())
     }
 
-    pub(crate) fn firmware_option_read_logical_value(
+    pub(super) fn firmware_option_read_logical_value(
         &self,
+        permit: &MutationPermit,
         option: &str,
         wire_value: i32,
     ) -> anyhow::Result<&'static str> {
-        self.mutation_authorization
-            .as_ref()
-            .ok_or_else(|| anyhow!("firmware option decoding requires camera preflight"))?
-            .capability_profile
-            .read_logical_value(option, wire_value)
+        self.validate_permit(permit)?;
+        permit.firmware_option_read_logical_value(option, wire_value)
     }
 
-    pub(crate) fn validate_raw_conversion_profile(
+    pub(super) fn validate_raw_conversion_profile(
         &mut self,
+        permit: &mut MutationPermit,
         profile_code: u32,
         header_padding: usize,
         fields: &[&str],
         bytes: &[u8],
     ) -> anyhow::Result<()> {
-        let authorization = self.mutation_authorization.as_mut().ok_or_else(|| {
-            anyhow!("RAW conversion profile validation requires camera preflight")
-        })?;
-        authorization.validate_raw_conversion_profile(profile_code, header_padding, fields, bytes)
+        self.validate_permit(permit)?;
+        permit.validate_raw_conversion_profile(profile_code, header_padding, fields, bytes)
     }
 
-    pub(crate) fn validate_raw_conversion_read_fingerprint(
+    pub(super) fn validate_raw_conversion_read_fingerprint(
         &mut self,
+        permit: &mut MutationPermit,
         profile_code: u32,
         header_padding: usize,
         declared_field_count: u16,
         fields: &[&str],
         bytes: &[u8],
     ) -> anyhow::Result<()> {
-        let authorization = self.mutation_authorization.as_mut().ok_or_else(|| {
-            anyhow!("RAW conversion fingerprint validation requires camera preflight")
-        })?;
-        authorization.validate_raw_conversion_read_fingerprint(
+        self.validate_permit(permit)?;
+        permit.validate_raw_conversion_read_fingerprint(
             profile_code,
             header_padding,
             declared_field_count,
@@ -802,16 +817,39 @@ impl Ptp {
         )
     }
 
-    fn validate_mutation(
+    fn validate_permit(&self, permit: &MutationPermit) -> anyhow::Result<()> {
+        ensure!(
+            permit.is_active_for(
+                self.bus,
+                self.address,
+                self.interface,
+                self.active_mutation_permit_id,
+            ),
+            "PTP mutation permit is not active for this validated camera session"
+        );
+        Ok(())
+    }
+
+    fn validate_mutation_permit(
         &self,
+        permit: &MutationPermit,
         code: CommandCode,
         params: &[u32],
         data: Option<&[u8]>,
     ) -> anyhow::Result<()> {
-        if !is_mutating_command(code) {
-            return Ok(());
-        }
-        validate_mutation_authorization(self.mutation_authorization.as_ref(), code, params, data)
+        self.validate_permit(permit)?;
+        permit.validate_mutation(code, params, data)
+    }
+
+    fn validate_session_control_permit(&self, permit: &SessionControlPermit) -> anyhow::Result<()> {
+        ensure!(
+            self.active_session_control_permit_id == Some(permit.id)
+                && self.bus == permit.bus
+                && self.address == permit.address
+                && self.interface == permit.interface,
+            "PTP session-control permit is not active for this camera transport"
+        );
+        Ok(())
     }
 }
 
@@ -823,7 +861,7 @@ fn session_is_safe_to_close(
     !poisoned && transaction_id != u32::MAX && !camera_processing_active
 }
 
-fn validate_raw_conversion_live_envelope(
+pub(crate) fn validate_raw_conversion_live_envelope(
     bytes: &[u8],
     expected_profile_code: u32,
     header_padding: usize,
@@ -860,16 +898,22 @@ fn validate_raw_conversion_live_envelope(
     Ok(())
 }
 
-const fn is_mutating_command(code: CommandCode) -> bool {
-    matches!(
-        code,
+fn command_risk(code: CommandCode, _params: &[u32]) -> CommandRisk {
+    match code {
+        CommandCode::GetDeviceInfo
+        | CommandCode::GetObjectHandles
+        | CommandCode::GetObject
+        | CommandCode::GetObjectInfo
+        | CommandCode::GetDevicePropDesc
+        | CommandCode::GetDevicePropValue => CommandRisk::ReadOnly,
+        CommandCode::OpenSession | CommandCode::CloseSession => CommandRisk::SessionControl,
         CommandCode::DeleteObject
-            | CommandCode::SendObjectInfo
-            | CommandCode::SendObject
-            | CommandCode::SetDevicePropValue
-            | CommandCode::FujiSendObjectInfo
-            | CommandCode::FujiSendObject
-    )
+        | CommandCode::SendObjectInfo
+        | CommandCode::SendObject
+        | CommandCode::SetDevicePropValue
+        | CommandCode::FujiSendObjectInfo
+        | CommandCode::FujiSendObject => CommandRisk::StateChanging,
+    }
 }
 
 const fn is_read_only_command(code: CommandCode) -> bool {
@@ -884,15 +928,24 @@ const fn is_read_only_command(code: CommandCode) -> bool {
     )
 }
 
-fn validate_mutation_authorization(
-    authorization: Option<&MutationAuthorization>,
+fn validate_read_only_send(code: CommandCode, params: &[u32]) -> anyhow::Result<()> {
+    ensure!(
+        command_risk(code, params) == CommandRisk::ReadOnly,
+        "generic PTP send accepts only read-only commands"
+    );
+    Ok(())
+}
+
+#[cfg(test)]
+fn validate_mutation_permit(
+    permit: Option<&MutationPermit>,
     code: CommandCode,
     params: &[u32],
     data: Option<&[u8]>,
 ) -> anyhow::Result<()> {
-    authorization
-        .ok_or_else(|| anyhow!("PTP mutation requires a validated camera preflight"))?
-        .validate(code, params, data)
+    permit
+        .ok_or_else(|| anyhow!("PTP mutation requires an explicit operation-scoped permit"))?
+        .validate_mutation(code, params, data)
 }
 
 #[expect(
@@ -1518,50 +1571,15 @@ mod tests {
 
     use super::{
         BulkReadState, BulkTransport, Clock, CommandCode, ContainerCode, ContainerInfo,
-        ContainerType, Deadline, DevicePropDataType, DevicePropDesc, DevicePropForm,
-        DevicePropValue, MAX_PTP_CONTAINER_PAYLOAD_BYTES, MutationAuthorization, PTP_BULK_TIMEOUT,
+        ContainerType, Deadline, MAX_PTP_CONTAINER_PAYLOAD_BYTES, PTP_BULK_TIMEOUT,
         PTP_DATA_IDLE_TIMEOUT, PTP_TRANSACTION_TIMEOUT, PtpDeadlineExceeded, PtpDeadlineKind,
         PtpDeadlinePhase, PtpOperation, ResponseCode, encode_command_params, read_container,
         read_container_with_deadline, send_with_transport, send_with_transport_and_clock,
         send_with_transport_and_read_state, send_with_transport_for_operation_and_clock,
         send_with_transport_until_and_clock, session_is_safe_to_close, validate_bulk_read_geometry,
-        validate_mutation_authorization, validate_raw_conversion_live_envelope, write_all_bulk,
-        write_container,
+        validate_mutation_permit, validate_raw_conversion_live_envelope, validate_read_only_send,
+        write_all_bulk, write_container,
     };
-
-    const EMPTY_CAPABILITY_PROFILE: crate::generated::cameras::CameraFirmwareCapabilityProfile =
-        crate::generated::cameras::CameraFirmwareCapabilityProfile {
-            firmware: "test",
-            options: &[],
-            raw_conversion: None,
-        };
-    const RAW_CAPABILITY_PROFILE: crate::generated::cameras::CameraFirmwareCapabilityProfile =
-        crate::generated::cameras::CameraFirmwareCapabilityProfile {
-            firmware: "test",
-            options: &[],
-            raw_conversion: Some(crate::generated::cameras::CameraRawConversionDescriptor {
-                id: "unverified-test",
-                evidence_status:
-                    crate::generated::cameras::CameraRawConversionEvidenceStatus::Unverified,
-                evidence_manifests: &[],
-                usb_modes: &[6],
-                camera_state: None,
-                read: crate::generated::cameras::CameraRawConversionLayout {
-                    profile_code: "1",
-                    header_padding: 2,
-                    declared_field_count: 1,
-                    total_length: 9,
-                    fields: &["field"],
-                },
-                write: Some(crate::generated::cameras::CameraRawConversionLayout {
-                    profile_code: "1",
-                    header_padding: 2,
-                    declared_field_count: 1,
-                    total_length: 9,
-                    fields: &["field"],
-                }),
-            }),
-        };
 
     #[test]
     fn healthy_session_with_camera_processing_in_flight_is_not_safe_to_close() {
@@ -1572,108 +1590,53 @@ mod tests {
     }
 
     #[test]
-    fn state_changing_ptp_command_requires_preflight_authorization() {
-        let error =
-            validate_mutation_authorization(None, CommandCode::SendObject, &[0], Some(b"opaque"))
-                .expect_err("SendObject must not run without a validated session");
+    fn state_changing_ptp_command_requires_an_explicit_operation_permit() {
+        let error = validate_mutation_permit(None, CommandCode::SendObject, &[0], Some(b"opaque"))
+            .expect_err("SendObject must not run without a validated session");
 
-        assert!(error.to_string().contains("validated camera preflight"));
+        assert!(error.to_string().contains("operation-scoped permit"));
     }
 
     #[test]
-    fn authorized_property_write_still_enforces_dynamic_enumeration() {
-        let descriptor = DevicePropDesc {
-            property_code: 0xD001,
-            data_type: DevicePropDataType::UInt16,
-            writable: true,
-            factory_default: DevicePropValue::UInt(1),
-            current: DevicePropValue::UInt(1),
-            form: DevicePropForm::Enumeration(vec![DevicePropValue::UInt(1)]),
-        };
-        let authorization =
-            MutationAuthorization::new(&[0x1016], vec![descriptor], &EMPTY_CAPABILITY_PROFILE);
-
-        let result = validate_mutation_authorization(
-            Some(&authorization),
+    fn ambient_preflight_authorization_cannot_grant_a_raw_property_write() {
+        let result = validate_mutation_permit(
+            None,
             CommandCode::SetDevicePropValue,
             &[0xD001],
-            Some(&2_u16.to_le_bytes()),
-        );
-
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn raw_image_upload_requires_validated_conversion_profile() {
-        let authorization =
-            MutationAuthorization::new(&[0x900d], vec![], &EMPTY_CAPABILITY_PROFILE);
-
-        let error = validate_mutation_authorization(
-            Some(&authorization),
-            CommandCode::FujiSendObject,
-            &[],
-            Some(b"RAF"),
-        )
-        .expect_err("RAW image upload must wait until the conversion profile is validated");
-
-        assert!(error.to_string().contains("profile"));
-    }
-
-    #[test]
-    fn unrelated_property_validation_cannot_authorize_raw_upload() {
-        let selector = DevicePropDesc {
-            property_code: 0xD18C,
-            data_type: DevicePropDataType::UInt16,
-            writable: true,
-            factory_default: DevicePropValue::UInt(1),
-            current: DevicePropValue::UInt(1),
-            form: DevicePropForm::None,
-        };
-        let mut authorization =
-            MutationAuthorization::new(&[0x900d], vec![selector], &RAW_CAPABILITY_PROFILE);
-
-        authorization
-            .validate_raw_conversion_profile(1, 2, &["field"], &1_u16.to_le_bytes())
-            .expect_err("only the RAW conversion profile descriptor can unlock upload");
-        let error = validate_mutation_authorization(
-            Some(&authorization),
-            CommandCode::FujiSendObject,
-            &[],
-            Some(b"RAF"),
-        )
-        .expect_err("selector validation must not authorize RAW upload");
-
-        assert!(error.to_string().contains("profile"));
-    }
-
-    #[test]
-    fn static_raw_signature_cannot_authorize_upload_without_write_evidence() {
-        let descriptor = DevicePropDesc {
-            property_code: 0xD185,
-            data_type: DevicePropDataType::UInt16,
-            writable: true,
-            factory_default: DevicePropValue::UInt(1),
-            current: DevicePropValue::UInt(1),
-            form: DevicePropForm::None,
-        };
-        let mut authorization =
-            MutationAuthorization::new(&[0x900d], vec![descriptor], &RAW_CAPABILITY_PROFILE);
-        let descriptor_error = authorization
-            .validate_raw_conversion_profile(1, 2, &["field"], &1_u16.to_le_bytes())
-            .expect_err("an unverified descriptor must not authorize RAW mutation");
-        assert!(descriptor_error.to_string().contains("not write-verified"));
-
-        let result = validate_mutation_authorization(
-            Some(&authorization),
-            CommandCode::FujiSendObject,
-            &[],
-            Some(b"RAF"),
+            Some(&1_u16.to_le_bytes()),
         );
 
         assert!(
             result.is_err(),
-            "a static RAW signature must not authorize upload without independent write evidence"
+            "a raw property write must require an explicit operation-scoped permit"
         );
+    }
+
+    #[test]
+    fn generic_send_rejects_close_session() {
+        let error = validate_read_only_send(CommandCode::CloseSession, &[])
+            .expect_err("generic PTP send must not submit lifecycle commands");
+
+        assert!(error.to_string().contains("read-only"));
+    }
+
+    #[test]
+    fn generic_send_rejects_every_known_state_changing_command() {
+        for command in [
+            CommandCode::DeleteObject,
+            CommandCode::SendObjectInfo,
+            CommandCode::SendObject,
+            CommandCode::SetDevicePropValue,
+            CommandCode::FujiSendObjectInfo,
+            CommandCode::FujiSendObject,
+        ] {
+            let error = validate_read_only_send(command, &[])
+                .expect_err("generic PTP send must reject every state-changing command");
+            assert!(
+                error.to_string().contains("read-only"),
+                "unexpected error for {command:?}: {error}"
+            );
+        }
     }
 
     #[test]

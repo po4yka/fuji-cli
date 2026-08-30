@@ -1,4 +1,7 @@
-use std::marker::PhantomData;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    marker::PhantomData,
+};
 
 use anyhow::{bail, ensure};
 
@@ -39,6 +42,208 @@ pub struct SimulationAccess;
 #[derive(Debug)]
 pub struct SimulationWrite;
 
+#[derive(Debug)]
+pub(super) struct MutationPermit {
+    authorization: MutationAuthorization,
+    id: u64,
+    bus: u8,
+    address: u8,
+    interface: u8,
+    operation: CameraPreflightOperation,
+}
+
+#[derive(Debug)]
+struct MutationAuthorization {
+    operations: BTreeSet<u16>,
+    properties: BTreeMap<u16, DevicePropDesc>,
+    capability_profile: &'static CameraFirmwareCapabilityProfile,
+    raw_conversion_read_fingerprint_validated: bool,
+    raw_conversion_profile_validated: bool,
+}
+
+impl MutationAuthorization {
+    fn new(
+        operations: &[u16],
+        properties: Vec<DevicePropDesc>,
+        capability_profile: &'static CameraFirmwareCapabilityProfile,
+    ) -> Self {
+        Self {
+            operations: operations.iter().copied().collect(),
+            properties: properties
+                .into_iter()
+                .map(|descriptor| (descriptor.property_code, descriptor))
+                .collect(),
+            capability_profile,
+            raw_conversion_read_fingerprint_validated: false,
+            raw_conversion_profile_validated: false,
+        }
+    }
+
+    fn validate(
+        &self,
+        code: crate::ptp::CommandCode,
+        params: &[u32],
+        data: Option<&[u8]>,
+    ) -> anyhow::Result<()> {
+        let operation = u16::from(code);
+        ensure!(
+            self.operations.contains(&operation),
+            "PTP mutation 0x{operation:04x} is not authorized by the validated preflight profile"
+        );
+        if matches!(
+            code,
+            crate::ptp::CommandCode::FujiSendObjectInfo | crate::ptp::CommandCode::FujiSendObject
+        ) {
+            ensure!(
+                self.raw_conversion_profile_validated,
+                "RAW image upload requires a validated firmware conversion profile"
+            );
+        }
+        if code == crate::ptp::CommandCode::SetDevicePropValue {
+            let property = params
+                .first()
+                .and_then(|value| u16::try_from(*value).ok())
+                .ok_or_else(|| {
+                    anyhow::anyhow!("SetDevicePropValue requires one u16 property code")
+                })?;
+            self.validate_property_candidate(
+                property,
+                data.ok_or_else(|| anyhow::anyhow!("SetDevicePropValue requires serialized data"))?,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn validate_property_candidate(&self, property: u16, data: &[u8]) -> anyhow::Result<()> {
+        let descriptor = self.properties.get(&property).ok_or_else(|| {
+            anyhow::anyhow!("PTP property 0x{property:04x} was not validated by preflight")
+        })?;
+        descriptor.validate_serialized_candidate(data)
+    }
+}
+
+impl MutationPermit {
+    fn new(
+        id: u64,
+        transport_binding: (u8, u8, u8),
+        operation: CameraPreflightOperation,
+        operations: &[u16],
+        properties: Vec<DevicePropDesc>,
+        capability_profile: &'static CameraFirmwareCapabilityProfile,
+    ) -> Self {
+        Self {
+            authorization: MutationAuthorization::new(operations, properties, capability_profile),
+            id,
+            bus: transport_binding.0,
+            address: transport_binding.1,
+            interface: transport_binding.2,
+            operation,
+        }
+    }
+
+    pub(crate) fn is_active_for(
+        &self,
+        bus: u8,
+        address: u8,
+        interface: u8,
+        active_id: Option<u64>,
+    ) -> bool {
+        active_id == Some(self.id)
+            && self.bus == bus
+            && self.address == address
+            && self.interface == interface
+    }
+
+    pub(crate) const fn operation(&self) -> CameraPreflightOperation {
+        self.operation
+    }
+
+    pub(crate) fn validate_mutation(
+        &self,
+        code: crate::ptp::CommandCode,
+        params: &[u32],
+        data: Option<&[u8]>,
+    ) -> anyhow::Result<()> {
+        self.authorization.validate(code, params, data)
+    }
+
+    pub(crate) fn firmware_option_write_value(
+        &self,
+        option: &str,
+        logical_value: &str,
+    ) -> anyhow::Result<i32> {
+        self.authorization
+            .capability_profile
+            .write_wire_value(option, logical_value)
+    }
+
+    pub(crate) const fn firmware_capability_profile(
+        &self,
+    ) -> &'static CameraFirmwareCapabilityProfile {
+        self.authorization.capability_profile
+    }
+
+    pub(crate) fn firmware_option_read_logical_value(
+        &self,
+        option: &str,
+        wire_value: i32,
+    ) -> anyhow::Result<&'static str> {
+        self.authorization
+            .capability_profile
+            .read_logical_value(option, wire_value)
+    }
+
+    pub(crate) fn validate_raw_conversion_profile(
+        &mut self,
+        profile_code: u32,
+        header_padding: usize,
+        fields: &[&str],
+        bytes: &[u8],
+    ) -> anyhow::Result<()> {
+        self.authorization
+            .capability_profile
+            .validate_raw_conversion_signature(profile_code, header_padding, fields, bytes.len())?;
+        ensure!(
+            self.authorization.raw_conversion_read_fingerprint_validated,
+            "RAW conversion write requires a matching live read fingerprint"
+        );
+        self.authorization.validate_property_candidate(
+            u16::from(crate::ptp::DevicePropCode::FujiRawConversionProfile),
+            bytes,
+        )?;
+        self.authorization.raw_conversion_profile_validated = true;
+        Ok(())
+    }
+
+    pub(crate) fn validate_raw_conversion_read_fingerprint(
+        &mut self,
+        profile_code: u32,
+        header_padding: usize,
+        declared_field_count: u16,
+        fields: &[&str],
+        bytes: &[u8],
+    ) -> anyhow::Result<()> {
+        self.authorization
+            .capability_profile
+            .validate_raw_conversion_read_fingerprint(
+                profile_code,
+                header_padding,
+                declared_field_count,
+                fields,
+                bytes.len(),
+            )?;
+        crate::ptp::validate_raw_conversion_live_envelope(
+            bytes,
+            profile_code,
+            header_padding,
+            declared_field_count,
+            fields.len(),
+        )?;
+        self.authorization.raw_conversion_read_fingerprint_validated = true;
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PreflightEvidence {
     pub camera_name: &'static str,
@@ -54,6 +259,7 @@ pub struct PreflightEvidence {
 
 pub struct ValidatedCameraSession<'camera, Operation> {
     pub(crate) camera: &'camera mut Camera,
+    permit: MutationPermit,
     evidence: PreflightEvidence,
     capability_profile: &'static CameraFirmwareCapabilityProfile,
     operation: PhantomData<Operation>,
@@ -95,6 +301,10 @@ impl<Operation> ValidatedCameraSession<'_, Operation> {
     pub(crate) const fn capability_profile(&self) -> &'static CameraFirmwareCapabilityProfile {
         self.capability_profile
     }
+
+    fn camera_and_permit(&mut self) -> (&mut Camera, &mut MutationPermit) {
+        (self.camera, &mut self.permit)
+    }
 }
 
 impl ValidatedCameraSession<'_, BackupRestore> {
@@ -116,7 +326,8 @@ impl ValidatedCameraSession<'_, BackupRestore> {
             &backup_identity_from_evidence(&self.evidence),
             expected_target_serial_sha256,
         )?;
-        self.camera.import_backup_unchecked(artifact)
+        let (camera, permit) = self.camera_and_permit();
+        camera.import_backup_unchecked(permit, artifact)
     }
 }
 
@@ -128,14 +339,16 @@ impl ValidatedCameraSession<'_, RawConversion> {
         draft: bool,
     ) -> anyhow::Result<crate::features::render::RenderOutcome> {
         partial.validate_firmware_capabilities(self.capability_profile())?;
-        self.camera.render_unchecked(image, partial, draft)
+        let (camera, permit) = self.camera_and_permit();
+        camera.render_unchecked(permit, image, partial, draft)
     }
 
     pub fn cleanup_rendered_object(
         &mut self,
         handle: u32,
     ) -> anyhow::Result<crate::features::outcome::StateChangeAudit> {
-        self.camera.cleanup_rendered_object_unchecked(handle)
+        let (camera, permit) = self.camera_and_permit();
+        camera.cleanup_rendered_object_unchecked(permit, handle)
     }
 }
 
@@ -144,7 +357,8 @@ impl ValidatedCameraSession<'_, RawRecoveryFetch> {
         &mut self,
         handle: u32,
     ) -> anyhow::Result<crate::features::render::RenderedObject> {
-        self.camera.recover_rendered_object_unchecked(handle)
+        let (camera, permit) = self.camera_and_permit();
+        camera.recover_rendered_object_unchecked(permit, handle)
     }
 }
 
@@ -153,26 +367,30 @@ impl ValidatedCameraSession<'_, RawRecoveryCleanup> {
         &mut self,
         handle: u32,
     ) -> anyhow::Result<crate::features::outcome::StateChangeAudit> {
-        self.camera.cleanup_rendered_object_unchecked(handle)
+        let (camera, permit) = self.camera_and_permit();
+        camera.cleanup_rendered_object_unchecked(permit, handle)
     }
 }
 
 impl ValidatedCameraSession<'_, SimulationAccess> {
     pub fn get_simulation(&mut self, slot: CustomSetting) -> anyhow::Result<Box<dyn Simulation>> {
-        self.camera.get_simulation_unchecked(slot)
+        let (camera, permit) = self.camera_and_permit();
+        camera.get_simulation_unchecked(permit, slot)
     }
 
     pub fn get_simulations(
         &mut self,
         slots: &[CustomSetting],
     ) -> anyhow::Result<Vec<(CustomSetting, Box<dyn Simulation>)>> {
-        self.camera.get_simulations_unchecked(slots)
+        let (camera, permit) = self.camera_and_permit();
+        camera.get_simulations_unchecked(permit, slots)
     }
 }
 
 impl ValidatedCameraSession<'_, SimulationWrite> {
     pub fn get_simulation(&mut self, slot: CustomSetting) -> anyhow::Result<Box<dyn Simulation>> {
-        self.camera.get_simulation_unchecked(slot)
+        let (camera, permit) = self.camera_and_permit();
+        camera.get_simulation_unchecked(permit, slot)
     }
 
     pub fn update_simulation(
@@ -185,7 +403,8 @@ impl ValidatedCameraSession<'_, SimulationWrite> {
             .map_err(|error| {
                 SimulationTransactionError::preparation(self.camera.ptp.is_healthy(), error)
             })?;
-        self.camera.update_simulation_unchecked(slot, partial)
+        let (camera, permit) = self.camera_and_permit();
+        camera.update_simulation_unchecked(permit, slot, partial)
     }
 
     pub fn set_simulation(
@@ -199,13 +418,14 @@ impl ValidatedCameraSession<'_, SimulationWrite> {
             .map_err(|error| {
                 SimulationTransactionError::preparation(self.camera.ptp.is_healthy(), error)
             })?;
-        self.camera.set_simulation_unchecked(slot, simulation)
+        let (camera, permit) = self.camera_and_permit();
+        camera.set_simulation_unchecked(permit, slot, simulation)
     }
 }
 
 impl<Operation> Drop for ValidatedCameraSession<'_, Operation> {
     fn drop(&mut self) {
-        self.camera.ptp.clear_mutation_authorization();
+        self.camera.ptp.clear_mutation_permit();
     }
 }
 
@@ -213,7 +433,7 @@ pub(crate) fn run<'camera, Operation: OperationMarker>(
     camera: &'camera mut Camera,
     serial_binding: Option<&SerialFingerprint>,
 ) -> anyhow::Result<ValidatedCameraSession<'camera, Operation>> {
-    camera.ptp.clear_mutation_authorization();
+    camera.ptp.clear_mutation_permit();
     ensure!(
         camera.binding == ModelBindingKind::Native,
         "state-changing camera operations require a native physical model binding"
@@ -234,9 +454,16 @@ pub(crate) fn run<'camera, Operation: OperationMarker>(
     validate_serial_binding(serial_binding, &serial_sha256)?;
 
     let descriptors = read_and_validate_descriptors(&mut camera.ptp, profile)?;
-    camera
-        .ptp
-        .authorize_mutations(profile.required_operations, descriptors, capability_profile);
+    let permit_id = camera.ptp.activate_mutation_permit()?;
+    let (bus, address, interface) = camera.ptp.transport_binding();
+    let permit = MutationPermit::new(
+        permit_id,
+        (bus, address, interface),
+        Operation::KIND,
+        profile.required_operations,
+        descriptors,
+        capability_profile,
+    );
 
     let evidence = PreflightEvidence {
         camera_name: definition.name,
@@ -252,6 +479,7 @@ pub(crate) fn run<'camera, Operation: OperationMarker>(
 
     Ok(ValidatedCameraSession {
         camera,
+        permit,
         evidence,
         capability_profile,
         operation: PhantomData,
@@ -460,11 +688,13 @@ mod tests {
             CameraPtpIdentity,
         },
         policy::{PhysicalUsbIdentity, SerialFingerprint},
+        ptp::{CommandCode, DevicePropDataType, DevicePropDesc, DevicePropForm, DevicePropValue},
     };
 
     use super::{
-        select_capability_profile, select_profile, validate_device_info, validate_mode_and_battery,
-        validate_physical_identity, validate_serial_binding,
+        MutationAuthorization, MutationPermit, select_capability_profile, select_profile,
+        validate_device_info, validate_mode_and_battery, validate_physical_identity,
+        validate_serial_binding,
     };
 
     const PROFILE: CameraPreflightProfile = CameraPreflightProfile {
@@ -493,6 +723,124 @@ mod tests {
         firmware_capability_profiles: &[],
         camera_factory: crate::features::base::UNKNOWN_CAMERA.camera_factory,
     };
+
+    const EMPTY_CAPABILITY_PROFILE: CameraFirmwareCapabilityProfile =
+        CameraFirmwareCapabilityProfile {
+            firmware: "test",
+            options: &[],
+            raw_conversion: None,
+        };
+    const RAW_CAPABILITY_PROFILE: CameraFirmwareCapabilityProfile =
+        CameraFirmwareCapabilityProfile {
+            firmware: "test",
+            options: &[],
+            raw_conversion: Some(crate::generated::cameras::CameraRawConversionDescriptor {
+                id: "unverified-test",
+                evidence_status:
+                    crate::generated::cameras::CameraRawConversionEvidenceStatus::Unverified,
+                evidence_manifests: &[],
+                usb_modes: &[6],
+                camera_state: None,
+                read: crate::generated::cameras::CameraRawConversionLayout {
+                    profile_code: "1",
+                    header_padding: 2,
+                    declared_field_count: 1,
+                    total_length: 9,
+                    fields: &["field"],
+                },
+                write: Some(crate::generated::cameras::CameraRawConversionLayout {
+                    profile_code: "1",
+                    header_padding: 2,
+                    declared_field_count: 1,
+                    total_length: 9,
+                    fields: &["field"],
+                }),
+            }),
+        };
+
+    #[test]
+    fn permit_validation_still_enforces_dynamic_property_enumeration() {
+        let descriptor = DevicePropDesc {
+            property_code: 0xD001,
+            data_type: DevicePropDataType::UInt16,
+            writable: true,
+            factory_default: DevicePropValue::UInt(1),
+            current: DevicePropValue::UInt(1),
+            form: DevicePropForm::Enumeration(vec![DevicePropValue::UInt(1)]),
+        };
+        let authorization =
+            MutationAuthorization::new(&[0x1016], vec![descriptor], &EMPTY_CAPABILITY_PROFILE);
+
+        let result = authorization.validate(
+            CommandCode::SetDevicePropValue,
+            &[0xD001],
+            Some(&2_u16.to_le_bytes()),
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn raw_upload_requires_a_validated_conversion_profile() {
+        let authorization =
+            MutationAuthorization::new(&[0x900d], vec![], &EMPTY_CAPABILITY_PROFILE);
+
+        let error = authorization
+            .validate(CommandCode::FujiSendObject, &[], Some(b"RAF"))
+            .expect_err("RAW image upload must wait until the conversion profile is validated");
+
+        assert!(error.to_string().contains("profile"));
+    }
+
+    #[test]
+    fn unrelated_property_validation_cannot_authorize_raw_upload() {
+        let selector = DevicePropDesc {
+            property_code: 0xD18C,
+            data_type: DevicePropDataType::UInt16,
+            writable: true,
+            factory_default: DevicePropValue::UInt(1),
+            current: DevicePropValue::UInt(1),
+            form: DevicePropForm::None,
+        };
+        let mut permit = MutationPermit::new(
+            1,
+            (1, 2, 3),
+            CameraPreflightOperation::RawConversion,
+            &[0x900d],
+            vec![selector],
+            &RAW_CAPABILITY_PROFILE,
+        );
+
+        permit
+            .validate_raw_conversion_profile(1, 2, &["field"], &1_u16.to_le_bytes())
+            .expect_err("only the RAW conversion profile descriptor can unlock upload");
+        let error = permit
+            .validate_mutation(CommandCode::FujiSendObject, &[], Some(b"RAF"))
+            .expect_err("selector validation must not authorize RAW upload");
+
+        assert!(error.to_string().contains("profile"));
+    }
+
+    #[test]
+    fn permit_rejects_inactive_or_mismatched_transport_binding() {
+        let permit = MutationPermit::new(
+            7,
+            (1, 2, 3),
+            CameraPreflightOperation::SimulationWrite,
+            &[0x1016],
+            vec![],
+            &EMPTY_CAPABILITY_PROFILE,
+        );
+
+        assert!(!permit.is_active_for(1, 2, 3, None));
+        assert!(!permit.is_active_for(1, 9, 3, Some(7)));
+        assert!(!permit.is_active_for(1, 2, 3, Some(8)));
+        assert!(permit.is_active_for(1, 2, 3, Some(7)));
+        assert_eq!(
+            permit.operation(),
+            CameraPreflightOperation::SimulationWrite
+        );
+    }
 
     #[test]
     fn firmware_capability_selection_does_not_fall_back_to_another_version() {

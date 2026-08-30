@@ -1,5 +1,5 @@
 use fujicli::{
-    features::render::{RenderSaveError, finish_render_cleanup, raf::validate_xt5_raf},
+    features::render::{RenderSaveError, finish_render_cleanup, validate_xt5_raf},
     generated::{cli::RenderArgs, renders::RenderBase},
     policy::{EmulationAcknowledgement, SerialFingerprint},
 };

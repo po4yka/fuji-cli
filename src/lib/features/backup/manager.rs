@@ -8,6 +8,7 @@ use binrw::{BinRead, BinResult, BinWrite, Endian};
 use log::debug;
 
 use crate::{
+    camera::AuthorizedPtp,
     features::{
         backup::artifact::{BackupArtifact, sha256_hex},
         base::CameraBase,
@@ -16,9 +17,9 @@ use crate::{
     ptp::{CommandCode, ObjectFormat, ObjectInfo, Ptp, PtpOperation},
 };
 
-pub const OBJECT_HANDLE: [u32; 1] = [0x0];
-pub const EXPORT_OBJECT_INFO_HANDLE: [u32; 1] = [0x0];
-pub const IMPORT_OBJECT_INFO_HANDLE: [u32; 2] = [0x0, 0x0];
+pub(crate) const OBJECT_HANDLE: [u32; 1] = [0x0];
+pub(crate) const EXPORT_OBJECT_INFO_HANDLE: [u32; 1] = [0x0];
+pub(crate) const IMPORT_OBJECT_INFO_HANDLE: [u32; 2] = [0x0, 0x0];
 const BACKUP_OBJECT_INFO_PADDING_BYTES: usize = 1020;
 const BACKUP_OBJECT_INFO_BYTES: usize = 1076;
 
@@ -189,9 +190,19 @@ pub(crate) trait BackupExportTransport {
     fn get_object_data(&mut self) -> anyhow::Result<Vec<u8>>;
 }
 
-impl BackupTransport for Ptp {
+pub(crate) struct AuthorizedBackupTransport<'io> {
+    authorized: AuthorizedPtp<'io>,
+}
+
+impl<'io> AuthorizedBackupTransport<'io> {
+    pub(crate) fn new(authorized: AuthorizedPtp<'io>) -> Self {
+        Self { authorized }
+    }
+}
+
+impl BackupTransport for AuthorizedBackupTransport<'_> {
     fn send_object_info(&mut self, object_info: &[u8]) -> anyhow::Result<()> {
-        self.send_for_operation(
+        self.authorized.send_mutating_for_operation(
             PtpOperation::CameraProcessing,
             CommandCode::SendObjectInfo,
             &IMPORT_OBJECT_INFO_HANDLE,
@@ -201,7 +212,7 @@ impl BackupTransport for Ptp {
     }
 
     fn send_object_data(&mut self, buffer: &[u8]) -> anyhow::Result<()> {
-        self.send_for_operation(
+        self.authorized.send_mutating_for_operation(
             PtpOperation::LargeTransfer,
             CommandCode::SendObject,
             &OBJECT_HANDLE,
@@ -302,7 +313,7 @@ fn import_validated_backup_with_transport(
 }
 
 // NOTE: Naively assuming that all cameras backup/restore in the same way.
-pub trait CameraBackupManager: CameraBase {
+pub(crate) trait CameraBackupManager: CameraBase {
     fn export_backup(&self, ptp: &mut Ptp) -> anyhow::Result<Vec<u8>> {
         debug!("Starting backup export");
         let response = export_backup_with_transport(ptp)?;
@@ -313,11 +324,11 @@ pub trait CameraBackupManager: CameraBase {
 
     fn import_backup(
         &self,
-        ptp: &mut Ptp,
+        transport: &mut AuthorizedBackupTransport<'_>,
         artifact: &BackupArtifact,
     ) -> anyhow::Result<BackupRestoreAccepted> {
         debug!("Starting backup import");
-        let accepted = import_validated_backup_with_transport(ptp, artifact)?;
+        let accepted = import_validated_backup_with_transport(transport, artifact)?;
         debug!("Backup import completed");
 
         Ok(accepted)

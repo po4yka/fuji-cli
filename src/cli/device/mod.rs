@@ -4,7 +4,7 @@ use crate::cli::{
     GlobalOptions,
     common::{file::write_stdout_line, usb},
 };
-use fujicli::{features::base::info::CameraInfoListItem, policy::EmulationAcknowledgement};
+use fujicli::{CameraInfoListItem, policy::EmulationAcknowledgement};
 
 #[derive(Subcommand, Debug, Clone, Copy)]
 pub enum DeviceCmd {

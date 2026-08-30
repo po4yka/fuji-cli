@@ -130,11 +130,14 @@ subsequent property write is checked dynamically against that descriptor before
 the command is sent.
 
 Success returns `ValidatedCameraSession<Operation>`. Only that typestate exposes
-the relevant mutation, and dropping it removes the PTP mutation authorization.
-The session also pins the exact generated firmware capability profile selected
-from the live `GetDeviceInfo` version. Simulation enum codecs use that profile's
-canonical/read wire mappings. Simulation and render inputs are checked against
-its logical-value allowlists before selector or object-upload mutations.
+the relevant mutation. It privately owns a non-cloneable mutation permit bound
+to that operation, the exact USB device and interface, the active PTP session,
+the live property descriptors, and the generated firmware profile. Dropping the
+validated session invalidates that permit. The PTP transport does not retain
+ambient mutation authority that another caller could reuse. Simulation enum
+codecs use the selected profile's canonical/read wire mappings. Simulation and
+render inputs are checked against its logical-value allowlists before selector
+or object-upload mutations.
 
 RAW conversion has an additional evidence gate. Each exact firmware profile may
 carry a direction-specific descriptor with an evidence status, manifests, USB
@@ -151,15 +154,40 @@ a lossless JSON payload artifact without inferring padding or field semantics.
 Golden payloads plus exact model/firmware/state HIL evidence and the missing
 machine validators are required before `write_verified` may be accepted.
 
-The transport independently rejects `SetDevicePropValue`, object upload/delete,
-and Fuji vendor write operations unless the current authorization allows their
-operation code. This makes bypassing preflight from another high-level caller a
-compile-time and transport-boundary failure rather than a CLI convention.
+The transport exhaustively classifies every known PTP command. Generic send
+methods accept only read-only commands; session lifecycle commands require a
+private session-control token, while property writes, object upload/delete, and
+Fuji vendor writes require the operation-bound mutation permit. Adding a new
+`CommandCode` without classifying it therefore fails compilation. This makes
+bypassing preflight from another high-level caller both a compile-time and a
+transport-boundary failure rather than a CLI convention.
 
 Dangerous operations also bind to the SHA-256 fingerprint of the live PTP
 serial. Backup restore uses the source artifact's binding unless an explicit
 target is supplied; simulation write and RAW conversion require an explicit
 `--target-serial-sha256`.
+
+## Public API Boundary
+
+The public library surface contains `Camera`, data and outcome types, and the
+validated high-level operations. USB transport, PTP command/property types,
+camera implementation traits, and feature-manager SPI remain crate-private.
+Generated implementations receive narrow authorized adapters instead of a raw
+`Ptp`, and those adapters verify that their permit matches the requested
+high-level operation before every mutation.
+
+`Camera`, preflight, the PTP transport, and the capability constructor share a
+private ownership module. Mutation and session-lifecycle methods are visible
+only inside that subtree; other runtime, generated, and CLI modules cannot mint
+the linear `AuthorizedPtp` capability. New modules must not be placed in this
+trusted subtree merely to gain transport access, and the capability must not
+gain `Clone`, `Deref`, raw getters, or a wider constructor.
+
+There is deliberately no `raw-ptp` Cargo feature and no Rust `unsafe` marker for
+operational risk. A feature would make the bypass available in the distributed
+library, while `unsafe` would incorrectly describe camera-state risk as memory
+safety. `reverse-tools` remains a CLI-only collection of named read-only probes;
+it does not expose a generic command sender.
 
 ## Feature Traits
 
