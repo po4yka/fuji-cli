@@ -1,3 +1,4 @@
+mod chunk_policy;
 pub mod codec;
 pub mod container;
 mod descriptor;
@@ -10,6 +11,7 @@ pub use container::*;
 pub use props::*;
 pub use structs::*;
 
+pub(crate) use chunk_policy::ChunkPolicy;
 pub(crate) use descriptor::*;
 
 use std::{
@@ -23,7 +25,7 @@ use std::{
 
 use anyhow::{Context, anyhow, bail, ensure};
 use binrw::{BinRead, BinWrite, Endian};
-use log::{debug, error, trace};
+use log::{debug, error, trace, warn};
 use rusb::GlobalContext;
 
 const PTP_BULK_TIMEOUT: Duration = Duration::from_secs(10);
@@ -265,6 +267,16 @@ impl BulkReadState {
         })
     }
 
+    fn resized(&self, chunk_size: usize) -> anyhow::Result<Self> {
+        ensure!(
+            !self.has_pending_bytes(),
+            "cannot resize PTP bulk read buffer with pending bytes"
+        );
+        let mut resized = Self::new(chunk_size)?;
+        resized.previous_read_filled_buffer = self.previous_read_filled_buffer;
+        Ok(resized)
+    }
+
     fn read_exact<T: BulkTransport, C: Clock>(
         &mut self,
         transport: &T,
@@ -336,7 +348,7 @@ pub struct Ptp {
     pub(crate) bulk_out: u8,
     pub(crate) handle: rusb::DeviceHandle<GlobalContext>,
     pub(crate) transaction_id: u32,
-    pub(crate) chunk_size: usize,
+    pub(crate) chunk_policy: ChunkPolicy,
     pub(crate) bulk_read_state: BulkReadState,
     pub(crate) poisoned: bool,
     pub(crate) camera_processing_active: bool,
@@ -463,11 +475,14 @@ impl Ptp {
         data: Option<&[u8]>,
     ) -> anyhow::Result<Vec<u8>> {
         self.validate_mutation(code, params, data)?;
-        let response = send_with_transport_for_operation(
+        let started = Instant::now();
+        let read_chunk_size = self.chunk_policy.read.effective_bytes;
+        let write_chunk_size = self.chunk_policy.write.effective_bytes;
+        let result = send_with_transport_for_operation(
             &self.handle,
             self.bulk_in,
             self.bulk_out,
-            self.chunk_size,
+            write_chunk_size,
             &mut self.bulk_read_state,
             &mut self.transaction_id,
             &mut self.poisoned,
@@ -475,10 +490,8 @@ impl Ptp {
             params,
             data,
             operation,
-        )?;
-        trace!("PTP tx complete with response length {}", response.len());
-
-        Ok(response)
+        );
+        self.finish_transport_transaction(code, read_chunk_size, write_chunk_size, started, result)
     }
 
     pub(crate) fn send_until(
@@ -489,11 +502,14 @@ impl Ptp {
         data: Option<&[u8]>,
     ) -> anyhow::Result<Vec<u8>> {
         self.validate_mutation(code, params, data)?;
-        let response = send_with_transport_until_and_read_state(
+        let started = Instant::now();
+        let read_chunk_size = self.chunk_policy.read.effective_bytes;
+        let write_chunk_size = self.chunk_policy.write.effective_bytes;
+        let result = send_with_transport_until_and_read_state(
             &self.handle,
             self.bulk_in,
             self.bulk_out,
-            self.chunk_size,
+            write_chunk_size,
             &mut self.bulk_read_state,
             &mut self.transaction_id,
             &mut self.poisoned,
@@ -501,10 +517,68 @@ impl Ptp {
             params,
             data,
             deadline,
-        )?;
-        trace!("PTP tx complete with response length {}", response.len());
+        );
+        self.finish_transport_transaction(code, read_chunk_size, write_chunk_size, started, result)
+    }
 
-        Ok(response)
+    fn finish_transport_transaction(
+        &mut self,
+        code: CommandCode,
+        read_chunk_size: usize,
+        write_chunk_size: usize,
+        started: Instant,
+        result: anyhow::Result<Vec<u8>>,
+    ) -> anyhow::Result<Vec<u8>> {
+        let elapsed = started.elapsed();
+        match result {
+            Ok(response) => {
+                trace!(
+                    "PTP transport complete: code={code:?}, outcome=ok, response_bytes={}, read_chunk_bytes={read_chunk_size}, write_chunk_bytes={write_chunk_size}, elapsed_ms={}",
+                    response.len(),
+                    elapsed.as_millis()
+                );
+                if is_read_only_command(code) && !self.bulk_read_state.has_pending_bytes() {
+                    self.observe_read_success(response.len(), elapsed);
+                }
+                Ok(response)
+            }
+            Err(error) => {
+                trace!(
+                    "PTP transport complete: code={code:?}, outcome=error, response_bytes=0, read_chunk_bytes={read_chunk_size}, write_chunk_bytes={write_chunk_size}, elapsed_ms={}",
+                    elapsed.as_millis()
+                );
+                Err(error)
+            }
+        }
+    }
+
+    fn observe_read_success(&mut self, response_bytes: usize, elapsed: Duration) {
+        let Some(promotion) = self
+            .chunk_policy
+            .observe_read_only_success(response_bytes, elapsed)
+        else {
+            return;
+        };
+
+        match self.bulk_read_state.resized(promotion.new_bytes) {
+            Ok(read_state) => {
+                self.bulk_read_state = read_state;
+                debug!(
+                    "Promoted PTP read chunk: old_bytes={}, new_bytes={}, sample_bytes={}, sample_elapsed_ms={}",
+                    promotion.old_bytes,
+                    promotion.new_bytes,
+                    promotion.sample_bytes,
+                    promotion.sample_duration.as_millis()
+                );
+            }
+            Err(error) => {
+                self.chunk_policy.read.effective_bytes = promotion.old_bytes;
+                warn!(
+                    "Keeping previous PTP read chunk after promotion allocation failed: old_bytes={}, attempted_bytes={}, error={error}",
+                    promotion.old_bytes, promotion.new_bytes
+                );
+            }
+        }
     }
 
     pub(crate) fn open_session(&mut self, session_id: u32) -> anyhow::Result<()> {
@@ -702,6 +776,18 @@ const fn is_mutating_command(code: CommandCode) -> bool {
     )
 }
 
+const fn is_read_only_command(code: CommandCode) -> bool {
+    matches!(
+        code,
+        CommandCode::GetDeviceInfo
+            | CommandCode::GetObjectHandles
+            | CommandCode::GetObjectInfo
+            | CommandCode::GetObject
+            | CommandCode::GetDevicePropDesc
+            | CommandCode::GetDevicePropValue
+    )
+}
+
 fn validate_mutation_authorization(
     authorization: Option<&MutationAuthorization>,
     code: CommandCode,
@@ -753,7 +839,7 @@ fn send_with_transport_and_read_state<T: BulkTransport>(
     transport: &T,
     bulk_in: u8,
     bulk_out: u8,
-    chunk_size: usize,
+    write_chunk_size: usize,
     read_state: &mut BulkReadState,
     transaction_id: &mut u32,
     poisoned: &mut bool,
@@ -766,7 +852,7 @@ fn send_with_transport_and_read_state<T: BulkTransport>(
         transport,
         bulk_in,
         bulk_out,
-        chunk_size,
+        write_chunk_size,
         read_state,
         transaction_id,
         poisoned,
@@ -890,7 +976,7 @@ fn send_with_transport_until_and_read_state<T: BulkTransport>(
     transport: &T,
     bulk_in: u8,
     bulk_out: u8,
-    chunk_size: usize,
+    write_chunk_size: usize,
     read_state: &mut BulkReadState,
     transaction_id: &mut u32,
     poisoned: &mut bool,
@@ -904,7 +990,7 @@ fn send_with_transport_until_and_read_state<T: BulkTransport>(
         transport,
         bulk_in,
         bulk_out,
-        chunk_size,
+        write_chunk_size,
         read_state,
         transaction_id,
         poisoned,
@@ -960,7 +1046,7 @@ fn send_with_transport_and_deadline<T: BulkTransport, C: Clock>(
     transport: &T,
     bulk_in: u8,
     bulk_out: u8,
-    chunk_size: usize,
+    write_chunk_size: usize,
     read_state: &mut BulkReadState,
     transaction_id: &mut u32,
     poisoned: &mut bool,
@@ -981,7 +1067,8 @@ fn send_with_transport_and_deadline<T: BulkTransport, C: Clock>(
     let current_transaction_id = *transaction_id;
 
     trace!(
-        "PTP tx={current_transaction_id}: code={code:?}, params={params:?}, data_len={}",
+        "PTP tx={current_transaction_id}: code={code:?}, param_count={}, data_len={}",
+        params.len(),
         data.map_or(0, <[u8]>::len)
     );
 
@@ -993,7 +1080,7 @@ fn send_with_transport_and_deadline<T: BulkTransport, C: Clock>(
     let command_result = write_container(
         transport,
         bulk_out,
-        chunk_size,
+        write_chunk_size,
         ContainerType::Command,
         code,
         &payload,
@@ -1019,7 +1106,7 @@ fn send_with_transport_and_deadline<T: BulkTransport, C: Clock>(
         if let Err(error) = write_container(
             transport,
             bulk_out,
-            chunk_size,
+            write_chunk_size,
             ContainerType::Data,
             code,
             data,
@@ -1870,7 +1957,7 @@ mod tests {
     }
 
     #[test]
-    fn carries_a_terminating_zlp_across_ptp_transactions() {
+    fn carries_a_terminating_zlp_across_read_buffer_resize() {
         const CHUNK_SIZE: usize = 1024;
 
         let first_payload = vec![0x5a; CHUNK_SIZE - 2 * ContainerInfo::SIZE];
@@ -1912,6 +1999,10 @@ mod tests {
         )
         .expect("first transaction must consume the full read window");
         assert_eq!(received_payload, first_payload);
+
+        read_state = read_state
+            .resized(CHUNK_SIZE * 2)
+            .expect("promotion must preserve the bulk boundary state");
 
         send_with_transport_and_read_state(
             &transport,

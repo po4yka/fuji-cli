@@ -31,7 +31,7 @@ pub struct CameraSpec {
 pub struct Usb {
     pub vendor_id: u16,
     pub product_id: u16,
-    pub chunk_size: u32,
+    pub chunk_size_ceiling: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -444,7 +444,7 @@ mod tests {
             r#"{
                 "name": "Demo",
                 "generation": "gen_a",
-                "usb": { "vendor_id": 1227, "product_id": 764, "chunk_size": 1024 },
+                "usb": { "vendor_id": 1227, "product_id": 764, "chunk_size_ceiling": 1024 },
                 "preflight": [{
                     "operation": "backup_restore",
                     "status": "verified",
@@ -466,7 +466,7 @@ mod tests {
             r#"{
                 "name": "Demo",
                 "generation": "gen_a",
-                "usb": { "vendor_id": 1227, "product_id": 764, "chunk_size": 1024 },
+                "usb": { "vendor_id": 1227, "product_id": 764, "chunk_size_ceiling": 1024 },
                 "ptp": { "manufacturer": "FUJIFILM", "model": "X-T5" }
             }"#,
         );
@@ -475,12 +475,32 @@ mod tests {
     }
 
     #[test]
+    fn usb_transport_contract_rejects_legacy_chunk_size() {
+        let result = serde_json::from_str::<Camera>(
+            r#"{
+                "id": "demo",
+                "spec": {
+                    "name": "Demo",
+                    "generation": "gen_a",
+                    "usb": {
+                        "vendor_id": 1227,
+                        "product_id": 764,
+                        "chunk_size": 1024
+                    }
+                }
+            }"#,
+        );
+
+        assert!(result.is_err(), "legacy chunk_size must be rejected");
+    }
+
+    #[test]
     fn camera_spec_accepts_layered_firmware_capabilities() {
         let result = serde_json::from_str::<CameraSpec>(
             r#"{
                 "name": "Demo",
                 "generation": "gen_a",
-                "usb": { "vendor_id": 1227, "product_id": 764, "chunk_size": 1024 },
+                "usb": { "vendor_id": 1227, "product_id": 764, "chunk_size_ceiling": 1024 },
                 "capabilities": {
                     "generation": { "option_overrides": [{
                             "ref": "film_simulation",

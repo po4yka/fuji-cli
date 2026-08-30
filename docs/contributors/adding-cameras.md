@@ -39,8 +39,9 @@ valid Rust identifier; if your name starts with a digit, prefix it with an
 underscore - codegen will turn `X100VI` into `X100Vi` and similar.
 
 `usb.vendor_id` defaults to Fujifilm (`0x04cb`); set it only if you're testing a
-re-badged unit. `usb.chunk_size` defaults to 1 MiB; raise it if the camera
-tolerates larger PTP bulk transfers (the X-T5 uses ~16 MiB).
+re-badged unit. `usb.chunk_size_ceiling` defaults to 1 MiB. Raise this
+evidence-backed upper bound only after trace and physical-device validation;
+runtime still starts with a conservative effective chunk.
 
 Run `cargo build` once. The build will:
 

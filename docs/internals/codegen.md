@@ -83,7 +83,7 @@ cameras by `(generation, id)` for stable output and emits, per camera:
 - `pub const C_X_T5: SupportedCamera { name, vendor, product,
   camera_factory }`
   - registry entry.
-- `impl CameraBase for XT5` - overrides `chunk_size`, returns the registry
+- `impl CameraBase for XT5` - overrides `chunk_size_ceiling`, returns the registry
   constant, and conditionally overrides `as_backup_manager`,
   `as_simulation_parser`, `as_simulation_manager`, `as_render_manager` based on
   which feature blocks the camera declares.

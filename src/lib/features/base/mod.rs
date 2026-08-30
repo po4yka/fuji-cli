@@ -20,8 +20,8 @@ pub trait CameraBase {
 
     fn camera_definition(&self) -> &'static SupportedCamera;
 
-    fn chunk_size(&self) -> usize {
-        // Default conservative estimate.
+    fn chunk_size_ceiling(&self) -> usize {
+        // Default transport ceiling. Runtime policy selects the effective size.
         1024 * 1024
     }
 

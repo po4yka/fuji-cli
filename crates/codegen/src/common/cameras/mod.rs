@@ -25,7 +25,8 @@ pub fn generate(cameras: &BTreeMap<String, Camera>) -> anyhow::Result<TokenStrea
         let name_str = &camera.spec.name;
         let vendor = Literal::u16_suffixed(camera.spec.usb.vendor_id);
         let product = Literal::u16_suffixed(camera.spec.usb.product_id);
-        let chunk_size = Literal::usize_suffixed(camera.spec.usb.chunk_size.try_into()?);
+        let chunk_size_ceiling =
+            Literal::usize_suffixed(camera.spec.usb.chunk_size_ceiling.try_into()?);
         let ptp_identity = camera.spec.ptp.as_ref().map_or_else(
             || quote! { None },
             |identity| {
@@ -223,8 +224,8 @@ pub fn generate(cameras: &BTreeMap<String, Camera>) -> anyhow::Result<TokenStrea
                     &#const_name
                 }
 
-                fn chunk_size(&self) -> usize {
-                    #chunk_size
+                fn chunk_size_ceiling(&self) -> usize {
+                    #chunk_size_ceiling
                 }
 
                 #backup_override
@@ -447,7 +448,7 @@ mod tests {
                 "spec": {
                     "name": "FUJIFILM X-T5",
                     "generation": "x_trans_v",
-                    "usb": { "vendor_id": 1227, "product_id": 764, "chunk_size": 1024 },
+                    "usb": { "vendor_id": 1227, "product_id": 764, "chunk_size_ceiling": 1024 },
                     "ptp": { "manufacturer": "FUJIFILM", "model": "X-T5" },
                     "preflight": [{
                         "operation": "raw_conversion",
@@ -515,6 +516,17 @@ mod tests {
             .to_string();
 
         assert!(generated.contains("ptp_identity : Some (CameraPtpIdentity"));
+    }
+
+    #[test]
+    fn camera_registry_emits_chunk_size_ceiling() {
+        let camera = camera_with_preflight();
+        let generated = generate(&BTreeMap::from([(camera.id.clone(), camera)]))
+            .unwrap()
+            .to_string();
+
+        assert!(generated.contains("fn chunk_size_ceiling (& self) -> usize"));
+        assert!(generated.contains("1024usize"));
     }
 
     #[test]

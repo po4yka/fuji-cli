@@ -22,11 +22,11 @@ cameras: [string]: #Camera
 
 		#USB: {
 			#FujifilmVendorID:          0x04cb
-			#DefaultCameraUSBChunkSize: 1024 * 1024
+			#DefaultCameraUSBChunkSizeCeiling: 1024 * 1024
 
 			vendor_id:  uint16 | *#FujifilmVendorID
 			product_id: uint16
-			chunk_size: uint | *#DefaultCameraUSBChunkSize
+			chunk_size_ceiling: uint | *#DefaultCameraUSBChunkSizeCeiling
 		}
 
 		#PTPIdentity: {
@@ -367,7 +367,7 @@ cameras: {
 
 			usb: {
 				product_id: 0x02fc
-				chunk_size: 16128 * 1024
+				chunk_size_ceiling: 16128 * 1024
 			}
 			ptp: {
 				manufacturer: "FUJIFILM"

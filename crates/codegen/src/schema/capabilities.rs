@@ -339,7 +339,7 @@ mod tests {
                 "id": "fixture",
                 "spec": {
                     "name": "Fixture", "generation": "fixture",
-                    "usb": { "vendor_id": 1227, "product_id": 1, "chunk_size": 1024 },
+                    "usb": { "vendor_id": 1227, "product_id": 1, "chunk_size_ceiling": 1024 },
                     "preflight": [{
                         "operation": "simulation_access", "status": "verified", "firmware": "4.31",
                         "minimum_battery_percent": 100, "allowed_usb_modes": [6],
@@ -378,7 +378,7 @@ mod tests {
                 "id": "fixture",
                 "spec": {
                     "name": "Fixture", "generation": "fixture",
-                    "usb": { "vendor_id": 1227, "product_id": 1, "chunk_size": 1024 },
+                    "usb": { "vendor_id": 1227, "product_id": 1, "chunk_size_ceiling": 1024 },
                     "features": {
                         "simulation": {
                             "slots": 1,

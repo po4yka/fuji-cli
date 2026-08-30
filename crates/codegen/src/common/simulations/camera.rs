@@ -802,7 +802,7 @@ mod tests {
                     "spec": {
                         "name": "Demo",
                         "generation": "demo_generation",
-                        "usb": { "vendor_id": 1, "product_id": 2, "chunk_size": 1024 },
+                        "usb": { "vendor_id": 1, "product_id": 2, "chunk_size_ceiling": 1024 },
                         "features": {
                             "simulation": {
                                 "slots": 1,

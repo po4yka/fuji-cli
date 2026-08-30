@@ -15,7 +15,7 @@ pub trait CameraBase {
     type Context: rusb::UsbContext;
 
     fn camera_definition(&self) -> &'static SupportedCamera;
-    fn chunk_size(&self) -> usize { 1024 * 1024 }
+    fn chunk_size_ceiling(&self) -> usize { 1024 * 1024 }
 
     fn as_backup_manager(&self) -> Option<&dyn CameraBackupManager<...>> { None }
     fn as_simulation_parser(&self) -> Option<&dyn CameraSimulationParser> { None }
@@ -33,7 +33,7 @@ The codegen emits overrides only for the features the camera spec declares:
 impl CameraBase for XT5 {
     type Context = rusb::GlobalContext;
     fn camera_definition(&self) -> &'static SupportedCamera { &C_X_T5 }
-    fn chunk_size(&self) -> usize { 16128 * 1024 }
+    fn chunk_size_ceiling(&self) -> usize { 16128 * 1024 }
 
     fn as_backup_manager(&self) -> Option<&dyn CameraBackupManager<...>> { Some(self) }
     fn as_simulation_parser(&self)  -> Option<&dyn CameraSimulationParser>  { Some(self) }
@@ -45,6 +45,30 @@ impl CameraBase for XT5 {
 If a camera doesn't declare a feature, the override is omitted, the default
 `None` is returned, and the runtime's high-level method errors with a friendly
 message.
+
+## PTP Bulk Chunk Policy
+
+The generated camera value is a ceiling, never the initial allocation. Runtime
+reads the negotiated USB speed and both bulk endpoint packet sizes, then starts
+with a packet-aligned 256 KiB chunk at low/full or unknown speed, and 1 MiB only
+when the backend reports a faster link.
+
+Read and write policy are independent. Writes remain at the conservative size
+for the entire session. Three successful, naturally occurring large read-only
+transactions may promote the next read transaction through 1, 4, and 8 MiB
+tiers, then to the camera ceiling. The measured aggregate rate must also imply
+that the candidate chunk can fill within the bulk I/O timeout. Promotion records
+the sampled bytes and duration; it never repeats a command to manufacture a
+measurement.
+
+Any transport failure keeps the existing fail-closed behavior: the in-flight
+transaction is not replayed with a smaller chunk and an ambiguous session is
+poisoned. Allocation failure before a promoted transaction keeps the previous
+read size, and resizing preserves the terminating-ZLP boundary state across
+transactions. Debug startup diagnostics record the OS, runtime libusb version,
+negotiated speed, endpoint packet sizes, and initial/ceiling sizes. One trace
+summary records the effective sizes and duration for each logical transaction;
+payload bytes and camera identifiers are never logged.
 
 ## Top-Level Dispatch
 

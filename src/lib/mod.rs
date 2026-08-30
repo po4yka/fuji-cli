@@ -80,7 +80,7 @@ struct PtpUsbCandidate {
     interface: u8,
     setting: u8,
     bulk_in: Vec<(u8, usize)>,
-    bulk_out: Vec<u8>,
+    bulk_out: Vec<(u8, usize)>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -90,6 +90,7 @@ struct PtpUsbBinding {
     bulk_in: u8,
     bulk_out: u8,
     bulk_in_max_packet_size: usize,
+    bulk_out_max_packet_size: usize,
 }
 
 fn select_ptp_usb_binding(
@@ -105,12 +106,14 @@ fn select_ptp_usb_binding(
             "PTP USB interface alternate setting has ambiguous bulk endpoints"
         );
         let (bulk_in, bulk_in_max_packet_size) = candidate.bulk_in[0];
+        let (bulk_out, bulk_out_max_packet_size) = candidate.bulk_out[0];
         let candidate_binding = PtpUsbBinding {
             interface: candidate.interface,
             setting: candidate.setting,
             bulk_in,
-            bulk_out: candidate.bulk_out[0],
+            bulk_out,
             bulk_in_max_packet_size,
+            bulk_out_max_packet_size,
         };
         ensure!(
             binding.replace(candidate_binding).is_none(),
@@ -245,7 +248,10 @@ impl Camera {
                                     usize::from(endpoint.max_packet_size()),
                                 ));
                             }
-                            rusb::Direction::Out => bulk_out.push(endpoint.address()),
+                            rusb::Direction::Out => bulk_out.push((
+                                endpoint.address(),
+                                usize::from(endpoint.max_packet_size()),
+                            )),
                         }
                     }
                     PtpUsbCandidate {
@@ -269,8 +275,36 @@ impl Camera {
 
         let transaction_id = 0;
         let r#impl = (resolved.factory)();
-        let chunk_size = r#impl.chunk_size();
-        validate_bulk_read_geometry(chunk_size, binding.bulk_in_max_packet_size)?;
+        let speed = device.speed();
+        let chunk_policy = ptp::ChunkPolicy::for_transport(
+            r#impl.chunk_size_ceiling(),
+            speed,
+            binding.bulk_in_max_packet_size,
+            binding.bulk_out_max_packet_size,
+        )?;
+        validate_bulk_read_geometry(
+            chunk_policy.read.initial_bytes,
+            binding.bulk_in_max_packet_size,
+        )?;
+        validate_bulk_read_geometry(
+            chunk_policy.read.ceiling_bytes,
+            binding.bulk_in_max_packet_size,
+        )?;
+        debug!(
+            "PTP USB transport policy: os={}, libusb={:?}, speed={speed:?}, interface={}, alternate_setting={}, bulk_in=0x{:02x}, bulk_in_packet_bytes={}, bulk_out=0x{:02x}, bulk_out_packet_bytes={}, read_initial_bytes={}, read_ceiling_bytes={}, write_initial_bytes={}, write_ceiling_bytes={}, source=conservative",
+            std::env::consts::OS,
+            rusb::version(),
+            binding.interface,
+            binding.setting,
+            binding.bulk_in,
+            binding.bulk_in_max_packet_size,
+            binding.bulk_out,
+            binding.bulk_out_max_packet_size,
+            chunk_policy.read.initial_bytes,
+            chunk_policy.read.ceiling_bytes,
+            chunk_policy.write.initial_bytes,
+            chunk_policy.write.ceiling_bytes,
+        );
 
         let mut ptp = Ptp {
             bus,
@@ -280,8 +314,8 @@ impl Camera {
             bulk_out: binding.bulk_out,
             handle,
             transaction_id,
-            chunk_size,
-            bulk_read_state: ptp::BulkReadState::new(chunk_size)?,
+            bulk_read_state: ptp::BulkReadState::new(chunk_policy.read.initial_bytes)?,
+            chunk_policy,
             poisoned: false,
             camera_processing_active: false,
             mutation_authorization: None,

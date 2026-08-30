@@ -114,7 +114,7 @@ fn ptp_endpoint_selection_uses_one_complete_alternate_setting() -> anyhow::Resul
             interface: 0,
             setting: 1,
             bulk_in: vec![(0x81, 512)],
-            bulk_out: vec![0x02],
+            bulk_out: vec![(0x02, 512)],
         },
     ])?;
 
@@ -126,6 +126,7 @@ fn ptp_endpoint_selection_uses_one_complete_alternate_setting() -> anyhow::Resul
             bulk_in: 0x81,
             bulk_out: 0x02,
             bulk_in_max_packet_size: 512,
+            bulk_out_max_packet_size: 512,
         }
     );
     Ok(())
@@ -138,13 +139,13 @@ fn ptp_endpoint_selection_fails_closed_when_multiple_alternates_are_viable() {
             interface: 0,
             setting: 0,
             bulk_in: vec![(0x81, 512)],
-            bulk_out: vec![0x02],
+            bulk_out: vec![(0x02, 512)],
         },
         PtpUsbCandidate {
             interface: 0,
             setting: 1,
             bulk_in: vec![(0x83, 1024)],
-            bulk_out: vec![0x04],
+            bulk_out: vec![(0x04, 1024)],
         },
     ])
     .expect_err("ambiguous PTP alternate settings must not be selected implicitly");
@@ -158,7 +159,7 @@ fn ptp_endpoint_selection_rejects_duplicate_bulk_endpoints_within_an_alternate()
         interface: 0,
         setting: 0,
         bulk_in: vec![(0x81, 512), (0x83, 512)],
-        bulk_out: vec![0x02],
+        bulk_out: vec![(0x02, 512)],
     }])
     .expect_err("duplicate bulk endpoints must not be selected implicitly");
 

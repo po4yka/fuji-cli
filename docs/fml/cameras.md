@@ -26,13 +26,14 @@ derived from it (e.g. `x_t5` -> `XT5`, `XT5Simulation`, `XT5RenderProfile`,
 usb: {
     vendor_id:  uint16 | *0x04cb   // Fujifilm by default
     product_id: uint16             // required
-    chunk_size: uint   | *1048576  // PTP bulk transfer chunk, default 1 MiB
+    chunk_size_ceiling: uint | *1048576 // PTP bulk transfer ceiling, default 1 MiB
 }
 ```
 
-Set `chunk_size` higher than the default if the camera tolerates it (the X-T5
-uses ~16 MiB and renders noticeably faster as a result). Reverse-engineer by
-experiment: too-large chunks cause timeouts or errors.
+`chunk_size_ceiling` is an evidence-backed upper bound, not the initial transfer
+size. Runtime starts conservatively, packet-aligns both directions, and may
+promote only read-only traffic after successful large transfers. Do not raise a
+ceiling without trace and physical-device evidence.
 
 ## PTP Identity and Preflight Profiles
 

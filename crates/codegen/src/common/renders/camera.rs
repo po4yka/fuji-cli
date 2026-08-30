@@ -760,7 +760,7 @@ mod tests {
                 "spec": {
                     "name": "Fixture",
                     "generation": "fixture",
-                    "usb": { "vendor_id": 1227, "product_id": 1, "chunk_size": 1024 },
+                    "usb": { "vendor_id": 1227, "product_id": 1, "chunk_size_ceiling": 1024 },
                     "features": {
                         "render": { "profile_code": 1, "header_padding": 0, "fields": [] }
                     }
@@ -804,7 +804,7 @@ mod tests {
                 "spec": {
                     "name": "Fixture",
                     "generation": "fixture",
-                    "usb": { "vendor_id": 1227, "product_id": 1, "chunk_size": 1024 },
+                    "usb": { "vendor_id": 1227, "product_id": 1, "chunk_size_ceiling": 1024 },
                     "features": {
                         "render": { "profile_code": 1, "header_padding": 0, "fields": [] }
                     }
@@ -846,7 +846,7 @@ mod tests {
                 "spec": {
                     "name": "Fixture",
                     "generation": "fixture",
-                    "usb": { "vendor_id": 1227, "product_id": 1, "chunk_size": 1024 },
+                    "usb": { "vendor_id": 1227, "product_id": 1, "chunk_size_ceiling": 1024 },
                     "features": {
                         "render": { "profile_code": 1, "header_padding": 0, "fields": [] }
                     }
@@ -886,7 +886,7 @@ mod tests {
                     "usb": {
                         "vendor_id": 1227,
                         "product_id": 1,
-                        "chunk_size": 1024
+                        "chunk_size_ceiling": 1024
                     },
                     "features": {
                         "render": {
@@ -936,7 +936,7 @@ mod tests {
                     "usb": {
                         "vendor_id": 1227,
                         "product_id": 1,
-                        "chunk_size": 1024
+                        "chunk_size_ceiling": 1024
                     },
                     "features": {
                         "render": { "profile_code": 1, "fields": [] }
