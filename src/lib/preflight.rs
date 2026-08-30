@@ -429,29 +429,128 @@ impl<Operation> Drop for ValidatedCameraSession<'_, Operation> {
     }
 }
 
+/// Everything `run` reads from the camera (or already knows) before any
+/// authorization decision is made. `run` does not build this struct itself —
+/// it interleaves the same checks with the device reads that produce these
+/// values, in order to preserve the exact sequence of PTP operations it
+/// issues (see `decide_profile_and_device_info` and
+/// `decide_mode_battery_and_binding`). This struct and `decide_preflight`
+/// exist so tests can drive the *entire* ordered decision — including the
+/// native-binding and physical-identity gates that run before any device
+/// read — as a single contract, without a USB device.
+///
+/// Only tests construct this today, since `run` deliberately keeps its own
+/// checks interleaved with device reads instead of gathering facts upfront
+/// (see `decide_preflight`'s doc comment) — hence `#[cfg(test)]`.
+#[cfg(test)]
+struct PreflightFacts<'a> {
+    binding: ModelBindingKind,
+    definition: &'static SupportedCamera,
+    physical_identity: PhysicalUsbIdentity,
+    info: &'a crate::ptp::DeviceInfo,
+    usb_mode: u32,
+    battery_percent: u8,
+    serial_binding: Option<&'a SerialFingerprint>,
+}
+
+/// The complete preflight authorization decision, with no device I/O.
+/// Returns the selected profiles on success. The order of checks here is the
+/// contract `run` must preserve: native binding, physical identity, firmware
+/// profile selection, capability profile selection, device info, USB
+/// mode/battery, then serial binding.
+///
+/// `run` never calls this directly: gathering every fact before deciding
+/// anything would force it to issue the USB-mode and battery PTP reads even
+/// when an earlier, cheaper check (e.g. an unsupported firmware) would
+/// otherwise have short-circuited before those reads happen today. Instead
+/// `run` calls the two `decide_*` stage functions below at the same points
+/// in its own control flow where the equivalent checks run today. This
+/// function exists to let a test exercise the full ordered contract.
+#[cfg(test)]
+fn decide_preflight(
+    facts: &PreflightFacts<'_>,
+    operation: CameraPreflightOperation,
+) -> anyhow::Result<(
+    &'static CameraPreflightProfile,
+    &'static CameraFirmwareCapabilityProfile,
+)> {
+    validate_native_binding(facts.binding)?;
+    validate_physical_identity(facts.definition, facts.physical_identity)?;
+    let (profile, capability_profile) =
+        decide_profile_and_device_info(facts.definition, facts.info, operation)?;
+    decide_mode_battery_and_binding(
+        profile,
+        operation,
+        facts.usb_mode,
+        facts.battery_percent,
+        facts.serial_binding,
+        facts.info,
+    )?;
+    Ok((profile, capability_profile))
+}
+
+/// Stage 1 of the preflight decision, evaluated once `GetDeviceInfo` has
+/// returned: selects the firmware compatibility profile, selects the
+/// firmware capability profile, then validates the device info against the
+/// selected profile. Order: firmware profile selection, capability profile
+/// selection, device info validation — matching `run`'s sequence exactly.
+fn decide_profile_and_device_info(
+    definition: &'static SupportedCamera,
+    info: &crate::ptp::DeviceInfo,
+    operation: CameraPreflightOperation,
+) -> anyhow::Result<(
+    &'static CameraPreflightProfile,
+    &'static CameraFirmwareCapabilityProfile,
+)> {
+    let profile = select_profile(definition, operation, &info.device_version)?;
+    let capability_profile = select_capability_profile(definition, &info.device_version)?;
+    validate_device_info(definition, profile, info)?;
+    Ok((profile, capability_profile))
+}
+
+/// Stage 2 of the preflight decision, evaluated once the USB mode and
+/// battery percentage have been read: validates them against the selected
+/// profile, then hashes and validates the serial binding. Order: mode and
+/// battery, then serial binding — matching `run`'s sequence exactly. Returns
+/// the hashed serial so `run` can reuse it for `PreflightEvidence` without
+/// hashing twice.
+fn decide_mode_battery_and_binding(
+    profile: &CameraPreflightProfile,
+    operation: CameraPreflightOperation,
+    usb_mode: u32,
+    battery_percent: u8,
+    serial_binding: Option<&SerialFingerprint>,
+    info: &crate::ptp::DeviceInfo,
+) -> anyhow::Result<String> {
+    validate_mode_and_battery(profile, operation, usb_mode, battery_percent)?;
+    let serial_sha256 = crate::features::backup::sha256_hex(info.serial_number.as_bytes());
+    validate_serial_binding(serial_binding, &serial_sha256)?;
+    Ok(serial_sha256)
+}
+
 pub(crate) fn run<'camera, Operation: OperationMarker>(
     camera: &'camera mut Camera,
     serial_binding: Option<&SerialFingerprint>,
 ) -> anyhow::Result<ValidatedCameraSession<'camera, Operation>> {
     camera.ptp.clear_mutation_permit();
-    ensure!(
-        camera.binding == ModelBindingKind::Native,
-        "state-changing camera operations require a native physical model binding"
-    );
+    validate_native_binding(camera.binding)?;
 
     let definition = camera.r#impl.camera_definition();
     validate_physical_identity(definition, camera.physical_identity)?;
     let info = camera.ptp.get_info()?;
-    let profile = select_profile(definition, Operation::KIND, &info.device_version)?;
-    let capability_profile = select_capability_profile(definition, &info.device_version)?;
-    validate_device_info(definition, profile, &info)?;
+    let (profile, capability_profile) =
+        decide_profile_and_device_info(definition, &info, Operation::KIND)?;
 
     let usb_mode = u32::from(camera.ptp.get_prop::<u16>(0xD16E_u16)?);
     let battery_percent = read_battery_percent(&mut camera.ptp)?;
-    validate_mode_and_battery(profile, Operation::KIND, usb_mode, battery_percent)?;
-
-    let serial_sha256 = crate::features::backup::sha256_hex(info.serial_number.as_bytes());
-    validate_serial_binding(serial_binding, &serial_sha256)?;
+    let serial_sha256 = decide_mode_battery_and_binding(
+        profile,
+        Operation::KIND,
+        usb_mode,
+        battery_percent,
+        serial_binding,
+        &info,
+    )?;
 
     let descriptors = read_and_validate_descriptors(&mut camera.ptp, profile)?;
     let permit_id = camera.ptp.activate_mutation_permit()?;
@@ -559,6 +658,14 @@ fn sanitize_for_display(value: &str) -> String {
     } else {
         filtered.into_iter().collect()
     }
+}
+
+fn validate_native_binding(binding: ModelBindingKind) -> anyhow::Result<()> {
+    ensure!(
+        binding == ModelBindingKind::Native,
+        "state-changing camera operations require a native physical model binding"
+    );
+    Ok(())
 }
 
 fn validate_physical_identity(
@@ -710,14 +817,15 @@ mod tests {
             CameraPreflightProfile, CameraPreflightProfileStatus, CameraPreflightProperty,
             CameraPtpIdentity,
         },
-        policy::{PhysicalUsbIdentity, SerialFingerprint},
+        policy::{ModelBindingKind, PhysicalUsbIdentity, SerialFingerprint},
         ptp::{CommandCode, DevicePropDataType, DevicePropDesc, DevicePropForm, DevicePropValue},
     };
 
     use super::{
-        MAX_DISPLAY_TEXT_CHARS, MutationAuthorization, MutationPermit, sanitize_for_display,
-        select_capability_profile, select_profile, validate_device_info, validate_mode_and_battery,
-        validate_physical_identity, validate_serial_binding,
+        MAX_DISPLAY_TEXT_CHARS, MutationAuthorization, MutationPermit, PreflightFacts,
+        decide_preflight, sanitize_for_display, select_capability_profile, select_profile,
+        validate_device_info, validate_mode_and_battery, validate_physical_identity,
+        validate_serial_binding,
     };
 
     const PROFILE: CameraPreflightProfile = CameraPreflightProfile {
@@ -780,6 +888,198 @@ mod tests {
                 }),
             }),
         };
+
+    const FIRMWARE_4_31_CAPABILITY_PROFILE: CameraFirmwareCapabilityProfile =
+        CameraFirmwareCapabilityProfile {
+            firmware: "4.31",
+            options: &[],
+            raw_conversion: None,
+        };
+
+    /// `CAMERA` plus a matching firmware capability profile, so
+    /// `decide_preflight` can select both a preflight profile and a
+    /// capability profile for firmware "4.31".
+    const FULL_CAMERA: SupportedCamera = SupportedCamera {
+        firmware_capability_profiles: &[FIRMWARE_4_31_CAPABILITY_PROFILE],
+        ..CAMERA
+    };
+
+    /// A `DeviceInfo` that satisfies every check `PROFILE`/`FULL_CAMERA`
+    /// require: matching manufacturer/model, firmware "4.31", and the
+    /// required operation/property advertised.
+    fn valid_device_info() -> crate::ptp::DeviceInfo {
+        crate::ptp::DeviceInfo {
+            version: 100,
+            vendor_ex_id: 0,
+            vendor_ex_version: 0,
+            vendor_extension_desc: "Fujifilm".to_owned(),
+            functional_mode: 0,
+            operations_supported: vec![0x1001],
+            events_supported: vec![],
+            device_properties_supported: vec![0xD16E],
+            capture_formats: vec![],
+            image_formats: vec![],
+            manufacturer: "FUJIFILM".to_owned(),
+            model: "X-T5".to_owned(),
+            device_version: "4.31".to_owned(),
+            serial_number: "serial".to_owned(),
+        }
+    }
+
+    const VALID_PHYSICAL_IDENTITY: PhysicalUsbIdentity = PhysicalUsbIdentity {
+        vendor_id: 0x04cb,
+        product_id: 0x02fc,
+    };
+
+    #[test]
+    fn rejects_non_native_binding_before_any_other_check() {
+        let info = valid_device_info();
+        // Physical identity and firmware are also invalid, to prove the
+        // binding gate fires first regardless.
+        let facts = PreflightFacts {
+            binding: ModelBindingKind::Unknown,
+            definition: &FULL_CAMERA,
+            physical_identity: PhysicalUsbIdentity {
+                vendor_id: 0xdead,
+                product_id: 0xbeef,
+            },
+            info: &info,
+            usb_mode: 1,
+            battery_percent: 0,
+            serial_binding: None,
+        };
+
+        let error = decide_preflight(&facts, CameraPreflightOperation::RawConversion)
+            .expect_err("a non-native binding must fail before any other check");
+
+        assert!(error.to_string().contains("native physical model binding"));
+    }
+
+    #[test]
+    fn rejects_wrong_physical_identity_before_profile_selection() {
+        let mut info = valid_device_info();
+        info.device_version = "9.99".to_owned(); // also unsupported firmware
+        let facts = PreflightFacts {
+            binding: ModelBindingKind::Native,
+            definition: &FULL_CAMERA,
+            physical_identity: PhysicalUsbIdentity {
+                vendor_id: 0xdead,
+                product_id: 0xbeef,
+            },
+            info: &info,
+            usb_mode: 1,
+            battery_percent: 0,
+            serial_binding: None,
+        };
+
+        let error = decide_preflight(&facts, CameraPreflightOperation::RawConversion)
+            .expect_err("wrong physical identity must fail before firmware profile selection");
+
+        assert!(
+            error
+                .to_string()
+                .contains("physical USB VID/PID does not match")
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_firmware_before_mode_and_battery() {
+        let mut info = valid_device_info();
+        info.device_version = "9.99".to_owned();
+        let facts = PreflightFacts {
+            binding: ModelBindingKind::Native,
+            definition: &FULL_CAMERA,
+            physical_identity: VALID_PHYSICAL_IDENTITY,
+            info: &info,
+            // Also invalid, to prove the firmware gate fires first.
+            usb_mode: 1,
+            battery_percent: 0,
+            serial_binding: None,
+        };
+
+        let error = decide_preflight(&facts, CameraPreflightOperation::RawConversion)
+            .expect_err("unknown firmware must fail before mode/battery are checked");
+
+        assert!(error.to_string().contains("not in the"));
+    }
+
+    #[test]
+    fn rejects_wrong_usb_mode_and_low_battery() {
+        let info = valid_device_info();
+        let wrong_mode_facts = PreflightFacts {
+            binding: ModelBindingKind::Native,
+            definition: &FULL_CAMERA,
+            physical_identity: VALID_PHYSICAL_IDENTITY,
+            info: &info,
+            usb_mode: 1,
+            battery_percent: 100,
+            serial_binding: None,
+        };
+        let wrong_mode_error =
+            decide_preflight(&wrong_mode_facts, CameraPreflightOperation::RawConversion)
+                .expect_err("disallowed USB mode must fail closed");
+        assert!(wrong_mode_error.to_string().contains("USB mode"));
+
+        let low_battery_facts = PreflightFacts {
+            binding: ModelBindingKind::Native,
+            definition: &FULL_CAMERA,
+            physical_identity: VALID_PHYSICAL_IDENTITY,
+            info: &info,
+            usb_mode: 6,
+            battery_percent: 99,
+            serial_binding: None,
+        };
+        let low_battery_error =
+            decide_preflight(&low_battery_facts, CameraPreflightOperation::RawConversion)
+                .expect_err("insufficient battery must fail closed");
+        assert!(low_battery_error.to_string().contains("battery"));
+    }
+
+    #[test]
+    fn rejects_mismatched_serial_binding() {
+        let info = valid_device_info();
+        let binding = SerialFingerprint::from_str(&"0".repeat(64)).unwrap();
+        let facts = PreflightFacts {
+            binding: ModelBindingKind::Native,
+            definition: &FULL_CAMERA,
+            physical_identity: VALID_PHYSICAL_IDENTITY,
+            info: &info,
+            usb_mode: 6,
+            battery_percent: 100,
+            serial_binding: Some(&binding),
+        };
+
+        let error = decide_preflight(&facts, CameraPreflightOperation::RawConversion)
+            .expect_err("a mismatched serial fingerprint must fail closed");
+
+        assert!(
+            error
+                .to_string()
+                .contains("does not match --target-serial-sha256")
+        );
+    }
+
+    #[test]
+    fn accepts_a_fully_valid_x_t5_4_31_case() {
+        let info = valid_device_info();
+        let facts = PreflightFacts {
+            binding: ModelBindingKind::Native,
+            definition: &FULL_CAMERA,
+            physical_identity: VALID_PHYSICAL_IDENTITY,
+            info: &info,
+            usb_mode: 6,
+            battery_percent: 100,
+            serial_binding: None,
+        };
+
+        let (profile, capability_profile) =
+            decide_preflight(&facts, CameraPreflightOperation::RawConversion)
+                .expect("every check is satisfied, so the decision must succeed");
+
+        assert_eq!(profile.firmware, "4.31");
+        assert_eq!(profile.operation, CameraPreflightOperation::RawConversion);
+        assert_eq!(capability_profile.firmware, "4.31");
+    }
 
     #[test]
     fn permit_validation_still_enforces_dynamic_property_enumeration() {
