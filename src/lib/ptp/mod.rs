@@ -375,17 +375,18 @@ enum CommandRisk {
 }
 
 impl Ptp {
+    /// `transport_binding` is `(bus, address, interface)`, matching the
+    /// tuple shape returned by [`Ptp::transport_binding`].
     pub(super) fn new(
-        bus: u8,
-        address: u8,
-        interface: u8,
+        transport_binding: (u8, u8, u8),
         bulk_in: u8,
         bulk_out: u8,
         handle: rusb::DeviceHandle<GlobalContext>,
         chunk_policy: ChunkPolicy,
-    ) -> anyhow::Result<Self> {
-        let initial_read_chunk = chunk_policy.read.initial_bytes;
-        Ok(Self {
+        bulk_read_state: BulkReadState,
+    ) -> Self {
+        let (bus, address, interface) = transport_binding;
+        Self {
             bus,
             address,
             interface,
@@ -394,14 +395,14 @@ impl Ptp {
             handle,
             transaction_id: 0,
             chunk_policy,
-            bulk_read_state: BulkReadState::new(initial_read_chunk)?,
+            bulk_read_state,
             poisoned: false,
             camera_processing_active: false,
             next_session_control_permit_id: 1,
             active_session_control_permit_id: None,
             next_mutation_permit_id: 1,
             active_mutation_permit_id: None,
-        })
+        }
     }
 
     pub(super) const fn transport_binding(&self) -> (u8, u8, u8) {

@@ -198,6 +198,57 @@ fn resolve_camera(
     }
 }
 
+/// Owns a claimed USB interface until it is either dropped (releasing the
+/// interface) or handed off to a longer-lived owner via [`into_handle`].
+///
+/// [`into_handle`]: ClaimedInterface::into_handle
+struct ClaimedInterface {
+    handle: Option<rusb::DeviceHandle<GlobalContext>>,
+    interface: u8,
+}
+
+impl ClaimedInterface {
+    /// Claims `interface` on `handle`, returning a guard that releases it on
+    /// drop unless ownership is transferred out via [`into_handle`].
+    ///
+    /// [`into_handle`]: ClaimedInterface::into_handle
+    fn claim(handle: rusb::DeviceHandle<GlobalContext>, interface: u8) -> anyhow::Result<Self> {
+        handle.claim_interface(interface)?;
+        Ok(Self {
+            handle: Some(handle),
+            interface,
+        })
+    }
+
+    /// Borrows the claimed handle for further setup (e.g.
+    /// `set_alternate_setting`) while the guard still owns it.
+    fn handle(&self) -> anyhow::Result<&rusb::DeviceHandle<GlobalContext>> {
+        self.handle
+            .as_ref()
+            .ok_or_else(|| anyhow!("claimed USB interface handle is unavailable"))
+    }
+
+    /// Transfers ownership of the claimed handle to the caller. The guard's
+    /// `Drop` becomes a no-op afterward, so the interface is released exactly
+    /// once: either here (never, since the handle moves out) or by whatever
+    /// later takes ownership of it (e.g. `Ptp`'s own `Drop`).
+    fn into_handle(mut self) -> anyhow::Result<rusb::DeviceHandle<GlobalContext>> {
+        self.handle
+            .take()
+            .ok_or_else(|| anyhow!("claimed USB interface handle is unavailable"))
+    }
+}
+
+impl Drop for ClaimedInterface {
+    fn drop(&mut self) {
+        if let Some(handle) = &self.handle
+            && let Err(error) = handle.release_interface(self.interface)
+        {
+            error!("Failed to release USB interface after open failure: {error}");
+        }
+    }
+}
+
 impl Camera {
     pub fn probe(device: &rusb::Device<GlobalContext>) -> anyhow::Result<bool> {
         let descriptor = device.device_descriptor()?;
@@ -270,12 +321,6 @@ impl Camera {
             binding.interface, binding.setting
         );
 
-        let handle = device.open()?;
-        handle.claim_interface(binding.interface)?;
-        debug!("Claimed interface");
-        handle.set_alternate_setting(binding.interface, binding.setting)?;
-        debug!("Activated alternate setting {}", binding.setting);
-
         let r#impl = (resolved.factory)();
         let speed = device.speed();
         let chunk_policy = ptp::ChunkPolicy::for_transport(
@@ -292,6 +337,7 @@ impl Camera {
             chunk_policy.read.ceiling_bytes,
             binding.bulk_in_max_packet_size,
         )?;
+        let bulk_read_state = ptp::BulkReadState::new(chunk_policy.read.initial_bytes)?;
         debug!(
             "PTP USB transport policy: os={}, libusb={:?}, speed={speed:?}, interface={}, alternate_setting={}, bulk_in=0x{:02x}, bulk_in_packet_bytes={}, bulk_out=0x{:02x}, bulk_out_packet_bytes={}, read_initial_bytes={}, read_ceiling_bytes={}, write_initial_bytes={}, write_ceiling_bytes={}, source=conservative",
             std::env::consts::OS,
@@ -308,15 +354,22 @@ impl Camera {
             chunk_policy.write.ceiling_bytes,
         );
 
+        let handle = device.open()?;
+        let claimed = ClaimedInterface::claim(handle, binding.interface)?;
+        debug!("Claimed interface");
+        claimed
+            .handle()?
+            .set_alternate_setting(binding.interface, binding.setting)?;
+        debug!("Activated alternate setting {}", binding.setting);
+
         let mut ptp = Ptp::new(
-            bus,
-            address,
-            binding.interface,
+            (bus, address, binding.interface),
             binding.bulk_in,
             binding.bulk_out,
-            handle,
+            claimed.into_handle()?,
             chunk_policy,
-        )?;
+            bulk_read_state,
+        );
 
         let session_control_permit = ptp.open_session(SESSION)?;
 
