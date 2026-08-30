@@ -1,6 +1,6 @@
 use std::io::{Cursor, Read};
 
-use anyhow::{Context, bail, ensure};
+use anyhow::{Context, anyhow, bail, ensure};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DevicePropDataType {
@@ -347,6 +347,27 @@ fn read_value(
     Ok(value)
 }
 
+const fn wire_size(element_type: DevicePropDataType) -> Option<usize> {
+    match element_type {
+        DevicePropDataType::Int8 | DevicePropDataType::UInt8 => Some(1),
+        DevicePropDataType::Int16 | DevicePropDataType::UInt16 => Some(2),
+        DevicePropDataType::Int32 | DevicePropDataType::UInt32 => Some(4),
+        DevicePropDataType::Int64 | DevicePropDataType::UInt64 => Some(8),
+        DevicePropDataType::Int128 | DevicePropDataType::UInt128 => Some(16),
+        DevicePropDataType::Int8Array
+        | DevicePropDataType::UInt8Array
+        | DevicePropDataType::Int16Array
+        | DevicePropDataType::UInt16Array
+        | DevicePropDataType::Int32Array
+        | DevicePropDataType::UInt32Array
+        | DevicePropDataType::Int64Array
+        | DevicePropDataType::UInt64Array
+        | DevicePropDataType::Int128Array
+        | DevicePropDataType::UInt128Array
+        | DevicePropDataType::String => None,
+    }
+}
+
 fn read_array(
     reader: &mut Cursor<&[u8]>,
     element_type: DevicePropDataType,
@@ -358,7 +379,24 @@ fn read_array(
         count <= MAX_DEVICE_PROP_ARRAY_VALUES,
         "PTP device property array exceeds safety limit"
     );
-    let mut values = Vec::with_capacity(count);
+    let Some(element_size) = wire_size(element_type) else {
+        bail!("PTP device property array element type has no fixed wire size");
+    };
+    let required_bytes = count
+        .checked_mul(element_size)
+        .ok_or_else(|| anyhow!("PTP device property array size overflows"))?;
+    let remaining_bytes = reader
+        .get_ref()
+        .len()
+        .saturating_sub(usize::try_from(reader.position())?);
+    ensure!(
+        required_bytes <= remaining_bytes,
+        "PTP device property array is larger than its payload"
+    );
+    let mut values = Vec::new();
+    values
+        .try_reserve_exact(count)
+        .map_err(|error| anyhow!("failed to reserve PTP device property array: {error}"))?;
     for _ in 0..count {
         values.push(read_value(reader, element_type)?);
     }
@@ -540,6 +578,49 @@ mod tests {
             descriptor
                 .validate_serialized_candidate(&[2, 0, 0, 0, 4, 5])
                 .is_ok()
+        );
+    }
+
+    #[test]
+    fn array_count_exceeding_payload_is_rejected_before_allocation() {
+        let mut bytes = Vec::from([
+            0x01, 0xd0, // DevicePropertyCode
+            0x0a, 0x40, // DataType: AUINT128
+            0x01, // GetSet: writable
+        ]);
+        // FactoryDefaultValue: declares the maximum permitted element count but
+        // supplies no element bytes at all.
+        bytes.extend((4 * 1024 * 1024_u32).to_le_bytes());
+
+        let error = DevicePropDesc::decode(&bytes)
+            .expect_err("array count exceeding its payload must be rejected before allocation");
+
+        assert!(error.to_string().contains("larger than its payload"));
+    }
+
+    #[test]
+    fn array_matching_its_payload_still_decodes() {
+        let mut bytes = Vec::from([
+            0x01, 0xd0, // DevicePropertyCode
+            0x04, 0x40, // DataType: AUINT16
+            0x01, // GetSet: writable
+        ]);
+        // FactoryDefaultValue: 2 elements, exactly 4 element bytes.
+        bytes.extend(2_u32.to_le_bytes());
+        bytes.extend(10_u16.to_le_bytes());
+        bytes.extend(20_u16.to_le_bytes());
+        // CurrentValue: 2 elements, exactly 4 element bytes.
+        bytes.extend(2_u32.to_le_bytes());
+        bytes.extend(30_u16.to_le_bytes());
+        bytes.extend(40_u16.to_le_bytes());
+        bytes.push(0x00); // FormFlag: None
+
+        let descriptor = DevicePropDesc::decode(&bytes)
+            .expect("array whose declared count matches its payload must decode");
+
+        assert_eq!(
+            descriptor.current,
+            DevicePropValue::Array(vec![DevicePropValue::UInt(30), DevicePropValue::UInt(40)])
         );
     }
 
