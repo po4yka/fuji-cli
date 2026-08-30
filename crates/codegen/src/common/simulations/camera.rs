@@ -109,14 +109,14 @@ fn generate_one(
         &struct_ident,
     );
     let display_impl = generate_display_impl(&settings, &simulation.settings, &struct_ident);
-    let simulation_impl = generate_simulation_impl(
+    let transaction_impl = generate_transaction_profile_impl(
         &settings,
         &struct_ident,
-        &options_path,
         &read_order,
         &write_order,
         &presence_info.conditions,
     )?;
+    let simulation_impl = generate_simulation_impl(&struct_ident, &options_path);
     let parser_impl = generate_parser_impl(&struct_ident, &camera_struct_path);
     let manager_impl = generate_manager_impl(&struct_ident, &camera_struct_path, &options_path);
 
@@ -126,6 +126,7 @@ fn generate_one(
         #from_sim_impl
         #try_from_base_impl
         #display_impl
+        #transaction_impl
         #simulation_impl
         #parser_impl
         #manager_impl
@@ -148,7 +149,7 @@ fn generate_struct_def(
     });
 
     quote! {
-        #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+        #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
         #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
         pub struct #struct_ident {
             #( #field_defs )*
@@ -384,18 +385,8 @@ fn generate_display_impl(
     }
 }
 
-fn generate_simulation_impl(
-    settings: &BTreeMap<&str, SettingInfo<'_>>,
-    struct_ident: &Ident,
-    options_path: &TokenStream,
-    read_order: &[String],
-    write_order: &[String],
-    presence_conditions: &BTreeMap<String, Dnf>,
-) -> anyhow::Result<TokenStream> {
-    let try_pull = generate_try_pull(settings, read_order, presence_conditions)?;
-    let try_push = generate_try_push(settings, write_order);
-
-    Ok(quote! {
+fn generate_simulation_impl(struct_ident: &Ident, options_path: &TokenStream) -> TokenStream {
+    quote! {
         impl crate::features::simulation::Simulation for #struct_ident {
             fn as_any(&self) -> &dyn ::std::any::Any { self }
 
@@ -410,19 +401,22 @@ fn generate_simulation_impl(
                 <Self>::try_update_from(self, partial)
             }
 
-            #try_pull
-            #try_push
+            fn try_pull(ptp: &mut crate::ptp::Ptp) -> ::anyhow::Result<Self> {
+                <Self as crate::features::simulation::SimulationTransactionProfile>::pull_from(ptp)
+            }
 
             fn to_base(&self) -> crate::generated::simulations::SimulationBase {
                 <crate::generated::simulations::SimulationBase as ::std::convert::From<&#struct_ident>>::from(self)
             }
         }
-    })
+    }
 }
 
-fn generate_try_pull(
+fn generate_transaction_profile_impl(
     settings: &BTreeMap<&str, SettingInfo<'_>>,
+    struct_ident: &Ident,
     read_order: &[String],
+    write_order: &[String],
     presence_conditions: &BTreeMap<String, Dnf>,
 ) -> anyhow::Result<TokenStream> {
     let staging_accessor = quote! { staged };
@@ -436,7 +430,10 @@ fn generate_try_pull(
             let type_path = info.type_path();
 
             let read_call = quote! {
-                Some(<#type_path as crate::ptp::option::SimulationSetting>::try_pull(ptp)?)
+                Some(crate::features::simulation::SimulationPropertyIo::get_prop(
+                    io,
+                    <#type_path as crate::ptp::option::SimulationSetting>::prop_code(),
+                )?)
             };
 
             let body = if let Some(dnf) = presence_conditions.get(id) {
@@ -454,42 +451,90 @@ fn generate_try_pull(
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
 
-    Ok(quote! {
-        fn try_pull(ptp: &mut crate::ptp::Ptp) -> ::anyhow::Result<Self> {
-            let mut staged = Self::default();
-            #( #reads )*
-            Ok(staged)
-        }
-    })
-}
-
-fn generate_try_push(
-    settings: &BTreeMap<&str, SettingInfo<'_>>,
-    write_order: &[String],
-) -> TokenStream {
-    let writes = write_order.iter().map(|id| {
+    let changes = write_order.iter().enumerate().map(|(index, id)| {
         let info = settings
             .get(id.as_str())
             .expect("write order references known setting");
         let ident = info.field_ident();
-        let error_context = format!("writing simulation setting `{id}`");
+        let type_path = info.type_path();
+        let id = id.as_str();
 
         quote! {
-            if let Some(value) = self.#ident.as_ref() {
-                ::anyhow::Context::with_context(
-                    crate::ptp::option::SimulationSetting::try_push(value, ptp),
-                    || #error_context,
-                )?;
+            if self.#ident.is_some() && self.#ident != original.#ident {
+                changes.push(crate::features::simulation::SimulationPropertyChange {
+                    index: #index,
+                    setting: #id,
+                    property_code: <#type_path as crate::ptp::option::SimulationSetting>::prop_code(),
+                    restorable: original.#ident.is_some(),
+                });
             }
         }
     });
 
-    quote! {
-        fn try_push(&self, ptp: &mut crate::ptp::Ptp) -> ::anyhow::Result<()> {
-            #( #writes )*
-            Ok(())
+    let writes = write_order.iter().enumerate().map(|(index, id)| {
+        let info = settings
+            .get(id.as_str())
+            .expect("write order references known setting");
+        let ident = info.field_ident();
+        let type_path = info.type_path();
+        let missing = format!("planned simulation setting `{id}` has no value");
+        let context = format!("writing simulation setting `{id}`");
+        quote! {
+            #index => {
+                let value = self.#ident.as_ref().ok_or_else(|| {
+                    crate::features::simulation::SimulationPropertyWriteError::unconfirmed(
+                        ::anyhow::anyhow!(#missing),
+                    )
+                })?;
+                crate::features::simulation::SimulationPropertyIo::set_prop(
+                        io,
+                        <#type_path as crate::ptp::option::SimulationSetting>::prop_code(),
+                        value,
+                    )
+                    .map_err(|error| error.context(#context))
+            }
         }
-    }
+    });
+
+    Ok(quote! {
+        impl crate::features::simulation::SimulationTransactionProfile for #struct_ident {
+            fn changes_from(
+                &self,
+                original: &Self,
+            ) -> ::anyhow::Result<Vec<crate::features::simulation::SimulationPropertyChange>> {
+                let mut changes = Vec::new();
+                #( #changes )*
+                Ok(changes)
+            }
+
+            fn pull_from<IO: crate::features::simulation::SimulationPropertyIo>(
+                io: &mut IO,
+            ) -> ::anyhow::Result<Self> {
+                let mut staged = Self::default();
+                #( #reads )*
+                Ok(staged)
+            }
+
+            fn push_change<IO: crate::features::simulation::SimulationPropertyIo>(
+                &self,
+                change: crate::features::simulation::SimulationPropertyChange,
+                io: &mut IO,
+            ) -> ::std::result::Result<
+                (),
+                crate::features::simulation::SimulationPropertyWriteError,
+            > {
+                match change.index {
+                    #( #writes )*
+                    _ => Err(crate::features::simulation::SimulationPropertyWriteError::unconfirmed(
+                        ::anyhow::anyhow!(
+                            "unknown simulation property change index {}",
+                            change.index,
+                        ),
+                    )),
+                }
+            }
+        }
+    })
 }
 
 fn generate_parser_impl(struct_ident: &Ident, camera_struct_path: &TokenStream) -> TokenStream {
@@ -522,25 +567,6 @@ fn generate_manager_impl(
 ) -> TokenStream {
     let struct_name = struct_ident.to_string();
     quote! {
-        impl #struct_ident {
-            fn try_push_with_rollback(
-                ptp: &mut crate::ptp::Ptp,
-                candidate: &Self,
-                original: &Self,
-            ) -> ::anyhow::Result<()> {
-                let apply_error = match
-                    <Self as crate::features::simulation::Simulation>::try_push(candidate, ptp)
-                {
-                    Ok(()) => return Ok(()),
-                    Err(error) => error,
-                };
-
-                crate::features::simulation::finish_failed_simulation_apply(apply_error, || {
-                    <Self as crate::features::simulation::Simulation>::try_push(original, ptp)
-                })
-            }
-        }
-
         impl crate::features::simulation::CameraSimulationManager for #camera_struct_path {
             fn custom_settings_slots(&self) -> Vec<#options_path::CustomSetting> {
                 <#options_path::CustomSetting as ::strum::IntoEnumIterator>::iter()
@@ -553,9 +579,9 @@ fn generate_manager_impl(
                 ptp: &mut crate::ptp::Ptp,
                 slot: #options_path::CustomSetting,
             ) -> ::anyhow::Result<Box<dyn crate::features::simulation::Simulation>> {
-                crate::ptp::option::SimulationSetting::try_push(&slot, ptp)?;
+                let mut io = crate::features::simulation::SelectedSimulationIo::new(ptp, slot);
                 Ok(Box::new(
-                    <#struct_ident as crate::features::simulation::Simulation>::try_pull(ptp)?,
+                    <#struct_ident as crate::features::simulation::SimulationTransactionProfile>::pull_from(&mut io)?,
                 ))
             }
 
@@ -564,13 +590,31 @@ fn generate_manager_impl(
                 ptp: &mut crate::ptp::Ptp,
                 slot: #options_path::CustomSetting,
                 partial: crate::generated::simulations::SimulationBase,
-            ) -> ::anyhow::Result<()> {
-                crate::ptp::option::SimulationSetting::try_push(&slot, ptp)?;
+            ) -> ::std::result::Result<
+                crate::features::simulation::SimulationTransactionSuccess,
+                crate::features::simulation::SimulationTransactionError,
+            > {
+                let mut io = crate::features::simulation::SelectedSimulationIo::new(ptp, slot);
                 let original =
-                    <#struct_ident as crate::features::simulation::Simulation>::try_pull(ptp)?;
+                    <#struct_ident as crate::features::simulation::SimulationTransactionProfile>::pull_from(&mut io)
+                        .map_err(|error| {
+                            crate::features::simulation::SimulationTransactionError::preparation(
+                                crate::features::simulation::SimulationPropertyIo::is_healthy(&io),
+                                error,
+                            )
+                        })?;
                 let mut candidate = original.clone();
-                candidate.try_update_from(partial)?;
-                #struct_ident::try_push_with_rollback(ptp, &candidate, &original)
+                candidate.try_update_from(partial).map_err(|error| {
+                    crate::features::simulation::SimulationTransactionError::preparation(
+                        crate::features::simulation::SimulationPropertyIo::is_healthy(&io),
+                        error,
+                    )
+                })?;
+                crate::features::simulation::execute_simulation_transaction(
+                    &mut io,
+                    &original,
+                    &candidate,
+                )
             }
 
             fn set_simulation(
@@ -578,17 +622,32 @@ fn generate_manager_impl(
                 ptp: &mut crate::ptp::Ptp,
                 slot: #options_path::CustomSetting,
                 simulation: &dyn crate::features::simulation::Simulation,
-            ) -> ::anyhow::Result<()> {
+            ) -> ::std::result::Result<
+                crate::features::simulation::SimulationTransactionSuccess,
+                crate::features::simulation::SimulationTransactionError,
+            > {
                 let sim = simulation
                     .as_any()
                     .downcast_ref::<#struct_ident>()
                     .ok_or_else(|| ::anyhow::anyhow!(
                         "Simulation type mismatch: expected {}", #struct_name
-                    ))?;
-                crate::ptp::option::SimulationSetting::try_push(&slot, ptp)?;
+                    ))
+                    .map_err(|error| {
+                        crate::features::simulation::SimulationTransactionError::preparation(
+                            ptp.is_healthy(),
+                            error,
+                        )
+                    })?;
+                let mut io = crate::features::simulation::SelectedSimulationIo::new(ptp, slot);
                 let original =
-                    <#struct_ident as crate::features::simulation::Simulation>::try_pull(ptp)?;
-                #struct_ident::try_push_with_rollback(ptp, sim, &original)
+                    <#struct_ident as crate::features::simulation::SimulationTransactionProfile>::pull_from(&mut io)
+                        .map_err(|error| {
+                            crate::features::simulation::SimulationTransactionError::preparation(
+                                crate::features::simulation::SimulationPropertyIo::is_healthy(&io),
+                                error,
+                            )
+                        })?;
+                crate::features::simulation::execute_simulation_transaction(&mut io, &original, sim)
             }
         }
     }
@@ -671,17 +730,39 @@ mod tests {
     }
 
     #[test]
-    fn generated_manager_rolls_back_a_partially_applied_profile() {
+    fn generated_manager_delegates_journaled_transactions_to_runtime() {
         let (options, cameras) = fixture();
         let generated = generate(&options, &cameras).unwrap().to_string();
 
         assert!(
-            generated.contains("Simulation > :: try_push (original , ptp)"),
-            "failure path must actually write the snapshot back:\n{generated}",
+            generated.contains("SimulationTransactionProfile for DemoSimulation"),
+            "generated cameras must expose their ordered property adapter:\n{generated}",
         );
         assert!(
-            generated.contains("finish_failed_simulation_apply"),
-            "rollback outcomes must retain structured typed errors:\n{generated}",
+            generated.contains("SelectedSimulationIo :: new (ptp , slot)")
+                && generated.contains(
+                    "execute_simulation_transaction (& mut io , & original , & candidate"
+                ),
+            "runtime transaction executor must own apply, journal, rollback, and readback:\n{generated}",
+        );
+        assert!(
+            !generated.contains("finish_failed_simulation_apply")
+                && !generated.contains("fn try_push_with_rollback"),
+            "legacy full-profile rollback bypass must not be generated:\n{generated}",
+        );
+    }
+
+    #[test]
+    fn generated_update_writes_only_changed_properties() {
+        let (options, cameras) = fixture();
+        let generated = generate(&options, &cameras).unwrap().to_string();
+
+        assert!(
+            generated.contains(
+                "self . film_simulation . is_some () && self . film_simulation != original . film_simulation"
+            ) && generated.contains("setting : \"film_simulation\"")
+                && generated.contains("execute_simulation_transaction (& mut io , & original , & candidate"),
+            "the generated adapter must diff the full candidate and preserve the schema property order:\n{generated}",
         );
     }
 }

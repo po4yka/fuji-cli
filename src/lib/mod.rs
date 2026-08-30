@@ -16,7 +16,7 @@ use anyhow::{anyhow, bail, ensure};
 use features::{
     backup::{BackupArtifact, BackupIdentity, BackupPurpose, sha256_hex},
     base::{CameraBase, info::CameraInfo},
-    simulation::Simulation,
+    simulation::{Simulation, SimulationTransactionError, SimulationTransactionSuccess},
 };
 use log::{debug, error};
 use ptp::{Ptp, validate_bulk_read_geometry};
@@ -498,11 +498,14 @@ impl Camera {
         &mut self,
         slot: CustomSetting,
         partial: SimulationBase,
-    ) -> anyhow::Result<()> {
+    ) -> Result<SimulationTransactionSuccess, SimulationTransactionError> {
         if let Some(sim) = self.r#impl.as_simulation_manager() {
             sim.update_simulation(&mut self.ptp, slot, partial)
         } else {
-            bail!(ERROR_CAMERA_DOES_NOT_SUPPORT_SIMULATION_MANAGEMENT);
+            Err(SimulationTransactionError::preparation(
+                self.ptp.is_healthy(),
+                anyhow!(ERROR_CAMERA_DOES_NOT_SUPPORT_SIMULATION_MANAGEMENT),
+            ))
         }
     }
 
@@ -510,11 +513,14 @@ impl Camera {
         &mut self,
         slot: CustomSetting,
         simulation: &dyn Simulation,
-    ) -> anyhow::Result<()> {
+    ) -> Result<SimulationTransactionSuccess, SimulationTransactionError> {
         if let Some(sim) = self.r#impl.as_simulation_manager() {
             sim.set_simulation(&mut self.ptp, slot, simulation)
         } else {
-            bail!(ERROR_CAMERA_DOES_NOT_SUPPORT_SIMULATION_MANAGEMENT);
+            Err(SimulationTransactionError::preparation(
+                self.ptp.is_healthy(),
+                anyhow!(ERROR_CAMERA_DOES_NOT_SUPPORT_SIMULATION_MANAGEMENT),
+            ))
         }
     }
 

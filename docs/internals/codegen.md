@@ -137,16 +137,23 @@ The render path additionally snapshots `original = self.clone()` before the
 merge and threads it through `solve` and `emit_warnings_and_infos`; see
 [analyses / scope](analyses.md#scope).
 
-`try_pull` reads each setting in topological read order (see
-[analyses / presence DAG](analyses.md#the-presence-dag)); for each field with a
-derived gate, the read is wrapped in `if gate { read }
-else { None }`.
-`try_push` writes every `Some` field in write order.
-`update_simulation` and `set_simulation` snapshot the selected slot before the
-first setting write. If a later write fails, the generated manager makes a
-best-effort rollback by pushing that snapshot. A failed rollback preserves both
-errors and reports the slot state as unknown; the camera protocol does not offer
-an atomic multi-property transaction.
+The generated `SimulationTransactionProfile` adapter reads each setting in
+topological order (see [analyses / presence DAG](analyses.md#the-presence-dag));
+for each field with a derived gate, the read is wrapped in `if gate { read }
+else { None }`. Its change planner compares a complete candidate with the
+snapshot and emits only changed `Some` properties in the same dependency-safe
+order. A typed index dispatch writes exactly one planned property at a time.
+
+`update_simulation` and `set_simulation` snapshot the selected slot, construct a
+complete candidate, and delegate apply, journaling, reverse rollback, and both
+readback checks to the generic runtime transaction executor. Generated code no
+longer exposes or uses a full-profile `try_push` path. This does not make the
+camera protocol atomic, but it bounds recovery to writes the camera confirmed
+and prevents a one-field update from rewriting the entire profile. The manager
+wraps PTP in a selected-slot adapter that reselects and verifies the target slot
+before and after every profile property access. Detected selector drift fails
+closed as unknown state, including when the profile write itself was already
+confirmed.
 
 ## Renders
 

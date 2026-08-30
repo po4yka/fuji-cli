@@ -1,7 +1,10 @@
 use crate::{
     features::{
         base::CameraBase,
-        simulation::{Simulation, parser::CameraSimulationParser},
+        simulation::{
+            Simulation, SimulationTransactionError, SimulationTransactionSuccess,
+            parser::CameraSimulationParser,
+        },
     },
     generated::{options::CustomSetting, simulations::SimulationBase},
     ptp::Ptp,
@@ -21,12 +24,12 @@ pub trait CameraSimulationManager: CameraBase + CameraSimulationParser {
         ptp: &mut Ptp,
         slot: CustomSetting,
         partial: SimulationBase,
-    ) -> anyhow::Result<()>;
+    ) -> Result<SimulationTransactionSuccess, SimulationTransactionError>;
 
     fn set_simulation(
         &self,
         ptp: &mut Ptp,
         slot: CustomSetting,
         simulation: &dyn Simulation,
-    ) -> anyhow::Result<()>;
+    ) -> Result<SimulationTransactionSuccess, SimulationTransactionError>;
 }

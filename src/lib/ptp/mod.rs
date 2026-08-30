@@ -951,6 +951,7 @@ mod tests {
                 && !message.contains("camera-private-payload"),
             "PTP transport error lacked safe operation context or exposed payload: {message:?}"
         );
+        assert!(poisoned, "USB disconnect must poison the PTP session");
     }
 
     #[test]
@@ -998,6 +999,9 @@ mod tests {
                 || message.contains("camera-private-payload")
             {
                 failures.push(format!("{expected_context}: {message:?}"));
+            }
+            if !poisoned {
+                failures.push(format!("{expected_context}: session was not poisoned"));
             }
         }
 
@@ -1181,10 +1185,10 @@ mod tests {
     }
 
     #[test]
-    fn keeps_session_reusable_after_well_framed_ptp_error_response() {
+    fn keeps_session_reusable_after_well_framed_device_busy_response() {
         let error_response = container(
             ContainerType::Response,
-            ContainerCode::Response(ResponseCode::GeneralError),
+            ContainerCode::Response(ResponseCode::DeviceBusy),
             0,
             &[],
         );
@@ -1332,6 +1336,7 @@ mod tests {
                 .chain()
                 .any(|cause| cause.to_string().contains("transaction deadline exceeded"))
         );
+        assert!(poisoned, "an in-flight timeout must poison the PTP session");
     }
 
     #[test]

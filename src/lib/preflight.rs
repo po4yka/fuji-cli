@@ -4,7 +4,10 @@ use anyhow::{bail, ensure};
 
 use crate::{
     Camera, SupportedCamera,
-    features::{backup::BackupIdentity, simulation::Simulation},
+    features::{
+        backup::BackupIdentity,
+        simulation::{Simulation, SimulationTransactionError, SimulationTransactionSuccess},
+    },
     generated::{
         cameras::{
             CameraPreflightDataType, CameraPreflightOperation, CameraPreflightProfile,
@@ -128,7 +131,7 @@ impl ValidatedCameraSession<'_, SimulationWrite> {
         &mut self,
         slot: CustomSetting,
         partial: SimulationBase,
-    ) -> anyhow::Result<()> {
+    ) -> Result<SimulationTransactionSuccess, SimulationTransactionError> {
         self.camera.update_simulation_unchecked(slot, partial)
     }
 
@@ -136,7 +139,7 @@ impl ValidatedCameraSession<'_, SimulationWrite> {
         &mut self,
         slot: CustomSetting,
         simulation: &dyn Simulation,
-    ) -> anyhow::Result<()> {
+    ) -> Result<SimulationTransactionSuccess, SimulationTransactionError> {
         self.camera.set_simulation_unchecked(slot, simulation)
     }
 }

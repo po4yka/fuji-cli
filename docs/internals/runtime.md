@@ -163,8 +163,9 @@ means only that the final PTP response accepted the restore operation.
 [`features/simulation/`](../../src/lib/features/simulation/).
 `CameraSimulationParser` is JSON serialize/deserialize (so users can round-trip
 a slot to disk). `Simulation` is the trait object the parser yields: `try_pull`,
-`try_push`, `try_update_from`, `name`, `to_base`. Codegen implements both for
-every simulation-capable camera.
+`try_update_from`, `name`, `to_base`. Codegen implements both for every
+simulation-capable camera. Full-profile writes are deliberately not part of
+this public trait; all writes cross the transaction boundary below.
 
 `SimulationListItem` is a small helper struct used by `simulation
 list`.
@@ -175,6 +176,38 @@ The PTP-talking interface: `custom_settings_slots`, `get_simulation`,
 `update_simulation`, `set_simulation`. The codegen-emitted impl uses the
 option's `SimulationSetting::try_push` to select the slot before
 reading/writing.
+
+`update_simulation` and `set_simulation` snapshot the selected profile, build a
+complete candidate, and pass both to the runtime transaction executor. The
+generated `SimulationTransactionProfile` adapter contributes the camera's
+dependency-safe property order and typed per-property read/write dispatch. The
+executor writes only changed `Some` properties and journals a property only
+after its framed PTP response succeeds.
+
+A selected-slot I/O adapter reselects and verifies the target custom-setting
+slot before and after every profile property read or write, including apply
+verification and reverse rollback. If a confirmed property write is followed
+by selector drift, that write remains journaled but the outcome is permanently
+`CameraStateUnknown`; recovery cannot be overstated as verified. Selector and
+property access are still separate PTP commands, so proving that an
+away-and-back UI switch cannot occur wholly between them requires physical
+device evidence for the active USB mode.
+
+Every successful apply is followed by a complete, presence-aware readback. A
+healthy apply failure or readback mismatch rolls back only confirmed writes,
+in reverse order, and then reads the profile again. The typed outcomes are
+`AppliedAndVerified`, `NoChangeVerified`, `RejectedWithoutChange`,
+`RollbackVerified`, and `CameraStateUnknown`. A rollback is never reported as
+verified without an exact readback of the original profile. If an original
+field was absent, its latent wire value is unknown; a failure after changing
+that property therefore remains `CameraStateUnknown` even after best-effort
+recovery of other journal entries.
+
+Transport failures, USB timeouts/disconnects, malformed containers, and PTP
+stream mismatches poison the session. Once poisoned, the transaction executor
+does not attempt rollback, readback, retry, or session reopening. A fully
+framed PTP rejection, including `DeviceBusy`, leaves the session healthy, so
+verified recovery remains possible.
 
 ### `CameraRenderManager`
 
