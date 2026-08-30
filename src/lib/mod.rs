@@ -75,6 +75,51 @@ pub enum CameraMode {
     Unknown,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PtpUsbCandidate {
+    interface: u8,
+    setting: u8,
+    bulk_in: Vec<(u8, usize)>,
+    bulk_out: Vec<u8>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PtpUsbBinding {
+    interface: u8,
+    setting: u8,
+    bulk_in: u8,
+    bulk_out: u8,
+    bulk_in_max_packet_size: usize,
+}
+
+fn select_ptp_usb_binding(
+    candidates: impl IntoIterator<Item = PtpUsbCandidate>,
+) -> anyhow::Result<PtpUsbBinding> {
+    let mut binding = None;
+    for candidate in candidates {
+        if candidate.bulk_in.is_empty() || candidate.bulk_out.is_empty() {
+            continue;
+        }
+        ensure!(
+            candidate.bulk_in.len() == 1 && candidate.bulk_out.len() == 1,
+            "PTP USB interface alternate setting has ambiguous bulk endpoints"
+        );
+        let (bulk_in, bulk_in_max_packet_size) = candidate.bulk_in[0];
+        let candidate_binding = PtpUsbBinding {
+            interface: candidate.interface,
+            setting: candidate.setting,
+            bulk_in,
+            bulk_out: candidate.bulk_out[0],
+            bulk_in_max_packet_size,
+        };
+        ensure!(
+            binding.replace(candidate_binding).is_none(),
+            "multiple complete PTP USB interface alternate settings found"
+        );
+    }
+    binding.ok_or_else(|| anyhow!("no complete PTP USB interface alternate setting found"))
+}
+
 #[derive(Clone, Copy)]
 struct ResolvedCamera {
     factory: CameraFactory,
@@ -181,50 +226,62 @@ impl Camera {
         let address = device.address();
 
         let config_descriptor = device.active_config_descriptor()?;
-        let interface_descriptor = config_descriptor
-            .interfaces()
-            .flat_map(|i| i.descriptors())
-            .find(|x| x.class_code() == LIBUSB_CLASS_IMAGE)
-            .ok_or(rusb::Error::NotFound)?;
-
-        let interface = interface_descriptor.interface_number();
-        debug!("Found interface {interface}");
+        let binding = select_ptp_usb_binding(
+            config_descriptor
+                .interfaces()
+                .flat_map(|i| i.descriptors())
+                .filter(|descriptor| descriptor.class_code() == LIBUSB_CLASS_IMAGE)
+                .map(|descriptor| {
+                    let mut bulk_in = Vec::new();
+                    let mut bulk_out = Vec::new();
+                    for endpoint in descriptor
+                        .endpoint_descriptors()
+                        .filter(|endpoint| endpoint.transfer_type() == rusb::TransferType::Bulk)
+                    {
+                        match endpoint.direction() {
+                            rusb::Direction::In => {
+                                bulk_in.push((
+                                    endpoint.address(),
+                                    usize::from(endpoint.max_packet_size()),
+                                ));
+                            }
+                            rusb::Direction::Out => bulk_out.push(endpoint.address()),
+                        }
+                    }
+                    PtpUsbCandidate {
+                        interface: descriptor.interface_number(),
+                        setting: descriptor.setting_number(),
+                        bulk_in,
+                        bulk_out,
+                    }
+                }),
+        )?;
+        debug!(
+            "Found PTP interface {} alternate setting {}",
+            binding.interface, binding.setting
+        );
 
         let handle = device.open()?;
-        handle.claim_interface(interface)?;
+        handle.claim_interface(binding.interface)?;
         debug!("Claimed interface");
-
-        let find_endpoint = |direction: rusb::Direction,
-                             transfer_type: rusb::TransferType|
-         -> Result<(u8, usize), rusb::Error> {
-            interface_descriptor
-                .endpoint_descriptors()
-                .find(|ep| ep.direction() == direction && ep.transfer_type() == transfer_type)
-                .map(|endpoint| (endpoint.address(), usize::from(endpoint.max_packet_size())))
-                .ok_or(rusb::Error::NotFound)
-        };
-
-        let (bulk_in, bulk_in_max_packet_size) =
-            find_endpoint(rusb::Direction::In, rusb::TransferType::Bulk)?;
-        debug!("Found Bulk In endpoint");
-
-        let (bulk_out, _) = find_endpoint(rusb::Direction::Out, rusb::TransferType::Bulk)?;
-        debug!("Found Bulk Out endpoint");
+        handle.set_alternate_setting(binding.interface, binding.setting)?;
+        debug!("Activated alternate setting {}", binding.setting);
 
         let transaction_id = 0;
         let r#impl = (resolved.factory)();
         let chunk_size = r#impl.chunk_size();
-        validate_bulk_read_geometry(chunk_size, bulk_in_max_packet_size)?;
+        validate_bulk_read_geometry(chunk_size, binding.bulk_in_max_packet_size)?;
 
         let mut ptp = Ptp {
             bus,
             address,
-            interface,
-            bulk_in,
-            bulk_out,
+            interface: binding.interface,
+            bulk_in: binding.bulk_in,
+            bulk_out: binding.bulk_out,
             handle,
             transaction_id,
             chunk_size,
+            bulk_read_state: ptp::BulkReadState::new(chunk_size)?,
             poisoned: false,
             camera_processing_active: false,
             mutation_authorization: None,

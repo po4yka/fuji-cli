@@ -3,7 +3,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use super::{CameraMode, best_effort_close_session, ensure_session_safe_to_close, resolve_camera};
+use super::{
+    CameraMode, PtpUsbBinding, PtpUsbCandidate, best_effort_close_session,
+    ensure_session_safe_to_close, resolve_camera, select_ptp_usb_binding,
+};
 use crate::policy::{
     EmulationAcknowledgement, LogicalCameraIdentity, ModelBindingKind, PhysicalUsbIdentity,
 };
@@ -96,4 +99,68 @@ fn emulation_keeps_physical_and_logical_identities_distinct() -> anyhow::Result<
     );
     assert_eq!(resolved.binding, ModelBindingKind::Emulated);
     Ok(())
+}
+
+#[test]
+fn ptp_endpoint_selection_uses_one_complete_alternate_setting() -> anyhow::Result<()> {
+    let binding = select_ptp_usb_binding([
+        PtpUsbCandidate {
+            interface: 0,
+            setting: 0,
+            bulk_in: vec![],
+            bulk_out: vec![],
+        },
+        PtpUsbCandidate {
+            interface: 0,
+            setting: 1,
+            bulk_in: vec![(0x81, 512)],
+            bulk_out: vec![0x02],
+        },
+    ])?;
+
+    assert_eq!(
+        binding,
+        PtpUsbBinding {
+            interface: 0,
+            setting: 1,
+            bulk_in: 0x81,
+            bulk_out: 0x02,
+            bulk_in_max_packet_size: 512,
+        }
+    );
+    Ok(())
+}
+
+#[test]
+fn ptp_endpoint_selection_fails_closed_when_multiple_alternates_are_viable() {
+    let error = select_ptp_usb_binding([
+        PtpUsbCandidate {
+            interface: 0,
+            setting: 0,
+            bulk_in: vec![(0x81, 512)],
+            bulk_out: vec![0x02],
+        },
+        PtpUsbCandidate {
+            interface: 0,
+            setting: 1,
+            bulk_in: vec![(0x83, 1024)],
+            bulk_out: vec![0x04],
+        },
+    ])
+    .expect_err("ambiguous PTP alternate settings must not be selected implicitly");
+
+    assert!(error.to_string().contains("multiple complete"));
+}
+
+#[test]
+fn ptp_endpoint_selection_rejects_duplicate_bulk_endpoints_within_an_alternate() {
+    let error = select_ptp_usb_binding([PtpUsbCandidate {
+        interface: 0,
+        setting: 0,
+        bulk_in: vec![(0x81, 512), (0x83, 512)],
+        bulk_out: vec![0x02],
+    }])
+    .expect_err("duplicate bulk endpoints must not be selected implicitly");
+
+    assert!(error.to_string().contains("ambiguous bulk endpoints"));
 }

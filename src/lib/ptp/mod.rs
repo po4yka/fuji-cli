@@ -36,6 +36,7 @@ const PTP_LARGE_TRANSFER_RESPONSE_TIMEOUT: Duration = Duration::from_secs(10 * 6
 const PTP_TRANSACTION_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const PTP_LARGE_TRANSFER_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 pub const MAX_PTP_CONTAINER_PAYLOAD_BYTES: usize = 128 * 1024 * 1024;
+const MAX_PTP_BULK_READ_CHUNK_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PtpOperation {
@@ -151,6 +152,13 @@ struct Deadline<'a, C> {
     phase: PtpDeadlinePhase,
 }
 
+pub(crate) struct BulkReadState {
+    buffer: Vec<u8>,
+    cursor: usize,
+    len: usize,
+    previous_read_filled_buffer: bool,
+}
+
 impl<'a, C: Clock> Deadline<'a, C> {
     fn new(clock: &'a C, timeout: Duration) -> anyhow::Result<Self> {
         let expires_at = clock
@@ -235,6 +243,81 @@ impl<'a, C: Clock> Deadline<'a, C> {
     }
 }
 
+impl BulkReadState {
+    pub(crate) fn new(chunk_size: usize) -> anyhow::Result<Self> {
+        ensure!(
+            chunk_size >= ContainerInfo::SIZE,
+            "PTP chunk size must fit the container header"
+        );
+        ensure!(
+            chunk_size <= MAX_PTP_BULK_READ_CHUNK_BYTES,
+            "PTP chunk size {chunk_size} exceeds maximum bulk read allocation {MAX_PTP_BULK_READ_CHUNK_BYTES}"
+        );
+        let mut buffer = Vec::new();
+        reserve_bytes(&mut buffer, chunk_size, "PTP bulk read chunk")?;
+        buffer.resize(chunk_size, 0);
+
+        Ok(Self {
+            buffer,
+            cursor: 0,
+            len: 0,
+            previous_read_filled_buffer: false,
+        })
+    }
+
+    fn read_exact<T: BulkTransport, C: Clock>(
+        &mut self,
+        transport: &T,
+        bulk_in: u8,
+        output: &mut [u8],
+        deadline: &Deadline<'_, C>,
+        truncated_message: &str,
+    ) -> anyhow::Result<()> {
+        let mut written = 0;
+        while written < output.len() {
+            if self.cursor == self.len {
+                let n = loop {
+                    let n = match transport.read_bulk(
+                        bulk_in,
+                        &mut self.buffer,
+                        deadline.io_timeout()?,
+                    ) {
+                        Ok(n) => n,
+                        Err(rusb::Error::Timeout) => continue,
+                        Err(error) => return Err(error.into()),
+                    };
+                    deadline.record_progress()?;
+                    if n != 0 {
+                        break n;
+                    }
+                    ensure!(self.previous_read_filled_buffer, "{truncated_message}");
+                    self.previous_read_filled_buffer = false;
+                };
+                ensure!(
+                    n <= self.buffer.len(),
+                    "PTP bulk read exceeded its requested length"
+                );
+                self.cursor = 0;
+                self.len = n;
+                self.previous_read_filled_buffer = n == self.buffer.len();
+            }
+
+            let available = self.len - self.cursor;
+            let needed = output.len() - written;
+            let copied = min(available, needed);
+            output[written..written + copied]
+                .copy_from_slice(&self.buffer[self.cursor..self.cursor + copied]);
+            self.cursor += copied;
+            written += copied;
+        }
+        Ok(())
+    }
+
+    fn has_pending_bytes(&self) -> bool {
+        self.cursor < self.len
+    }
+}
+
 impl BulkTransport for rusb::DeviceHandle<GlobalContext> {
     fn read_bulk(&self, endpoint: u8, buf: &mut [u8], timeout: Duration) -> rusb::Result<usize> {
         Self::read_bulk(self, endpoint, buf, timeout)
@@ -254,6 +337,7 @@ pub struct Ptp {
     pub(crate) handle: rusb::DeviceHandle<GlobalContext>,
     pub(crate) transaction_id: u32,
     pub(crate) chunk_size: usize,
+    pub(crate) bulk_read_state: BulkReadState,
     pub(crate) poisoned: bool,
     pub(crate) camera_processing_active: bool,
     pub(crate) mutation_authorization: Option<MutationAuthorization>,
@@ -384,6 +468,7 @@ impl Ptp {
             self.bulk_in,
             self.bulk_out,
             self.chunk_size,
+            &mut self.bulk_read_state,
             &mut self.transaction_id,
             &mut self.poisoned,
             code,
@@ -404,11 +489,12 @@ impl Ptp {
         data: Option<&[u8]>,
     ) -> anyhow::Result<Vec<u8>> {
         self.validate_mutation(code, params, data)?;
-        let response = send_with_transport_until(
+        let response = send_with_transport_until_and_read_state(
             &self.handle,
             self.bulk_in,
             self.bulk_out,
             self.chunk_size,
+            &mut self.bulk_read_state,
             &mut self.transaction_id,
             &mut self.poisoned,
             code,
@@ -643,17 +729,52 @@ fn send_with_transport<T: BulkTransport>(
     params: &[u32],
     data: Option<&[u8]>,
 ) -> anyhow::Result<Vec<u8>> {
-    send_with_transport_and_clock(
+    let mut read_state = BulkReadState::new(chunk_size)?;
+    send_with_transport_and_read_state(
         transport,
         bulk_in,
         bulk_out,
         chunk_size,
+        &mut read_state,
         transaction_id,
         poisoned,
         code,
         params,
         data,
-        &SystemClock,
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the transport call mirrors the PTP endpoint, framing, and transaction tuple"
+)]
+#[cfg(test)]
+fn send_with_transport_and_read_state<T: BulkTransport>(
+    transport: &T,
+    bulk_in: u8,
+    bulk_out: u8,
+    chunk_size: usize,
+    read_state: &mut BulkReadState,
+    transaction_id: &mut u32,
+    poisoned: &mut bool,
+    code: CommandCode,
+    params: &[u32],
+    data: Option<&[u8]>,
+) -> anyhow::Result<Vec<u8>> {
+    let deadline = Deadline::new(&SystemClock, PTP_TRANSACTION_TIMEOUT)?;
+    send_with_transport_and_deadline(
+        transport,
+        bulk_in,
+        bulk_out,
+        chunk_size,
+        read_state,
+        transaction_id,
+        poisoned,
+        code,
+        params,
+        data,
+        deadline,
+        PtpOperation::Standard.timeout_policy(),
     )
 }
 
@@ -666,6 +787,7 @@ fn send_with_transport_for_operation<T: BulkTransport>(
     bulk_in: u8,
     bulk_out: u8,
     chunk_size: usize,
+    read_state: &mut BulkReadState,
     transaction_id: &mut u32,
     poisoned: &mut bool,
     code: CommandCode,
@@ -673,18 +795,21 @@ fn send_with_transport_for_operation<T: BulkTransport>(
     data: Option<&[u8]>,
     operation: PtpOperation,
 ) -> anyhow::Result<Vec<u8>> {
-    send_with_transport_for_operation_and_clock(
+    let policy = operation.timeout_policy();
+    let deadline = Deadline::new(&SystemClock, policy.transaction_timeout)?;
+    send_with_transport_and_deadline(
         transport,
         bulk_in,
         bulk_out,
         chunk_size,
+        read_state,
         transaction_id,
         poisoned,
         code,
         params,
         data,
-        operation,
-        &SystemClock,
+        deadline,
+        policy,
     )
 }
 
@@ -724,6 +849,7 @@ fn send_with_transport_and_clock<T: BulkTransport, C: Clock>(
     clippy::too_many_arguments,
     reason = "the transport test seam keeps the operation class and PTP tuple explicit"
 )]
+#[cfg(test)]
 fn send_with_transport_for_operation_and_clock<T: BulkTransport, C: Clock>(
     transport: &T,
     bulk_in: u8,
@@ -739,11 +865,13 @@ fn send_with_transport_for_operation_and_clock<T: BulkTransport, C: Clock>(
 ) -> anyhow::Result<Vec<u8>> {
     let policy = operation.timeout_policy();
     let deadline = Deadline::new(clock, policy.transaction_timeout)?;
+    let mut read_state = BulkReadState::new(chunk_size)?;
     send_with_transport_and_deadline(
         transport,
         bulk_in,
         bulk_out,
         chunk_size,
+        &mut read_state,
         transaction_id,
         poisoned,
         code,
@@ -756,13 +884,14 @@ fn send_with_transport_for_operation_and_clock<T: BulkTransport, C: Clock>(
 
 #[expect(
     clippy::too_many_arguments,
-    reason = "the transport call mirrors the PTP endpoint, transaction, and deadline tuple"
+    reason = "the transport call mirrors the PTP endpoint, framing, transaction, and deadline tuple"
 )]
-fn send_with_transport_until<T: BulkTransport>(
+fn send_with_transport_until_and_read_state<T: BulkTransport>(
     transport: &T,
     bulk_in: u8,
     bulk_out: u8,
     chunk_size: usize,
+    read_state: &mut BulkReadState,
     transaction_id: &mut u32,
     poisoned: &mut bool,
     code: CommandCode,
@@ -770,18 +899,20 @@ fn send_with_transport_until<T: BulkTransport>(
     data: Option<&[u8]>,
     expires_at: Instant,
 ) -> anyhow::Result<Vec<u8>> {
-    send_with_transport_until_and_clock(
+    let deadline = Deadline::until(&SystemClock, expires_at)?;
+    send_with_transport_and_deadline(
         transport,
         bulk_in,
         bulk_out,
         chunk_size,
+        read_state,
         transaction_id,
         poisoned,
         code,
         params,
         data,
-        expires_at,
-        &SystemClock,
+        deadline,
+        PtpOperation::Polling.timeout_policy(),
     )
 }
 
@@ -789,6 +920,7 @@ fn send_with_transport_until<T: BulkTransport>(
     clippy::too_many_arguments,
     reason = "the transport call mirrors the PTP endpoint, transaction, deadline, and clock tuple"
 )]
+#[cfg(test)]
 fn send_with_transport_until_and_clock<T: BulkTransport, C: Clock>(
     transport: &T,
     bulk_in: u8,
@@ -803,11 +935,13 @@ fn send_with_transport_until_and_clock<T: BulkTransport, C: Clock>(
     clock: &C,
 ) -> anyhow::Result<Vec<u8>> {
     let deadline = Deadline::until(clock, expires_at)?;
+    let mut read_state = BulkReadState::new(chunk_size)?;
     send_with_transport_and_deadline(
         transport,
         bulk_in,
         bulk_out,
         chunk_size,
+        &mut read_state,
         transaction_id,
         poisoned,
         code,
@@ -827,6 +961,7 @@ fn send_with_transport_and_deadline<T: BulkTransport, C: Clock>(
     bulk_in: u8,
     bulk_out: u8,
     chunk_size: usize,
+    read_state: &mut BulkReadState,
     transaction_id: &mut u32,
     poisoned: &mut bool,
     code: CommandCode,
@@ -906,10 +1041,10 @@ fn send_with_transport_and_deadline<T: BulkTransport, C: Clock>(
                 deadline.phase(PtpDeadlinePhase::Response, policy.response_timeout)?;
             let data_deadline =
                 deadline.phase(PtpDeadlinePhase::DataTransfer, policy.data_idle_timeout)?;
-            let (container, payload) = read_container_with_deadline(
+            let (container, payload) = read_container_from_state_with_deadline(
                 transport,
                 bulk_in,
-                chunk_size,
+                read_state,
                 &response_deadline,
                 Some(&data_deadline),
             )
@@ -924,6 +1059,12 @@ fn send_with_transport_and_deadline<T: BulkTransport, C: Clock>(
                 "PTP transaction ID mismatch: got {}, expected {current_transaction_id}",
                 container.transaction_id
             );
+            if container.kind == ContainerType::Response {
+                ensure!(
+                    !read_state.has_pending_bytes(),
+                    "unexpected bytes after PTP response container"
+                );
+            }
 
             match (container.kind, container.code) {
                 (ContainerType::Data, ContainerCode::Command(container_code)) => {
@@ -1058,6 +1199,10 @@ pub(crate) fn validate_bulk_read_geometry(
         "PTP chunk size must fit the container header"
     );
     ensure!(
+        chunk_size <= MAX_PTP_BULK_READ_CHUNK_BYTES,
+        "PTP chunk size {chunk_size} exceeds maximum bulk read allocation {MAX_PTP_BULK_READ_CHUNK_BYTES}"
+    );
+    ensure!(
         chunk_size.is_multiple_of(max_packet_size),
         "PTP chunk size {chunk_size} must be a multiple of the bulk IN endpoint packet size {max_packet_size}"
     );
@@ -1111,6 +1256,7 @@ fn read_container<T: BulkTransport>(
     read_container_with_deadline(transport, bulk_in, chunk_size, &deadline, None)
 }
 
+#[cfg(test)]
 fn read_container_with_deadline<T: BulkTransport, C: Clock>(
     transport: &T,
     bulk_in: u8,
@@ -1118,28 +1264,33 @@ fn read_container_with_deadline<T: BulkTransport, C: Clock>(
     deadline: &Deadline<'_, C>,
     payload_deadline: Option<&Deadline<'_, C>>,
 ) -> anyhow::Result<(ContainerInfo, Vec<u8>)> {
-    ensure!(
-        chunk_size >= ContainerInfo::SIZE,
-        "PTP chunk size must fit the container header"
-    );
-    let mut chunk = Vec::new();
-    reserve_bytes(&mut chunk, chunk_size, "PTP bulk read chunk")?;
-    chunk.resize(chunk_size, 0);
+    let mut read_state = BulkReadState::new(chunk_size)?;
+    read_container_from_state_with_deadline(
+        transport,
+        bulk_in,
+        &mut read_state,
+        deadline,
+        payload_deadline,
+    )
+}
 
-    let mut initial = Vec::new();
-    reserve_bytes(&mut initial, chunk_size, "PTP initial bulk read")?;
-    while initial.len() < ContainerInfo::SIZE {
-        let n = match transport.read_bulk(bulk_in, &mut chunk, deadline.io_timeout()?) {
-            Ok(n) => n,
-            Err(rusb::Error::Timeout) => continue,
-            Err(error) => return Err(error.into()),
-        };
-        ensure!(n != 0, "PTP container header is truncated");
-        initial.extend_from_slice(&chunk[..n]);
-        deadline.record_progress()?;
-    }
+fn read_container_from_state_with_deadline<T: BulkTransport, C: Clock>(
+    transport: &T,
+    bulk_in: u8,
+    read_state: &mut BulkReadState,
+    deadline: &Deadline<'_, C>,
+    payload_deadline: Option<&Deadline<'_, C>>,
+) -> anyhow::Result<(ContainerInfo, Vec<u8>)> {
+    let mut header = [0; ContainerInfo::SIZE];
+    read_state.read_exact(
+        transport,
+        bulk_in,
+        &mut header,
+        deadline,
+        "PTP container header is truncated",
+    )?;
 
-    let mut cur = Cursor::new(&initial[..ContainerInfo::SIZE]);
+    let mut cur = Cursor::new(header);
     let container_info = ContainerInfo::read_options(&mut cur, Endian::Little, ())?;
     let payload_len = container_info.payload_len()?;
     ensure!(
@@ -1149,30 +1300,19 @@ fn read_container_with_deadline<T: BulkTransport, C: Clock>(
 
     let mut payload = Vec::new();
     reserve_bytes(&mut payload, payload_len, "PTP container payload")?;
-    let initial_payload = &initial[ContainerInfo::SIZE..];
-    ensure!(
-        initial_payload.len() <= payload_len,
-        "PTP payload exceeded its declared length"
-    );
-    payload.extend_from_slice(initial_payload);
     let has_separate_payload_deadline = payload_deadline.is_some();
     let payload_deadline = payload_deadline.unwrap_or(deadline);
     if has_separate_payload_deadline && payload_len != 0 {
         payload_deadline.record_progress()?;
     }
-
-    while payload.len() < payload_len {
-        let remaining = payload_len - payload.len();
-        let n = match transport.read_bulk(bulk_in, &mut chunk, payload_deadline.io_timeout()?) {
-            Ok(n) => n,
-            Err(rusb::Error::Timeout) => continue,
-            Err(error) => return Err(error.into()),
-        };
-        ensure!(n != 0, "PTP payload ended before its declared length");
-        ensure!(n <= remaining, "PTP payload exceeded its declared length");
-        payload.extend_from_slice(&chunk[..n]);
-        payload_deadline.record_progress()?;
-    }
+    payload.resize(payload_len, 0);
+    read_state.read_exact(
+        transport,
+        bulk_in,
+        &mut payload,
+        payload_deadline,
+        "PTP payload ended before its declared length",
+    )?;
 
     Ok((container_info, payload))
 }
@@ -1194,15 +1334,15 @@ mod tests {
     };
 
     use super::{
-        BulkTransport, Clock, CommandCode, ContainerCode, ContainerInfo, ContainerType, Deadline,
-        DevicePropDataType, DevicePropDesc, DevicePropForm, DevicePropValue,
-        MAX_PTP_CONTAINER_PAYLOAD_BYTES, MutationAuthorization, PTP_BULK_TIMEOUT,
+        BulkReadState, BulkTransport, Clock, CommandCode, ContainerCode, ContainerInfo,
+        ContainerType, Deadline, DevicePropDataType, DevicePropDesc, DevicePropForm,
+        DevicePropValue, MAX_PTP_CONTAINER_PAYLOAD_BYTES, MutationAuthorization, PTP_BULK_TIMEOUT,
         PTP_DATA_IDLE_TIMEOUT, PTP_TRANSACTION_TIMEOUT, PtpDeadlineExceeded, PtpDeadlineKind,
         PtpDeadlinePhase, PtpOperation, ResponseCode, encode_command_params, read_container,
         read_container_with_deadline, send_with_transport, send_with_transport_and_clock,
-        send_with_transport_for_operation_and_clock, send_with_transport_until_and_clock,
-        session_is_safe_to_close, validate_bulk_read_geometry, validate_mutation_authorization,
-        write_all_bulk, write_container,
+        send_with_transport_and_read_state, send_with_transport_for_operation_and_clock,
+        send_with_transport_until_and_clock, session_is_safe_to_close, validate_bulk_read_geometry,
+        validate_mutation_authorization, write_all_bulk, write_container,
     };
 
     const EMPTY_CAPABILITY_PROFILE: crate::generated::cameras::CameraFirmwareCapabilityProfile =
@@ -1624,11 +1764,218 @@ mod tests {
     }
 
     #[test]
+    fn reads_data_and_response_containers_from_one_bulk_transfer() {
+        let payload = [0x11, 0x22, 0x33, 0x44];
+        let mut bulk_read = container(
+            ContainerType::Data,
+            ContainerCode::Command(CommandCode::GetObject),
+            7,
+            &payload,
+        );
+        bulk_read.extend_from_slice(&container(
+            ContainerType::Response,
+            ContainerCode::Response(ResponseCode::Ok),
+            7,
+            &[],
+        ));
+        let transport = FakeBulkTransport::with_reads([bulk_read]);
+        let mut transaction_id = 7;
+        let mut poisoned = false;
+
+        let received_payload = send_with_transport(
+            &transport,
+            0x81,
+            0x02,
+            1024,
+            &mut transaction_id,
+            &mut poisoned,
+            CommandCode::GetObject,
+            &[],
+            None,
+        )
+        .expect("coalesced PTP data and response containers must both be parsed");
+
+        assert_eq!(received_payload, payload);
+        assert!(!poisoned);
+    }
+
+    #[test]
+    fn skips_one_terminating_zlp_after_a_full_bulk_read() {
+        const CHUNK_SIZE: usize = 1024;
+
+        let payload = vec![0x5a; CHUNK_SIZE - ContainerInfo::SIZE];
+        let data = container(
+            ContainerType::Data,
+            ContainerCode::Command(CommandCode::GetObject),
+            7,
+            &payload,
+        );
+        assert_eq!(data.len(), CHUNK_SIZE);
+        let response = container(
+            ContainerType::Response,
+            ContainerCode::Response(ResponseCode::Ok),
+            7,
+            &[],
+        );
+        let transport = FakeBulkTransport::with_reads([data, vec![], response]);
+        let mut transaction_id = 7;
+        let mut poisoned = false;
+
+        let received_payload = send_with_transport(
+            &transport,
+            0x81,
+            0x02,
+            CHUNK_SIZE,
+            &mut transaction_id,
+            &mut poisoned,
+            CommandCode::GetObject,
+            &[],
+            None,
+        )
+        .expect("one terminating ZLP after a full bulk read must be skipped");
+
+        assert_eq!(received_payload, payload);
+        assert!(!poisoned);
+    }
+
+    #[test]
+    fn rejects_repeated_zero_progress_after_a_full_bulk_read() {
+        const CHUNK_SIZE: usize = 1024;
+
+        let data = container(
+            ContainerType::Data,
+            ContainerCode::Command(CommandCode::GetObject),
+            7,
+            &vec![0x5a; CHUNK_SIZE - ContainerInfo::SIZE],
+        );
+        let transport = FakeBulkTransport::with_reads([data, vec![], vec![]]);
+        let mut transaction_id = 7;
+        let mut poisoned = false;
+
+        let error = send_with_transport(
+            &transport,
+            0x81,
+            0x02,
+            CHUNK_SIZE,
+            &mut transaction_id,
+            &mut poisoned,
+            CommandCode::GetObject,
+            &[],
+            None,
+        )
+        .expect_err("a second zero-progress read must fail the transaction");
+
+        assert!(error.to_string().contains("header is truncated"));
+        assert!(poisoned);
+    }
+
+    #[test]
+    fn carries_a_terminating_zlp_across_ptp_transactions() {
+        const CHUNK_SIZE: usize = 1024;
+
+        let first_payload = vec![0x5a; CHUNK_SIZE - 2 * ContainerInfo::SIZE];
+        let mut first_read = container(
+            ContainerType::Data,
+            ContainerCode::Command(CommandCode::GetObject),
+            7,
+            &first_payload,
+        );
+        first_read.extend_from_slice(&container(
+            ContainerType::Response,
+            ContainerCode::Response(ResponseCode::Ok),
+            7,
+            &[],
+        ));
+        assert_eq!(first_read.len(), CHUNK_SIZE);
+        let second_response = container(
+            ContainerType::Response,
+            ContainerCode::Response(ResponseCode::Ok),
+            8,
+            &[],
+        );
+        let transport = FakeBulkTransport::with_reads([first_read, vec![], second_response]);
+        let mut transaction_id = 7;
+        let mut poisoned = false;
+        let mut read_state = BulkReadState::new(CHUNK_SIZE).expect("valid read geometry");
+
+        let received_payload = send_with_transport_and_read_state(
+            &transport,
+            0x81,
+            0x02,
+            CHUNK_SIZE,
+            &mut read_state,
+            &mut transaction_id,
+            &mut poisoned,
+            CommandCode::GetObject,
+            &[],
+            None,
+        )
+        .expect("first transaction must consume the full read window");
+        assert_eq!(received_payload, first_payload);
+
+        send_with_transport_and_read_state(
+            &transport,
+            0x81,
+            0x02,
+            CHUNK_SIZE,
+            &mut read_state,
+            &mut transaction_id,
+            &mut poisoned,
+            CommandCode::GetDeviceInfo,
+            &[],
+            None,
+        )
+        .expect("the next transaction must skip the preceding terminating ZLP");
+
+        assert!(!poisoned);
+    }
+
+    #[test]
+    fn rejects_trailing_bytes_after_the_response_container() {
+        let mut bulk_read = container(
+            ContainerType::Response,
+            ContainerCode::Response(ResponseCode::Ok),
+            7,
+            &[],
+        );
+        bulk_read.push(0xff);
+        let transport = FakeBulkTransport::with_reads([bulk_read]);
+        let mut transaction_id = 7;
+        let mut poisoned = false;
+
+        let error = send_with_transport(
+            &transport,
+            0x81,
+            0x02,
+            1024,
+            &mut transaction_id,
+            &mut poisoned,
+            CommandCode::GetDeviceInfo,
+            &[],
+            None,
+        )
+        .expect_err("trailing bytes after a response must poison the session");
+
+        assert!(error.to_string().contains("bytes after PTP response"));
+        assert!(poisoned);
+    }
+
+    #[test]
     fn rejects_bulk_read_buffer_that_is_not_packet_aligned() {
         let error = validate_bulk_read_geometry(1000, 512)
             .expect_err("bulk read buffers must align to endpoint packets");
 
         assert!(error.to_string().contains("multiple"));
+    }
+
+    #[test]
+    fn rejects_bulk_read_window_above_transport_allocation_budget() {
+        const MAX_BULK_READ_WINDOW_BYTES: usize = 16 * 1024 * 1024;
+
+        let error = validate_bulk_read_geometry(MAX_BULK_READ_WINDOW_BYTES + 512, 512)
+            .expect_err("bulk read windows must stay within the transport allocation budget");
+
+        assert!(error.to_string().contains("exceeds maximum"));
     }
 
     #[test]
