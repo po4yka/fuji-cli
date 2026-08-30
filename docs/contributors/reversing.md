@@ -172,9 +172,9 @@ Future Dangerous Probe" above:
 4. Exports a fresh backup to the given `backup` path (must not already
    exist; the export path reuses the same validated no-clobber writer as
    `discover backup export`) and computes its SHA-256 digest.
-5. Appends exactly one JSONL line to `audit-log` (created with mode `0600`
-   if absent, otherwise appended to) recording the attempt -- timestamp,
-   tool version, invocation ID, operation/risk class, the two PTP operation
+5. Appends one JSONL line to `audit-log` (created with mode `0600` if
+   absent, otherwise appended to) recording the attempt -- timestamp, tool
+   version, invocation ID, operation/risk class, the two PTP operation
    codes involved, USB location, VID:PID, bounded model/firmware, the serial
    fingerprint, the pre-backup digest, and outcome `attempted`. This record
    is durably written *before* the mutating send, so a durable trail exists
@@ -184,7 +184,20 @@ Future Dangerous Probe" above:
    snapshot value back once (restore), and reads `0xD18C` once more to
    verify the restore. Any failure or mismatch at any of these steps prints
    `DO NOT RETRY AUTOMATICALLY` and exits non-zero; there is no automatic
-   retry anywhere in this sequence.
+   retry anywhere in this sequence. Whether this step succeeds or fails, the
+   command appends a second, terminal JSONL line to `audit-log` before
+   returning: the exact same allowlisted fields as the pre-write record,
+   including the same invocation ID (so the two lines correlate as one
+   attempt), with `outcome` replaced by one of `restored`,
+   `snapshot_failed`, `write_failed`, `readback_failed`, `restore_failed`,
+   `restore_verify_read_failed`, or `restore_verify_mismatch`, classified
+   from this step's own control flow rather than from an error message. A
+   failure while appending the terminal line is itself reported but never
+   masks or replaces the underlying probe failure. One invocation of this
+   command therefore always produces exactly two JSONL lines in the audit
+   log (or exactly one if an earlier gate -- acknowledgement, fingerprint,
+   or backup export -- aborts before this step is reached), never fewer on
+   the failure path and never more via retry.
 
 No PTP property is currently known to distinguish the still and movie
 custom-setting namespaces on the wire (open question 1, still unresolved at

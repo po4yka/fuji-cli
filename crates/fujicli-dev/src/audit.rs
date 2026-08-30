@@ -114,15 +114,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn audit_record_serializes_only_the_allowlisted_fields() {
-        let record = sample_record();
-        let value = record.to_json();
-        let object = value
-            .as_object()
-            .expect("audit record must be a JSON object");
-
-        let allowed: BTreeSet<&str> = [
+    fn allowlisted_keys() -> BTreeSet<&'static str> {
+        [
             "timestamp",
             "tool_version",
             "invocation_id",
@@ -138,10 +131,37 @@ mod tests {
             "outcome",
         ]
         .into_iter()
-        .collect();
+        .collect()
+    }
+
+    #[test]
+    fn audit_record_serializes_only_the_allowlisted_fields() {
+        let record = sample_record();
+        let value = record.to_json();
+        let object = value
+            .as_object()
+            .expect("audit record must be a JSON object");
+
         let actual: BTreeSet<&str> = object.keys().map(String::as_str).collect();
 
-        assert_eq!(actual, allowed);
+        assert_eq!(actual, allowlisted_keys());
+    }
+
+    /// A terminal record (same fields as the pre-write `attempted` record,
+    /// only `outcome` differs) must serialize to the exact same allowlist --
+    /// the contract is identical for both lines of one attempt.
+    #[test]
+    fn terminal_outcome_record_serializes_only_the_allowlisted_fields() {
+        let mut record = sample_record();
+        record.outcome = "restore_failed".to_owned();
+        let value = record.to_json();
+        let object = value
+            .as_object()
+            .expect("terminal audit record must be a JSON object");
+
+        let actual: BTreeSet<&str> = object.keys().map(String::as_str).collect();
+
+        assert_eq!(actual, allowlisted_keys());
     }
 
     #[test]

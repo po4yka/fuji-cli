@@ -163,21 +163,79 @@ fn check_fingerprint(live: &str, provided: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Which stage of [`run_write_sequence`] failed, if any. Drives the terminal
+/// audit outcome classification in [`run_guarded_sequence`] from the
+/// sequence's own control flow -- never from string-matching an `anyhow`
+/// message. Each variant maps to exactly one outcome string in the audit-log
+/// contract (`docs/contributors/reversing.md`); the vocabulary may grow but
+/// existing values must never be renamed or removed once written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WriteSequenceStage {
+    /// The pre-write snapshot read failed; no mutating write was attempted.
+    Snapshot,
+    /// The mutating probe write itself returned an error; camera state is
+    /// most likely untouched, but not guaranteed.
+    Write,
+    /// The write succeeded but the post-write read-back failed.
+    Readback,
+    /// The restore write returned an error; the camera is left mutated.
+    Restore,
+    /// The restore write was sent but the verification read failed.
+    RestoreVerifyRead,
+    /// The restore was sent and the verification read succeeded, but its
+    /// value did not match the pre-probe snapshot; camera state is
+    /// uncertain.
+    RestoreVerifyMismatch,
+}
+
+impl WriteSequenceStage {
+    /// The stable, lowercase outcome string this stage contributes to the
+    /// terminal audit record's `outcome` field.
+    const fn outcome(self) -> &'static str {
+        match self {
+            Self::Snapshot => "snapshot_failed",
+            Self::Write => "write_failed",
+            Self::Readback => "readback_failed",
+            Self::Restore => "restore_failed",
+            Self::RestoreVerifyRead => "restore_verify_read_failed",
+            Self::RestoreVerifyMismatch => "restore_verify_mismatch",
+        }
+    }
+}
+
+/// A failure from [`run_write_sequence`], carrying both the stage that
+/// failed (for terminal audit classification) and the original error (for
+/// the operator-facing message). The stage is never derived from `source`'s
+/// text.
+#[derive(Debug)]
+struct WriteSequenceFailure {
+    stage: WriteSequenceStage,
+    source: anyhow::Error,
+}
+
 /// The five PTP round trips required by `reversing.md`'s guard sequence,
 /// step 5: snapshot, write, read-back, restore, verify. Exactly one probe
 /// write and one restore write; never retried.
 fn run_write_sequence<IO: ProbeIo>(
     io: &mut IO,
     slot: CustomSettingSlot,
-) -> anyhow::Result<Vec<u8>> {
+) -> Result<Vec<u8>, WriteSequenceFailure> {
     let snapshot = io
         .read_prop(SIMULATION_NAMESPACE_PROPERTY)
-        .context("reading 0xD18C snapshot before the probe write")?;
+        .context("reading 0xD18C snapshot before the probe write")
+        .map_err(|source| WriteSequenceFailure {
+            stage: WriteSequenceStage::Snapshot,
+            source,
+        })?;
 
     let write_value = slot.wire_value().to_le_bytes();
     io.write_prop(SIMULATION_NAMESPACE_PROPERTY, &write_value)
         .inspect_err(|_| {
             eprintln!("DO NOT RETRY AUTOMATICALLY: probe write failed, camera state is unknown");
+        })
+        .map_err(|source| WriteSequenceFailure {
+            stage: WriteSequenceStage::Write,
+            source,
         })?;
 
     let observed = io
@@ -186,11 +244,19 @@ fn run_write_sequence<IO: ProbeIo>(
             eprintln!(
                 "DO NOT RETRY AUTOMATICALLY: post-write read-back failed, camera state is unknown"
             );
+        })
+        .map_err(|source| WriteSequenceFailure {
+            stage: WriteSequenceStage::Readback,
+            source,
         })?;
 
     io.write_prop(SIMULATION_NAMESPACE_PROPERTY, &snapshot)
         .inspect_err(|_| {
             eprintln!("DO NOT RETRY AUTOMATICALLY: restore write failed, camera state is unknown");
+        })
+        .map_err(|source| WriteSequenceFailure {
+            stage: WriteSequenceStage::Restore,
+            source,
         })?;
 
     let verified = io
@@ -199,6 +265,10 @@ fn run_write_sequence<IO: ProbeIo>(
             eprintln!(
                 "DO NOT RETRY AUTOMATICALLY: restore verification read failed, camera state is unknown"
             );
+        })
+        .map_err(|source| WriteSequenceFailure {
+            stage: WriteSequenceStage::RestoreVerifyRead,
+            source,
         })?;
 
     if verified != snapshot {
@@ -206,9 +276,12 @@ fn run_write_sequence<IO: ProbeIo>(
             "DO NOT RETRY AUTOMATICALLY: restore verification mismatch, camera state may differ \
              from the pre-probe snapshot"
         );
-        anyhow::bail!(
-            "restore verification failed: read-back does not match the pre-probe snapshot"
-        );
+        return Err(WriteSequenceFailure {
+            stage: WriteSequenceStage::RestoreVerifyMismatch,
+            source: anyhow::anyhow!(
+                "restore verification failed: read-back does not match the pre-probe snapshot"
+            ),
+        });
     }
 
     Ok(observed)
@@ -257,7 +330,39 @@ fn run_guarded_sequence<IO: ProbeIo>(
     };
     audit::append(audit_log, &record).context("durably recording the probe attempt")?;
 
-    let _observed = run_write_sequence(io, slot)?;
+    let write_result = run_write_sequence(io, slot);
+
+    // The terminal record reuses every field of the pre-write `attempted`
+    // record -- same allowlist, same invocation_id -- with only `outcome`
+    // replaced, so the two lines correlate as one attempt.
+    let outcome = match &write_result {
+        Ok(_) => "restored",
+        Err(failure) => failure.stage.outcome(),
+    };
+    let mut terminal_record = record;
+    outcome.clone_into(&mut terminal_record.outcome);
+    let terminal_append = audit::append(audit_log, &terminal_record)
+        .context("durably recording the probe terminal outcome");
+
+    let _observed = match write_result {
+        Ok(observed) => {
+            // No probe error to protect here: a failure to durably record a
+            // successful sequence's outcome is itself reported.
+            terminal_append?;
+            observed
+        }
+        Err(failure) => {
+            // The original probe error is what the operator sees; a
+            // terminal-audit-write failure is surfaced as a warning, never
+            // swallowed, but must not mask or replace `failure.source`.
+            if let Err(audit_error) = terminal_append {
+                eprintln!(
+                    "WARNING: failed to durably record the probe terminal outcome: {audit_error:#}"
+                );
+            }
+            return Err(failure.source);
+        }
+    };
 
     // No wire observable is known to distinguish still vs movie; see the
     // module docs. Do not fabricate one.
@@ -389,6 +494,9 @@ mod tests {
         prop_value: RefCell<Vec<u8>>,
         backup_bytes: Vec<u8>,
         fail_export_backup: bool,
+        /// If set, the write call at this zero-based index among write
+        /// calls (0 = the probe write, 1 = the restore write) fails.
+        fail_write_at_call: Option<usize>,
     }
 
     impl FakeProbeIo {
@@ -398,6 +506,7 @@ mod tests {
                 prop_value: RefCell::new(initial_prop_value),
                 backup_bytes: b"backup-bytes".to_vec(),
                 fail_export_backup: false,
+                fail_write_at_call: None,
             }
         }
 
@@ -421,9 +530,13 @@ mod tests {
         }
 
         fn write_prop(&mut self, prop: u16, value: &[u8]) -> anyhow::Result<Vec<u8>> {
+            let write_call_index = self.write_call_count();
             self.calls
                 .borrow_mut()
                 .push(Call::Write(prop, value.to_vec()));
+            if self.fail_write_at_call == Some(write_call_index) {
+                anyhow::bail!("simulated write failure");
+            }
             *self.prop_value.borrow_mut() = value.to_vec();
             Ok(value.to_vec())
         }
@@ -605,10 +718,104 @@ mod tests {
             std::fs::read_to_string(&audit_log).expect("audit log must be readable");
         assert_eq!(
             audit_contents.lines().count(),
-            1,
-            "exactly one audit line must be appended per invocation"
+            2,
+            "one pre-write attempted line and one terminal outcome line must be appended"
         );
         assert!(!audit_contents.contains("backup-bytes"));
+    }
+
+    /// Parses each line of `path` as a JSON object, asserting it parses.
+    fn read_audit_lines(path: &std::path::Path) -> Vec<serde_json::Value> {
+        std::fs::read_to_string(path)
+            .expect("audit log must be readable")
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("each audit line must be valid JSON"))
+            .collect()
+    }
+
+    #[test]
+    fn success_path_appends_attempted_then_restored_sharing_one_invocation_id() {
+        let mut io = FakeProbeIo::new(vec![0x01]);
+        let tempdir = tempfile::tempdir().expect("tempdir must be created");
+        let backup = NewOutput::from_str(
+            tempdir
+                .path()
+                .join("backup.fbk")
+                .to_str()
+                .expect("path must be valid UTF-8"),
+        )
+        .expect("backup path must parse");
+        let audit_log = tempdir.path().join("audit.jsonl");
+        let fingerprint = "a".repeat(64);
+
+        run_guarded_sequence(
+            &mut io,
+            CustomSettingSlot::C3,
+            &fingerprint,
+            REQUIRED_ACKNOWLEDGEMENT,
+            &fingerprint,
+            &backup,
+            &audit_log,
+            sample_context(),
+        )
+        .expect("a fully gated successful sequence must produce a verdict");
+
+        let lines = read_audit_lines(&audit_log);
+        assert_eq!(lines.len(), 2, "exactly two audit lines per attempt");
+        assert_eq!(lines[0]["outcome"], "attempted");
+        assert_eq!(lines[1]["outcome"], "restored");
+        assert_eq!(
+            lines[0]["invocation_id"], lines[1]["invocation_id"],
+            "both lines of one attempt must share one invocation_id"
+        );
+    }
+
+    #[test]
+    fn restore_failure_still_appends_a_terminal_record_and_returns_the_original_error() {
+        let mut io = FakeProbeIo::new(vec![0x01]);
+        // Fail the second write call: the restore write, not the probe write.
+        io.fail_write_at_call = Some(1);
+        let tempdir = tempfile::tempdir().expect("tempdir must be created");
+        let backup = NewOutput::from_str(
+            tempdir
+                .path()
+                .join("backup.fbk")
+                .to_str()
+                .expect("path must be valid UTF-8"),
+        )
+        .expect("backup path must parse");
+        let audit_log = tempdir.path().join("audit.jsonl");
+        let fingerprint = "a".repeat(64);
+
+        let error = run_guarded_sequence(
+            &mut io,
+            CustomSettingSlot::C4,
+            &fingerprint,
+            REQUIRED_ACKNOWLEDGEMENT,
+            &fingerprint,
+            &backup,
+            &audit_log,
+            sample_context(),
+        )
+        .expect_err("a restore-write failure must still return an error, never exit zero");
+
+        assert!(
+            error.to_string().contains("simulated write failure"),
+            "the original probe error must reach the operator unmasked: {error}"
+        );
+
+        let lines = read_audit_lines(&audit_log);
+        assert_eq!(
+            lines.len(),
+            2,
+            "the terminal record must still be appended on the failure path"
+        );
+        assert_eq!(lines[0]["outcome"], "attempted");
+        assert_eq!(lines[1]["outcome"], "restore_failed");
+        assert_eq!(
+            lines[0]["invocation_id"], lines[1]["invocation_id"],
+            "both lines of one attempt must share one invocation_id"
+        );
     }
 
     #[test]
