@@ -504,7 +504,8 @@ fn select_profile(
             .collect::<Vec<_>>()
             .join(", ");
         bail!(
-            "firmware {firmware} is not in the {:?} compatibility matrix for {}; supported firmware: {}",
+            "firmware {} is not in the {:?} compatibility matrix for {}; supported firmware: {}",
+            sanitize_for_display(firmware),
             operation,
             camera.name,
             if supported.is_empty() {
@@ -516,11 +517,13 @@ fn select_profile(
     };
     ensure!(
         matches.next().is_none(),
-        "ambiguous preflight profiles for firmware {firmware} and {operation:?}"
+        "ambiguous preflight profiles for firmware {} and {operation:?}",
+        sanitize_for_display(firmware)
     );
     ensure!(
         profile.status == CameraPreflightProfileStatus::Verified,
-        "firmware {firmware} has only an unverified {operation:?} profile"
+        "firmware {} has only an unverified {operation:?} profile",
+        sanitize_for_display(firmware)
     );
     Ok(profile)
 }
@@ -532,10 +535,30 @@ fn select_capability_profile(
     CameraFirmwareCapabilityProfile::find_exact(camera.firmware_capability_profiles, firmware)
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "firmware {firmware} has no exact capability profile for {}",
+                "firmware {} has no exact capability profile for {}",
+                sanitize_for_display(firmware),
                 camera.name
             )
         })
+}
+
+const MAX_DISPLAY_TEXT_CHARS: usize = 64;
+
+/// Renders an untrusted device-supplied string safely for terminal error
+/// messages: strips control characters (ANSI escapes included) and caps
+/// length so a spoofed device cannot inject terminal sequences via stderr.
+fn sanitize_for_display(value: &str) -> String {
+    let filtered: Vec<char> = value
+        .chars()
+        .filter(|character| !character.is_control())
+        .collect();
+    if filtered.len() > MAX_DISPLAY_TEXT_CHARS {
+        let mut sanitized: String = filtered[..MAX_DISPLAY_TEXT_CHARS].iter().collect();
+        sanitized.push_str("...");
+        sanitized
+    } else {
+        filtered.into_iter().collect()
+    }
 }
 
 fn validate_physical_identity(
@@ -561,13 +584,13 @@ fn validate_device_info(
         info.manufacturer == identity.manufacturer,
         "PTP manufacturer mismatch: expected {}, received {}",
         identity.manufacturer,
-        info.manufacturer
+        sanitize_for_display(&info.manufacturer)
     );
     ensure!(
         info.model == identity.model,
         "PTP model mismatch: expected {}, received {}",
         identity.model,
-        info.model
+        sanitize_for_display(&info.model)
     );
     ensure!(!info.serial_number.is_empty(), "PTP serial number is empty");
     ensure!(
@@ -692,9 +715,9 @@ mod tests {
     };
 
     use super::{
-        MutationAuthorization, MutationPermit, select_capability_profile, select_profile,
-        validate_device_info, validate_mode_and_battery, validate_physical_identity,
-        validate_serial_binding,
+        MAX_DISPLAY_TEXT_CHARS, MutationAuthorization, MutationPermit, sanitize_for_display,
+        select_capability_profile, select_profile, validate_device_info, validate_mode_and_battery,
+        validate_physical_identity, validate_serial_binding,
     };
 
     const PROFILE: CameraPreflightProfile = CameraPreflightProfile {
@@ -930,6 +953,33 @@ mod tests {
             .expect_err("unknown firmware must not inherit a nearby compatibility profile");
 
         assert!(error.to_string().contains("not in the"));
+    }
+
+    #[test]
+    fn sanitize_for_display_strips_control_characters() {
+        let sanitized = sanitize_for_display("\u{1b}[31mEVIL\u{1b}[0m4.31");
+
+        assert!(!sanitized.chars().any(char::is_control));
+        assert!(sanitized.contains("EVIL"));
+        assert!(sanitized.contains("4.31"));
+    }
+
+    #[test]
+    fn sanitize_for_display_truncates_long_strings() {
+        let long_value = "a".repeat(200);
+
+        let sanitized = sanitize_for_display(&long_value);
+
+        assert_eq!(
+            sanitized.chars().count(),
+            MAX_DISPLAY_TEXT_CHARS + "...".len()
+        );
+        assert!(sanitized.ends_with("..."));
+    }
+
+    #[test]
+    fn sanitize_for_display_passes_through_clean_strings() {
+        assert_eq!(sanitize_for_display("4.31"), "4.31");
     }
 
     #[test]
