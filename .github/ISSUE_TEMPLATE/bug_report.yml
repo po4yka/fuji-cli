@@ -1,0 +1,85 @@
+name: Software bug
+description: Report reproducible incorrect behavior in fujicli.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for the report. Do not reproduce a state-changing camera operation solely to complete this form.
+
+        Never post camera serial numbers, backup artifacts, private RAF/JPEG files, custom-setting names, secrets, or unreviewed `-vvv` output. Report security problems through the private vulnerability form instead.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      options:
+        - Installation, build, or packaging
+        - Device discovery or information
+        - Backup export or inspection
+        - Backup restore
+        - Film simulations
+        - Image rendering or recovery
+        - CLI arguments, output, JSON, or exit status
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: fujicli version or commit
+      description: Provide the installed version or source commit, not a camera serial number.
+      placeholder: "0.2.0 or git commit SHA"
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Host environment
+      description: Include the operating system and architecture.
+      placeholder: "macOS 15 arm64, Ubuntu 24.04 x86_64, or Windows 11 x86_64"
+    validations:
+      required: true
+  - type: textarea
+    id: camera
+    attributes:
+      label: Camera context, if applicable
+      description: Include model, firmware, and USB mode. Do not include the serial number or private files.
+      placeholder: "FUJIFILM X-T5; PTP firmware 4.31; USB RAW CONV./BACKUP RESTORE"
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: List commands and steps. Redact paths or values that reveal private data.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Quote only the smallest privacy-reviewed error excerpt needed to identify the failure.
+    validations:
+      required: true
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Optional links or redacted diagnostics. Do not upload raw `-vvv` output or camera files.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Public-report checks
+      options:
+        - label: I searched existing issues for this behavior.
+          required: true
+        - label: I privacy-reviewed every value and attachment in this report.
+          required: true
+        - label: This report does not disclose a suspected security vulnerability.
+          required: true

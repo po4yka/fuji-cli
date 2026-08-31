@@ -1,0 +1,100 @@
+name: Camera compatibility evidence
+description: Record a privacy-reviewed result from a physical Fujifilm camera.
+title: "[Compatibility]: "
+labels:
+  - question
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Read the support matrix before reporting. Do not rerun a state-changing command solely to complete this form.
+
+        Report only a result observed on the physical camera named below. Never attach serial numbers, backup artifacts, RAF/JPEG files, custom-setting names, or raw `-vvv` output.
+  - type: input
+    id: camera
+    attributes:
+      label: Exact camera model
+      placeholder: "FUJIFILM X-T5"
+    validations:
+      required: true
+  - type: input
+    id: firmware
+    attributes:
+      label: Firmware version
+      description: Give the camera or PTP firmware version shown by the tested workflow.
+      placeholder: "4.31"
+    validations:
+      required: true
+  - type: input
+    id: usb_mode
+    attributes:
+      label: Camera USB mode
+      placeholder: "USB RAW CONV./BACKUP RESTORE"
+    validations:
+      required: true
+  - type: input
+    id: usb_id
+    attributes:
+      label: USB vendor and product ID
+      description: Copy only VENDOR:PRODUCT from device list; omit bus address and serial number.
+      placeholder: "VENDOR:PRODUCT"
+    validations:
+      required: true
+  - type: input
+    id: build
+    attributes:
+      label: fujicli version or commit
+      placeholder: "0.2.0 or git commit SHA"
+    validations:
+      required: true
+  - type: input
+    id: host
+    attributes:
+      label: Host environment
+      placeholder: "macOS 15 arm64"
+    validations:
+      required: true
+  - type: dropdown
+    id: capability
+    attributes:
+      label: Tested capability
+      options:
+        - Device list or device info
+        - Backup export or inspect
+        - Backup import or restore
+        - Film simulation access
+        - Image render or recovery
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: command
+    attributes:
+      label: Command
+      description: Remove paths, names, and values that reveal private data.
+      placeholder: "fujicli device info"
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Observed result
+      description: Summarize the semantic outcome; include only a minimal privacy-reviewed excerpt if needed.
+    validations:
+      required: true
+  - type: textarea
+    id: state
+    attributes:
+      label: State and persistence evidence
+      description: For a mutation already performed, describe readback, comparison, rollback, and reconnect evidence. Do not repeat the operation for this form.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Evidence checks
+      options:
+        - label: I observed this result on the exact physical camera and firmware listed above, not an emulator, fixture, or another model.
+          required: true
+        - label: I privacy-reviewed every value and attachment in this public report.
+          required: true
+        - label: I did not rerun a state-changing command solely to complete this report.
+          required: true

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/po4yka/fuji-cli/security/advisories/new
+    about: Report a vulnerability privately instead of opening a public issue.
+  - name: Support routes and privacy guidance
+    url: https://github.com/po4yka/fuji-cli/blob/main/SUPPORT.md
+    about: Choose the correct route before sharing logs or camera evidence.
