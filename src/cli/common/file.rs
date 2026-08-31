@@ -111,12 +111,20 @@ pub enum Output {
     Stdout,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverwritePolicy {
+    Deny,
+    Allow,
+    Exclusive,
+}
+
 #[derive(Debug)]
 pub enum OutputTransaction {
     Path {
         file: NamedTempFile,
         destination: PathBuf,
         directory: PathBuf,
+        overwrite: OverwritePolicy,
     },
     Stdout(io::Stdout),
 }
@@ -132,10 +140,20 @@ impl OutputTransaction {
                 mut file,
                 destination,
                 directory,
+                overwrite,
             } => {
                 io::Write::flush(&mut file)?;
                 file.as_file().sync_all()?;
-                drop(file.persist(destination)?);
+                let persisted = match overwrite {
+                    OverwritePolicy::Allow => file.persist(destination)?,
+                    OverwritePolicy::Deny => file.persist_noclobber(destination).context(
+                        "output destination appeared before commit; use --force to overwrite",
+                    )?,
+                    OverwritePolicy::Exclusive => file
+                        .persist_noclobber(destination)
+                        .context("exclusive output destination appeared before commit")?,
+                };
+                drop(persisted);
                 sync_directory(&directory)?;
                 Ok(())
             }
@@ -177,7 +195,19 @@ impl Output {
         matches!(self, Self::Stdout)
     }
 
-    pub(crate) fn begin_write(&self) -> anyhow::Result<OutputTransaction> {
+    pub(crate) fn begin_write(&self, force: bool) -> anyhow::Result<OutputTransaction> {
+        let overwrite = if force {
+            OverwritePolicy::Allow
+        } else {
+            OverwritePolicy::Deny
+        };
+        self.begin_write_with_policy(overwrite)
+    }
+
+    fn begin_write_with_policy(
+        &self,
+        overwrite: OverwritePolicy,
+    ) -> anyhow::Result<OutputTransaction> {
         match self {
             Self::Stdout => Ok(OutputTransaction::Stdout(io::stdout())),
             Self::Path(path) => {
@@ -188,7 +218,20 @@ impl Output {
                     Ok(metadata) if !metadata.is_file() => {
                         bail!("output destination must be a regular file")
                     }
-                    Ok(_) => {}
+                    Ok(_) if overwrite == OverwritePolicy::Allow => {}
+                    Ok(_) => {
+                        let message = match overwrite {
+                            OverwritePolicy::Deny => {
+                                "output destination already exists; use --force to overwrite"
+                            }
+                            OverwritePolicy::Exclusive => {
+                                "exclusive output destination already exists"
+                            }
+                            OverwritePolicy::Allow => "output destination already exists",
+                        };
+                        return Err(io::Error::new(io::ErrorKind::AlreadyExists, message))
+                            .context("opening output destination");
+                    }
                     Err(error) if error.kind() == io::ErrorKind::NotFound => {}
                     Err(error) => return Err(error).context("inspecting output destination"),
                 }
@@ -204,23 +247,19 @@ impl Output {
                         .tempfile_in(directory)?,
                     destination: path.clone(),
                     directory: directory.to_owned(),
+                    overwrite,
                 })
             }
         }
     }
 
-    pub fn write_all(&self, data: &[u8]) -> anyhow::Result<()> {
-        let mut output = self.begin_write()?;
-        io::Write::write_all(&mut output, data)?;
-        output.commit()
-    }
-
     pub fn write_all_new(&self, data: &[u8]) -> anyhow::Result<()> {
-        let transaction = self.begin_write()?;
+        let transaction = self.begin_write_with_policy(OverwritePolicy::Exclusive)?;
         let OutputTransaction::Path {
             mut file,
             destination,
             directory,
+            ..
         } = transaction
         else {
             bail!("exclusive output requires a file path, not stdout");
@@ -296,7 +335,7 @@ mod tests {
     fn output_temp_file_has_a_recoverable_product_specific_name() -> anyhow::Result<()> {
         let directory = tempdir()?;
         let destination = directory.path().join("backup.dat");
-        let transaction = Output::Path(destination).begin_write()?;
+        let transaction = Output::Path(destination).begin_write(false)?;
         let OutputTransaction::Path { file, .. } = transaction else {
             panic!("path output must use a temporary file");
         };
@@ -311,7 +350,7 @@ mod tests {
         let directory = tempdir()?;
 
         let error = Output::Path(directory.path().to_owned())
-            .begin_write()
+            .begin_write(false)
             .expect_err("a directory is not a valid output destination");
 
         assert!(error.to_string().contains("regular file"));
@@ -328,7 +367,7 @@ mod tests {
         std::os::unix::fs::symlink(&target, &link)?;
 
         let error = Output::Path(link)
-            .begin_write()
+            .begin_write(false)
             .expect_err("a symbolic-link destination must be rejected");
 
         assert!(error.to_string().contains("symbolic link"));
@@ -364,7 +403,7 @@ mod tests {
         let destination = directory.path().join("backup.dat");
         fs::write(&destination, b"existing backup")?;
 
-        let mut output = Output::Path(destination.clone()).begin_write()?;
+        let mut output = Output::Path(destination.clone()).begin_write(true)?;
         output.write_all(b"replacement backup")?;
         drop(output);
 
@@ -373,14 +412,57 @@ mod tests {
     }
 
     #[test]
-    fn committing_output_atomically_replaces_existing_file() -> anyhow::Result<()> {
+    fn output_preserves_existing_file_without_explicit_overwrite() -> anyhow::Result<()> {
         let directory = tempdir()?;
         let destination = directory.path().join("backup.dat");
         fs::write(&destination, b"existing backup")?;
 
-        Output::Path(destination.clone()).write_all(b"replacement backup")?;
+        let error = Output::Path(destination.clone())
+            .begin_write(false)
+            .expect_err("ordinary output must not overwrite an existing file");
+
+        assert!(error.chain().any(|cause| {
+            cause
+                .downcast_ref::<io::Error>()
+                .is_some_and(|error| error.kind() == io::ErrorKind::AlreadyExists)
+        }));
+        assert_eq!(fs::read(destination)?, b"existing backup");
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_overwrite_atomically_replaces_existing_file() -> anyhow::Result<()> {
+        let directory = tempdir()?;
+        let destination = directory.path().join("backup.dat");
+        fs::write(&destination, b"existing backup")?;
+
+        let mut output = Output::Path(destination.clone()).begin_write(true)?;
+        output.write_all(b"replacement backup")?;
+        output.commit()?;
 
         assert_eq!(fs::read(destination)?, b"replacement backup");
+        Ok(())
+    }
+
+    #[test]
+    fn concurrent_creator_wins_when_overwrite_is_not_allowed() -> anyhow::Result<()> {
+        let directory = tempdir()?;
+        let destination = directory.path().join("backup.dat");
+        let mut output = Output::Path(destination.clone()).begin_write(false)?;
+        output.write_all(b"generated backup")?;
+        fs::write(&destination, b"concurrent backup")?;
+
+        let error = output
+            .commit()
+            .expect_err("commit must not overwrite a concurrently-created file");
+
+        assert!(error.to_string().contains("--force"), "{error:#}");
+        assert!(error.chain().any(|cause| {
+            cause
+                .downcast_ref::<io::Error>()
+                .is_some_and(|error| error.kind() == io::ErrorKind::AlreadyExists)
+        }));
+        assert_eq!(fs::read(destination)?, b"concurrent backup");
         Ok(())
     }
 
@@ -405,6 +487,11 @@ mod tests {
             .write_all_new(b"replacement")
             .expect_err("recovery output must never clobber an existing file");
 
+        let diagnostic = format!("{error:#}");
+        assert!(
+            !diagnostic.contains("--force"),
+            "exclusive recovery output must not suggest an unavailable override: {diagnostic}"
+        );
         assert!(error.chain().any(|cause| {
             cause
                 .downcast_ref::<io::Error>()

@@ -78,6 +78,10 @@ pub enum ImageCmd {
 
         /// Output file (use '-' to write to stdout)
         output: Output,
+
+        /// Replace an existing regular output file
+        #[arg(long)]
+        force: bool,
     },
 
     /// Recover a retained rendered JPEG by its camera object handle
@@ -92,6 +96,10 @@ pub enum ImageCmd {
         /// Output file (use '-' to write to stdout)
         output: Output,
 
+        /// Replace an existing regular output file
+        #[arg(long)]
+        force: bool,
+
         /// Delete the camera object after a verified local file save
         #[arg(long)]
         delete_after_save: bool,
@@ -105,6 +113,7 @@ struct RenderRequest {
     render: RenderArgs,
     input: Input,
     output: Output,
+    force: bool,
 }
 
 #[expect(
@@ -119,10 +128,12 @@ fn handle_render(options: GlobalOptions, request: RenderRequest) -> anyhow::Resu
         render,
         input,
         output,
+        force,
     } = request;
     let GlobalOptions {
         device, emulate, ..
     } = options;
+    let output_transaction = output.begin_write(force)?;
 
     let image = input.read_limited(MAX_IMAGE_INPUT_BYTES, "RAF image")?;
     validate_xt5_raf(&image)?;
@@ -134,7 +145,6 @@ fn handle_render(options: GlobalOptions, request: RenderRequest) -> anyhow::Resu
             )
         })
         .transpose()?;
-    let output_transaction = output.begin_write()?;
     let delete_after_save = !output_transaction.is_stdout();
 
     let mut camera = usb::get_native_camera(device, emulate)?;
@@ -176,6 +186,7 @@ fn handle_recover(
     target_serial_sha256: Option<SerialFingerprint>,
     handle: u32,
     output: Output,
+    force: bool,
     delete_after_save: bool,
 ) -> anyhow::Result<()> {
     let GlobalOptions {
@@ -185,7 +196,7 @@ fn handle_recover(
         !(delete_after_save && output.is_stdout()),
         "--delete-after-save requires a file output, not stdout"
     );
-    let output_transaction = output.begin_write()?;
+    let output_transaction = output.begin_write(force)?;
     let target_serial_sha256 = target_serial_sha256
         .ok_or_else(|| anyhow::anyhow!("RAW recovery requires --target-serial-sha256"))?;
 
@@ -218,6 +229,7 @@ pub fn handle(cmd: ImageCmd, options: GlobalOptions) -> anyhow::Result<()> {
             render,
             input,
             output,
+            force,
         } => handle_render(
             options,
             RenderRequest {
@@ -227,18 +239,21 @@ pub fn handle(cmd: ImageCmd, options: GlobalOptions) -> anyhow::Result<()> {
                 render,
                 input,
                 output,
+                force,
             },
         ),
         ImageCmd::Recover {
             target_serial_sha256,
             handle,
             output,
+            force,
             delete_after_save,
         } => handle_recover(
             options,
             target_serial_sha256,
             handle,
             output,
+            force,
             delete_after_save,
         ),
     }
@@ -282,7 +297,7 @@ mod tests {
         let directory = tempdir()?;
         let destination = directory.path().join("rendered.jpg");
         let rendered = b"rendered JPEG".to_vec();
-        let output = Output::Path(destination.clone()).begin_write()?;
+        let output = Output::Path(destination.clone()).begin_write(false)?;
 
         let error = save_rendered_object(output, 42, &rendered, None, true, |_| {
             Err(anyhow!("simulated camera cleanup failure"))
@@ -338,7 +353,7 @@ mod tests {
     fn recovery_keeps_camera_object_by_default_after_file_commit() -> anyhow::Result<()> {
         let directory = tempdir()?;
         let destination = directory.path().join("recovered.jpg");
-        let output = Output::Path(destination.clone()).begin_write()?;
+        let output = Output::Path(destination.clone()).begin_write(false)?;
         let cleanup_called = Cell::new(false);
 
         save_rendered_object(output, 42, b"rendered JPEG", None, false, |_| {
@@ -363,6 +378,7 @@ mod tests {
             None,
             42,
             Output::Stdout,
+            false,
             true,
         )
         .expect_err("stdout cannot provide a durable receipt for camera deletion");

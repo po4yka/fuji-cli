@@ -102,6 +102,35 @@ fn raw_conversion_rejects_simulation_slot_before_file_or_usb_access() {
 }
 
 #[test]
+fn raw_conversion_force_allows_existing_output_before_input_access() -> anyhow::Result<()> {
+    let directory = tempdir()?;
+    let destination = directory.path().join("rendered.jpg");
+    std::fs::write(&destination, b"existing JPEG")?;
+    let destination = destination.to_string_lossy();
+
+    let output = run(&[
+        "image",
+        "render",
+        "--force",
+        "--target-serial-sha256",
+        "0000000000000000000000000000000000000000000000000000000000000000",
+        "/definitely/missing.raf",
+        &destination,
+        "--device",
+        "255.255",
+    ]);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("reading RAF image metadata"), "{stderr}");
+    assert!(!stderr.contains("already exists"), "{stderr}");
+    assert!(!stderr.contains("No USB device found"), "{stderr}");
+    assert_eq!(std::fs::read(&*destination)?, b"existing JPEG");
+    Ok(())
+}
+
+#[test]
 fn raw_recovery_requires_exact_serial_binding_before_output_or_usb_access() {
     let output = run(&[
         "image",
@@ -139,6 +168,34 @@ fn raw_recovery_never_deletes_after_stdout() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("requires a file output"));
     assert!(!stderr.contains("No USB device found"));
+}
+
+#[test]
+fn raw_recovery_force_allows_existing_output_before_usb_access() -> anyhow::Result<()> {
+    let directory = tempdir()?;
+    let destination = directory.path().join("recovered.jpg");
+    std::fs::write(&destination, b"existing JPEG")?;
+    let destination = destination.to_string_lossy();
+
+    let output = run(&[
+        "image",
+        "recover",
+        "--force",
+        "--target-serial-sha256",
+        "0000000000000000000000000000000000000000000000000000000000000000",
+        "42",
+        &destination,
+        "--device",
+        "255.255",
+    ]);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("No USB device found"), "{stderr}");
+    assert!(!stderr.contains("already exists"), "{stderr}");
+    assert_eq!(std::fs::read(&*destination)?, b"existing JPEG");
+    Ok(())
 }
 
 #[test]
@@ -330,6 +387,102 @@ fn backup_import_without_confirmation_fails_before_device_io() {
     assert_eq!(output.status.code(), Some(2));
     assert!(output.stdout.is_empty());
     assert!(String::from_utf8_lossy(&output.stderr).contains("--yes"));
+}
+
+#[test]
+fn backup_export_rejects_existing_output_before_usb_access() -> anyhow::Result<()> {
+    let directory = tempdir()?;
+    let destination = directory.path().join("camera.fbk");
+    std::fs::write(&destination, b"existing backup")?;
+    let destination = destination.to_string_lossy();
+
+    let output = run(&["backup", "export", &destination, "--device", "255.255"]);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("already exists"), "{stderr}");
+    assert!(stderr.contains("--force"), "{stderr}");
+    assert!(!stderr.contains("No USB device found"), "{stderr}");
+    assert_eq!(std::fs::read(&*destination)?, b"existing backup");
+    Ok(())
+}
+
+#[test]
+fn backup_export_force_allows_existing_output_before_usb_access() -> anyhow::Result<()> {
+    let directory = tempdir()?;
+    let destination = directory.path().join("camera.fbk");
+    std::fs::write(&destination, b"existing backup")?;
+    let destination = destination.to_string_lossy();
+
+    let output = run(&[
+        "backup",
+        "export",
+        "--force",
+        &destination,
+        "--device",
+        "255.255",
+    ]);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("No USB device found"), "{stderr}");
+    assert!(!stderr.contains("already exists"), "{stderr}");
+    assert_eq!(std::fs::read(&*destination)?, b"existing backup");
+    Ok(())
+}
+
+#[test]
+fn simulation_export_rejects_existing_output_before_usb_access() -> anyhow::Result<()> {
+    let directory = tempdir()?;
+    let destination = directory.path().join("c1.json");
+    std::fs::write(&destination, b"existing simulation")?;
+    let destination = destination.to_string_lossy();
+
+    let output = run(&[
+        "simulation",
+        "export",
+        "c1",
+        &destination,
+        "--device",
+        "255.255",
+    ]);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("already exists"), "{stderr}");
+    assert!(stderr.contains("--force"), "{stderr}");
+    assert!(!stderr.contains("No USB device found"), "{stderr}");
+    assert_eq!(std::fs::read(&*destination)?, b"existing simulation");
+    Ok(())
+}
+
+#[test]
+fn simulation_export_force_allows_existing_output_before_usb_access() -> anyhow::Result<()> {
+    let directory = tempdir()?;
+    let destination = directory.path().join("c1.json");
+    std::fs::write(&destination, b"existing simulation")?;
+    let destination = destination.to_string_lossy();
+
+    let output = run(&[
+        "simulation",
+        "export",
+        "--force",
+        "c1",
+        &destination,
+        "--device",
+        "255.255",
+    ]);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("No USB device found"), "{stderr}");
+    assert!(!stderr.contains("already exists"), "{stderr}");
+    assert_eq!(std::fs::read(&*destination)?, b"existing simulation");
+    Ok(())
 }
 
 #[test]

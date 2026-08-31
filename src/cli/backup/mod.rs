@@ -204,6 +204,10 @@ pub enum BackupCmd {
     Export {
         /// Output file (use '-' to write to stdout)
         output: Output,
+
+        /// Replace an existing regular output file
+        #[arg(long)]
+        force: bool,
     },
 
     /// Inspect and validate a backup artifact without connecting a camera
@@ -221,7 +225,7 @@ pub enum BackupCmd {
     clippy::needless_pass_by_value,
     reason = "command handlers consume parsed CLI values"
 )]
-fn handle_export(options: GlobalOptions, output: Output) -> anyhow::Result<()> {
+fn handle_export(options: GlobalOptions, output: Output, force: bool) -> anyhow::Result<()> {
     let GlobalOptions {
         device,
         emulate,
@@ -232,12 +236,14 @@ fn handle_export(options: GlobalOptions, output: Output) -> anyhow::Result<()> {
         emulate.is_none(),
         "safe backup export does not support --emulate; use fujicli-dev only for explicit protocol research"
     );
+    let mut output_transaction = output.begin_write(force)?;
 
     let mut camera = usb::get_native_camera(device, emulate)?;
 
     let backup = camera.export_backup(BackupPurpose::Portable)?;
     let artifact_sha256 = backup.fingerprint();
-    output.write_all(backup.as_bytes())?;
+    std::io::Write::write_all(&mut output_transaction, backup.as_bytes())?;
+    output_transaction.commit()?;
     if !output.is_stdout() {
         if json {
             let result = serde_json::json!({ "artifactSha256": artifact_sha256 });
@@ -432,7 +438,7 @@ fn verify_restore_persisted(
 
 pub fn handle(cmd: BackupCmd, options: GlobalOptions) -> anyhow::Result<()> {
     match cmd {
-        BackupCmd::Export { output } => handle_export(options, output),
+        BackupCmd::Export { output, force } => handle_export(options, output, force),
         BackupCmd::Inspect { input } => handle_inspect(options, input),
         BackupCmd::Import(args) => handle_import(options, args),
     }

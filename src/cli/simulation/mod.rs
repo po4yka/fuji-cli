@@ -121,6 +121,10 @@ pub enum SimulationCmd {
 
         /// Output file (use '-' to write to stdout)
         output: Output,
+
+        /// Replace an existing regular output file
+        #[arg(long)]
+        force: bool,
     },
 
     /// Import simulation
@@ -234,17 +238,20 @@ fn handle_export(
     options: GlobalOptions,
     slot: CustomSetting,
     output: Output,
+    force: bool,
 ) -> anyhow::Result<()> {
     let GlobalOptions {
         device, emulate, ..
     } = options;
+    let mut output_transaction = output.begin_write(force)?;
 
     let mut camera = usb::get_native_camera(device, emulate)?;
     let mut session = camera.preflight_simulation_access()?;
     let simulation = tag_selector_state_unknown(session.get_simulation(slot))?;
     drop(session);
     let simulation = camera.serialize_simulation(&*simulation)?;
-    output.write_all(&simulation)?;
+    std::io::Write::write_all(&mut output_transaction, &simulation)?;
+    output_transaction.commit()?;
 
     Ok(())
 }
@@ -285,7 +292,11 @@ pub fn handle(cmd: SimulationCmd, options: GlobalOptions) -> anyhow::Result<()> 
             simulation,
             target_serial_sha256,
         } => handle_set(options, simulation, slot, target_serial_sha256),
-        SimulationCmd::Export { slot, output } => handle_export(options, slot, output),
+        SimulationCmd::Export {
+            slot,
+            output,
+            force,
+        } => handle_export(options, slot, output, force),
         SimulationCmd::Import {
             slot,
             input,

@@ -131,6 +131,13 @@ the process is forcibly interrupted, the previous destination remains intact;
 a recoverable `.fujicli-*.tmp` file may remain beside it. After confirming that
 no `fujicli` process is still writing there, that temporary file can be removed.
 
+Ordinary file outputs never replace an existing path by default. This applies
+to `backup export`, `simulation export`, `image render`, and `image recover`.
+Pass `--force` to one of those commands to atomically replace an existing
+regular file. Directories and symbolic links are rejected even with `--force`.
+The safety recovery file required by `backup import` is always created without
+clobbering and has no force override.
+
 ## Simulations
 
 A _simulation_ is one of the camera's custom-setting slots (e.g. C1-C7). The
