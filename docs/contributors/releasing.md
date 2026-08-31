@@ -6,10 +6,12 @@ both the root Cargo package and the Nix package.
 
 ## Before tagging
 
-1. Update the root package version in `Cargo.toml` and refresh `Cargo.lock`.
-2. Merge that version change into `main` and wait for all required checks on
+1. Move the relevant `Unreleased` entries in [`CHANGELOG.md`](../../CHANGELOG.md)
+   into a dated version section and update its comparison links.
+2. Update the root package version in `Cargo.toml` and refresh `Cargo.lock`.
+3. Merge that version change into `main` and wait for all required checks on
    the exact commit to pass.
-3. Confirm that the `release` GitHub environment has the intended reviewers and
+4. Confirm that the `release` GitHub environment has the intended reviewers and
    permits only tags matching `v*`.
 
 Create and push an annotated tag only after those conditions hold:
