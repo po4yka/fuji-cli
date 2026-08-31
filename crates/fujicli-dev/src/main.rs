@@ -9,6 +9,8 @@
 mod audit;
 #[cfg(feature = "dangerous-reverse-engineering")]
 mod decision;
+#[cfg(feature = "dangerous-reverse-engineering")]
+mod interrupt;
 mod log;
 mod output;
 #[cfg(feature = "dangerous-reverse-engineering")]
@@ -51,6 +53,8 @@ enum Command {
 fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
     log::init(cli.verbose)?;
+    #[cfg(feature = "dangerous-reverse-engineering")]
+    interrupt::install()?;
     match cli.command {
         Command::Discover(command) => reverse::handle(command, cli.device),
         #[cfg(feature = "dangerous-reverse-engineering")]

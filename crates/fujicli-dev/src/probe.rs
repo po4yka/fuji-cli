@@ -31,6 +31,7 @@ use fujicli::{Camera, generated::options::CustomSetting};
 use crate::{
     audit::{self, AuditRecord},
     decision::{self, Verdict},
+    interrupt::{self, CriticalWriteError},
     output::NewOutput,
     usb::{self, Location},
 };
@@ -187,6 +188,9 @@ enum WriteSequenceStage {
     /// value did not match the pre-probe snapshot; camera state is
     /// uncertain.
     RestoreVerifyMismatch,
+    /// Ctrl-C was requested after the probe write, but the original snapshot
+    /// was restored and verified before the sequence stopped.
+    InterruptedAfterRestore,
 }
 
 impl WriteSequenceStage {
@@ -200,6 +204,7 @@ impl WriteSequenceStage {
             Self::Restore => "restore_failed",
             Self::RestoreVerifyRead => "restore_verify_read_failed",
             Self::RestoreVerifyMismatch => "restore_verify_mismatch",
+            Self::InterruptedAfterRestore => "interrupted_after_restore",
         }
     }
 }
@@ -229,6 +234,23 @@ fn run_write_sequence<IO: ProbeIo>(
             source,
         })?;
 
+    match interrupt::critical_camera_write(|| run_mutating_write_sequence(io, slot, &snapshot)) {
+        Ok(observed) => Ok(observed),
+        Err(CriticalWriteError::Operation(failure)) => Err(failure),
+        Err(CriticalWriteError::Interrupted) => Err(WriteSequenceFailure {
+            stage: WriteSequenceStage::InterruptedAfterRestore,
+            source: anyhow::anyhow!(
+                "interrupt requested during the probe write; the original selector was restored and verified"
+            ),
+        }),
+    }
+}
+
+fn run_mutating_write_sequence<IO: ProbeIo>(
+    io: &mut IO,
+    slot: CustomSettingSlot,
+    snapshot: &[u8],
+) -> Result<Vec<u8>, WriteSequenceFailure> {
     let write_value = slot.wire_value().to_le_bytes();
     io.write_prop(SIMULATION_NAMESPACE_PROPERTY, &write_value)
         .inspect_err(|_| {
@@ -251,7 +273,7 @@ fn run_write_sequence<IO: ProbeIo>(
             source,
         })?;
 
-    io.write_prop(SIMULATION_NAMESPACE_PROPERTY, &snapshot)
+    io.write_prop(SIMULATION_NAMESPACE_PROPERTY, snapshot)
         .inspect_err(|_| {
             eprintln!("DO NOT RETRY AUTOMATICALLY: restore write failed, camera state is unknown");
         })
@@ -498,6 +520,8 @@ mod tests {
         /// If set, the write call at this zero-based index among write
         /// calls (0 = the probe write, 1 = the restore write) fails.
         fail_write_at_call: Option<usize>,
+        /// If set, simulate Ctrl-C after this successful zero-based write.
+        interrupt_after_write_at_call: Option<usize>,
     }
 
     impl FakeProbeIo {
@@ -508,6 +532,7 @@ mod tests {
                 backup_bytes: b"backup-bytes".to_vec(),
                 fail_export_backup: false,
                 fail_write_at_call: None,
+                interrupt_after_write_at_call: None,
             }
         }
 
@@ -539,6 +564,9 @@ mod tests {
                 anyhow::bail!("simulated write failure");
             }
             *self.prop_value.borrow_mut() = value.to_vec();
+            if self.interrupt_after_write_at_call == Some(write_call_index) {
+                crate::interrupt::simulate_interrupt();
+            }
             Ok(value.to_vec())
         }
 
@@ -686,6 +714,44 @@ mod tests {
         );
         // Final state must equal the snapshot after restore.
         assert_eq!(*io.prop_value.borrow(), vec![0xAA]);
+    }
+
+    #[test]
+    fn interrupt_after_probe_write_restores_snapshot_before_stopping() {
+        let mut io = FakeProbeIo::new(vec![0xAA]);
+        io.interrupt_after_write_at_call = Some(0);
+        let tempdir = tempfile::tempdir().expect("tempdir must be created");
+        let backup = NewOutput::from_str(
+            tempdir
+                .path()
+                .join("backup.fbk")
+                .to_str()
+                .expect("path must be valid UTF-8"),
+        )
+        .expect("backup path must parse");
+        let audit_log = tempdir.path().join("audit.jsonl");
+        let fingerprint = "a".repeat(64);
+
+        let error = run_guarded_sequence(
+            &mut io,
+            CustomSettingSlot::C1,
+            &fingerprint,
+            REQUIRED_ACKNOWLEDGEMENT,
+            &fingerprint,
+            &backup,
+            &audit_log,
+            sample_context(),
+        )
+        .expect_err("Ctrl-C after the probe write must stop only after restore verification");
+
+        assert!(error.to_string().contains("interrupt requested"));
+        assert_eq!(*io.prop_value.borrow(), vec![0xAA]);
+        assert_eq!(io.write_call_count(), 2);
+
+        let lines = read_audit_lines(&audit_log);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0]["outcome"], "attempted");
+        assert_eq!(lines[1]["outcome"], "interrupted_after_restore");
     }
 
     #[test]

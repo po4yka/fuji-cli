@@ -12,7 +12,11 @@ workspace = true
 [features]
 default = []
 reverse-tools = ["fujicli/reverse-tools"]
-dangerous-reverse-engineering = ["reverse-tools", "fujicli/dangerous-reverse-engineering"]
+dangerous-reverse-engineering = [
+    "reverse-tools",
+    "fujicli/dangerous-reverse-engineering",
+    "dep:ctrlc",
+]
 
 [[bin]]
 name = "fujicli-dev"
@@ -22,6 +26,7 @@ required-features = ["reverse-tools"]
 [dependencies]
 anyhow = "1.0.104"
 clap = { version = "4.6.6", features = ["derive", "wrap_help"] }
+ctrlc = { version = "3.5", optional = true }
 fujicli = { path = "../..", default-features = false }
 log = "0.4.34"
 log4rs = "1.4.0"

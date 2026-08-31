@@ -194,12 +194,17 @@ Future Dangerous Probe" above:
    `snapshot_failed`, `write_failed`, `readback_failed`, `restore_failed`,
    `restore_verify_read_failed`, or `restore_verify_mismatch`, classified
    from this step's own control flow rather than from an error message. A
-   failure while appending the terminal line is itself reported but never
-   masks or replaces the underlying probe failure. One invocation of this
-   command therefore always produces exactly two JSONL lines in the audit
-   log (or exactly one if an earlier gate -- acknowledgement, fingerprint,
-   or backup export -- aborts before this step is reached), never fewer on
-   the failure path and never more via retry.
+   Ctrl-C received from the probe write through restore verification is
+   latched until the original selector has been restored and verified; its
+   terminal outcome is `interrupted_after_restore`. A second Ctrl-C
+   force-quits with exit code 3 and reports the camera state as unknown.
+   Ctrl-C outside this protected mutation-and-restore window exits with code
+   130. A failure while appending the terminal line is itself reported but
+   never masks or replaces the underlying probe failure. One invocation of
+   this command therefore always produces exactly two JSONL lines in the
+   audit log (or exactly one if an earlier gate -- acknowledgement,
+   fingerprint, or backup export -- aborts before this step is reached),
+   never fewer on the failure path and never more via retry.
 
 No PTP property is currently known to distinguish the still and movie
 custom-setting namespaces on the wire (open question 1, still unresolved at
