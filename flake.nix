@@ -108,7 +108,7 @@
               test -s "$out/share/fish/vendor_completions.d/fujicli.fish"
               test -s "$out/share/powershell/Completions/fujicli.ps1"
               test -s "$out/share/man/man1/fujicli.1.gz"
-              test "$(find "$out/share/man/man1" -name '*.1.gz' -type f | wc -l)" -eq 17
+              test "$(find "$out/share/man/man1" -name '*.1.gz' -type f | wc -l)" -eq 18
               find "$out/share/man/man1" -name '*.1.gz' -type f -exec gzip -t {} +
               reverse_stdout="$(mktemp)"
               reverse_stderr="$(mktemp)"
