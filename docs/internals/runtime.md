@@ -212,8 +212,10 @@ container: the native payload remains opaque and unsigned. Destructive import
 therefore also requires an independently trusted complete-artifact SHA-256. A
 manifest and digest supplied together by an attacker remain forgeable.
 
-Export validates that `GetObjectInfo` describes `FujiBackup`, has the expected
-1020-byte zero padding, and reports the exact subsequent payload length. Import
+Export validates that `GetObjectInfo` describes `FujiBackup`, ends either
+immediately after the `ObjectInfo` (as a physical X-T5 on firmware 4.31 answers)
+or after the 1020 zero padding bytes seen in the original capture, and reports
+the exact subsequent payload length. Import
 checks live identity, capabilities, firmware policy, USB mode, battery,
 property descriptors, and serial binding before the CLI durably creates a
 no-clobber recovery artifact. Transport or framing failures poison the PTP

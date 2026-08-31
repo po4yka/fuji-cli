@@ -242,16 +242,19 @@ pub(crate) fn export_backup_with_transport(
 ) -> anyhow::Result<Vec<u8>> {
     let object_info = transport.get_object_info()?;
     ensure!(
-        object_info.len() == BACKUP_OBJECT_INFO_BYTES,
-        "Fuji backup object info must contain exactly {BACKUP_OBJECT_INFO_BYTES} bytes"
+        object_info.len() <= BACKUP_OBJECT_INFO_BYTES,
+        "Fuji backup object info must contain at most {BACKUP_OBJECT_INFO_BYTES} bytes"
     );
     let mut reader = Cursor::new(&object_info);
     let object_info_value = ObjectInfo::read_options(&mut reader, Endian::Little, ())?;
     let decoded_len = usize::try_from(reader.position())?;
+    // A physical X-T5 on firmware 4.31 answers GetObjectInfo with the bare
+    // ObjectInfo; the original capture carried 1020 trailing zero bytes.
     let padding = &object_info[decoded_len..];
     ensure!(
-        padding.len() == BACKUP_OBJECT_INFO_PADDING_BYTES && padding.iter().all(|byte| *byte == 0),
-        "Fuji backup object info must have exactly {BACKUP_OBJECT_INFO_PADDING_BYTES} zero padding bytes"
+        (padding.is_empty() || padding.len() == BACKUP_OBJECT_INFO_PADDING_BYTES)
+            && padding.iter().all(|byte| *byte == 0),
+        "Fuji backup object info must end after the ObjectInfo or carry exactly {BACKUP_OBJECT_INFO_PADDING_BYTES} zero padding bytes"
     );
     ensure!(
         object_info_value.object_format == ObjectFormat::FujiBackup,
@@ -400,6 +403,10 @@ mod tests {
 
     struct WrongLengthExportTransport;
 
+    struct PaddedExportTransport {
+        padding: Vec<u8>,
+    }
+
     fn sample_artifact(payload: &[u8]) -> BackupArtifact {
         BackupArtifact::create(
             BackupPurpose::Portable,
@@ -473,6 +480,23 @@ mod tests {
         }
     }
 
+    impl BackupExportTransport for PaddedExportTransport {
+        fn get_object_info(&mut self) -> anyhow::Result<Vec<u8>> {
+            let info = crate::ptp::ObjectInfo {
+                object_format: crate::ptp::ObjectFormat::FujiBackup,
+                compressed_size: 6,
+                ..Default::default()
+            };
+            let mut bytes = encode(&info)?;
+            bytes.extend_from_slice(&self.padding);
+            Ok(bytes)
+        }
+
+        fn get_object_data(&mut self) -> anyhow::Result<Vec<u8>> {
+            Ok(b"backup".to_vec())
+        }
+    }
+
     impl BackupExportTransport for WrongLengthExportTransport {
         fn get_object_info(&mut self) -> anyhow::Result<Vec<u8>> {
             let info = crate::ptp::ObjectInfo {
@@ -520,6 +544,34 @@ mod tests {
             "non-backup metadata must stop export; result={result:?}, data calls={}",
             transport.object_data_calls
         );
+    }
+
+    #[test]
+    fn export_accepts_unpadded_object_info_as_returned_by_x_t5_4_31() {
+        let payload = export_backup_with_transport(&mut PaddedExportTransport { padding: vec![] })
+            .expect("a bare ObjectInfo without trailing padding is a valid backup descriptor");
+
+        assert_eq!(payload, b"backup");
+    }
+
+    #[test]
+    fn export_accepts_captured_zero_padded_object_info() {
+        let payload = export_backup_with_transport(&mut PaddedExportTransport {
+            padding: vec![0; BACKUP_OBJECT_INFO_PADDING_BYTES],
+        })
+        .expect("the originally captured 1020-byte zero padding must still be accepted");
+
+        assert_eq!(payload, b"backup");
+    }
+
+    #[test]
+    fn export_rejects_partial_or_non_zero_padding() {
+        for padding in [vec![0; 8], vec![1; BACKUP_OBJECT_INFO_PADDING_BYTES]] {
+            let error = export_backup_with_transport(&mut PaddedExportTransport { padding })
+                .expect_err("unexpected trailing bytes must stop export");
+
+            assert!(error.to_string().contains("padding"), "{error}");
+        }
     }
 
     #[test]
