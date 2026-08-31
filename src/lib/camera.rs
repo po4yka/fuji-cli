@@ -224,7 +224,9 @@ impl ClaimedInterface {
     ///
     /// [`into_handle`]: ClaimedInterface::into_handle
     fn claim(handle: rusb::DeviceHandle<GlobalContext>, interface: u8) -> anyhow::Result<Self> {
-        handle.claim_interface(interface)?;
+        handle
+            .claim_interface(interface)
+            .map_err(|error| claim_failure(error, interface, cfg!(target_os = "macos")))?;
         Ok(Self {
             handle: Some(handle),
             interface,
@@ -569,6 +571,21 @@ where
     }
 }
 
+/// Wraps a failed `claim_interface` with the most likely cause. The typed
+/// `rusb::Error` stays in the chain for outcome classification.
+fn claim_failure(error: rusb::Error, interface: u8, macos: bool) -> anyhow::Error {
+    let hint = match error {
+        rusb::Error::Access | rusb::Error::Busy if macos => {
+            "; another process holds the camera, on macOS usually Image Capture's ptpcamerad: run `pkill -x ptpcamerad` and retry"
+        }
+        rusb::Error::Access | rusb::Error::Busy => {
+            "; another process holds the camera or the udev rules deny access, see the installation notes"
+        }
+        _ => "",
+    };
+    anyhow::Error::new(error).context(format!("claiming USB interface {interface} failed{hint}"))
+}
+
 type CameraFactory = fn() -> Box<dyn CameraBase<Context = GlobalContext>>;
 
 #[derive(Debug, Clone, Copy)]
@@ -911,4 +928,23 @@ fn ensure_backup_identity_fields(info: &ptp::DeviceInfo) -> anyhow::Result<()> {
         "camera serial number is empty"
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod claim_tests {
+    use super::claim_failure;
+
+    #[test]
+    fn access_denied_names_ptpcamerad_on_macos_and_keeps_the_usb_error() {
+        let error = claim_failure(rusb::Error::Access, 0, true);
+
+        assert!(error.to_string().contains("ptpcamerad"), "{error}");
+        assert!(error.downcast_ref::<rusb::Error>().is_some());
+
+        let linux = claim_failure(rusb::Error::Access, 0, false);
+        assert!(linux.to_string().contains("udev"), "{linux}");
+
+        let other = claim_failure(rusb::Error::NoDevice, 0, true);
+        assert!(!other.to_string().contains("ptpcamerad"), "{other}");
+    }
 }
