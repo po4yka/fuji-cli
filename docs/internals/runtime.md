@@ -302,6 +302,18 @@ does not attempt rollback, readback, retry, or session reopening. A fully
 framed PTP rejection, including `DeviceBusy`, leaves the session healthy, so
 verified recovery remains possible.
 
+### Fuji upload opcodes in USB mode 0x6
+
+Mode 0x6 advertises `0x900C`, `0x900D`, and `0x901D` alongside the standard
+object operations. These are Fujifilm's own file-upload family, not the
+coincidentally same-numbered Leica/Sigma opcodes libgphoto2 defines:
+petabyt/libfuji names them `SendObjectInfo` (create file), `SendObject2`
+(write to file), and `SendObject` (apparently equivalent to `0x900D`), first
+seen in Fuji's FPUPDATE.DAT update utility. This runtime uses the
+`0x900C`/`0x900D` pair for RAW upload, matching its captures, and does not send
+`0x901D`. See
+[fuji-ptp-ecosystem-research](fuji-ptp-ecosystem-research.md) for sources.
+
 ### Object stores in USB mode 0x6
 
 In USB RAW CONV./BACKUP RESTORE mode the X-T5 does not expose the memory card.
