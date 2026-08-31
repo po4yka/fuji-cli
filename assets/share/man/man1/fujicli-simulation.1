@@ -1,0 +1,32 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH fujicli-simulation 1  "simulation "
+.SH NAME
+fujicli\-simulation \- Manage film simulations
+.SH SYNOPSIS
+\fBfujicli simulation\fR [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-h\fR|\fB\-\-help\fR] <\fIsubcommands\fR>
+.SH DESCRIPTION
+Manage film simulations
+.SH OPTIONS
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Log extra debugging information (multiple instances increase verbosity)
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.SH SUBCOMMANDS
+.TP
+fujicli\-simulation\-list(1)
+List simulations
+.TP
+fujicli\-simulation\-get(1)
+Get simulation
+.TP
+fujicli\-simulation\-set(1)
+Set simulation parameters
+.TP
+fujicli\-simulation\-export(1)
+Export simulation
+.TP
+fujicli\-simulation\-import(1)
+Import simulation

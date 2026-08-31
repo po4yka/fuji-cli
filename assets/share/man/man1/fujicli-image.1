@@ -1,0 +1,23 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH fujicli-image 1  "image "
+.SH NAME
+fujicli\-image \- Manage and render images
+.SH SYNOPSIS
+\fBfujicli image\fR [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-h\fR|\fB\-\-help\fR] <\fIsubcommands\fR>
+.SH DESCRIPTION
+Manage and render images
+.SH OPTIONS
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Log extra debugging information (multiple instances increase verbosity)
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.SH SUBCOMMANDS
+.TP
+fujicli\-image\-render(1)
+Render image
+.TP
+fujicli\-image\-recover(1)
+Recover a retained rendered JPEG by its camera object handle

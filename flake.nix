@@ -93,11 +93,22 @@
               }''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
             '';
 
+            postInstall = ''
+              mkdir -p "$out/share"
+              cp -R assets/share/. "$out/share/"
+            '';
+
             doInstallCheck = true;
             installCheckPhase = ''
               runHook preInstallCheck
               "$out/bin/fujicli" --help >/dev/null
               test ! -e "$out/bin/fujicli-dev"
+              test -s "$out/share/bash-completion/completions/fujicli"
+              test -s "$out/share/zsh/site-functions/_fujicli"
+              test -s "$out/share/fish/vendor_completions.d/fujicli.fish"
+              test -s "$out/share/powershell/Completions/fujicli.ps1"
+              test -s "$out/share/man/man1/fujicli.1"
+              test "$(find "$out/share/man/man1" -name '*.1' -type f | wc -l)" -eq 17
               reverse_stdout="$(mktemp)"
               reverse_stderr="$(mktemp)"
               set +e

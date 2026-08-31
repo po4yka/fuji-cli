@@ -13,6 +13,7 @@ def arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", type=pathlib.Path, required=True)
     parser.add_argument("--license", type=pathlib.Path, required=True)
+    parser.add_argument("--assets-root", type=pathlib.Path, required=True)
     parser.add_argument("--package", required=True)
     parser.add_argument("--output", type=pathlib.Path, required=True)
     parser.add_argument("--epoch", type=int, required=True)
@@ -65,6 +66,18 @@ def main() -> None:
             0o755,
             timestamp,
         )
+        assets = sorted(
+            path for path in options.assets_root.rglob("*") if path.is_file()
+        )
+        for asset in assets:
+            relative = asset.relative_to(options.assets_root).as_posix()
+            add_file(
+                archive,
+                asset,
+                f"{options.package}/share/{relative}",
+                0o644,
+                timestamp,
+            )
 
 
 if __name__ == "__main__":

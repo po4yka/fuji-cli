@@ -1,0 +1,22 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH fujicli-backup-inspect 1  "inspect "
+.SH NAME
+fujicli\-backup\-inspect \- Inspect and validate a backup artifact without connecting a camera
+.SH SYNOPSIS
+\fBfujicli backup inspect\fR [\fB\-j\fR|\fB\-\-json\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-h\fR|\fB\-\-help\fR] <\fIINPUT\fR>
+.SH DESCRIPTION
+Inspect and validate a backup artifact without connecting a camera
+.SH OPTIONS
+.TP
+\fB\-j\fR, \fB\-\-json\fR
+Format output using JSON
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Log extra debugging information (multiple instances increase verbosity)
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.TP
+<\fIINPUT\fR>
+Input file (use \*(Aq\-\*(Aq to read from stdin)

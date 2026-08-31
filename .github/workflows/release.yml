@@ -110,6 +110,9 @@ jobs:
       - name: Test all targets
         run: cargo test --locked --all-features --all-targets --workspace --jobs 4
 
+      - name: Test release packaging
+        run: python3 -m unittest support/test_package_release.py -v
+
   package:
     name: Release / package ${{ matrix.name }}
     needs: validate
@@ -190,6 +193,7 @@ jobs:
           "$PYTHON" support/package-release.py \
             --binary "target/${RELEASE_TARGET}/release/${RELEASE_BINARY}" \
             --license LICENSE \
+            --assets-root assets/share \
             --package "$package" \
             --output "dist/$package.zip" \
             --epoch "$source_date_epoch"
@@ -205,7 +209,8 @@ jobs:
           package="fujicli-${RELEASE_LABEL}-${RELEASE_TARGET}"
           "$PYTHON" support/verify-release-artifact.py \
             --archive "dist/$package.zip" \
-            --binary-name "$RELEASE_BINARY"
+            --binary-name "$RELEASE_BINARY" \
+            --assets-root assets/share
 
       - name: Stage SBOM input
         shell: bash

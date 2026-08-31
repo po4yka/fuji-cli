@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prove that a production fujicli executable has no reverse command surface."""
+"""Verify the production command boundary and packaged CLI assets."""
 
 from __future__ import annotations
 
@@ -24,6 +24,7 @@ def arguments() -> argparse.Namespace:
     source.add_argument("--binary", type=pathlib.Path)
     source.add_argument("--archive", type=pathlib.Path)
     parser.add_argument("--binary-name", default="fujicli")
+    parser.add_argument("--assets-root", type=pathlib.Path)
     return parser.parse_args()
 
 
@@ -56,7 +57,11 @@ def verify_binary(binary: pathlib.Path) -> None:
             )
 
 
-def verify_archive(archive_path: pathlib.Path, binary_name: str) -> None:
+def verify_archive(
+    archive_path: pathlib.Path,
+    binary_name: str,
+    assets_root: pathlib.Path,
+) -> None:
     with zipfile.ZipFile(archive_path) as archive:
         names = archive.namelist()
         roots = {pathlib.PurePosixPath(name).parts[0] for name in names}
@@ -64,10 +69,22 @@ def verify_archive(archive_path: pathlib.Path, binary_name: str) -> None:
             raise SystemExit(f"release archive must have one package root: {names!r}")
         root = roots.pop()
         expected = {f"{root}/LICENSE", f"{root}/{binary_name}"}
+        expected.update(
+            f"{root}/share/{asset.relative_to(assets_root).as_posix()}"
+            for asset in assets_root.rglob("*")
+            if asset.is_file()
+        )
         if set(names) != expected:
             raise SystemExit(
                 f"release archive entries differ from production allowlist: {names!r}"
             )
+        for asset in assets_root.rglob("*"):
+            if asset.is_file():
+                archived = f"{root}/share/{asset.relative_to(assets_root).as_posix()}"
+                if archive.read(archived) != asset.read_bytes():
+                    raise SystemExit(
+                        f"release archive asset differs from source: {archived}"
+                    )
         with tempfile.TemporaryDirectory(prefix="fujicli-release-verify-") as directory:
             archive.extractall(directory)
             binary = pathlib.Path(directory, root, binary_name)
@@ -80,7 +97,9 @@ def main() -> None:
     if options.binary is not None:
         verify_binary(options.binary)
     else:
-        verify_archive(options.archive, options.binary_name)
+        if options.assets_root is None:
+            raise SystemExit("--assets-root is required with --archive")
+        verify_archive(options.archive, options.binary_name, options.assets_root)
 
 
 if __name__ == "__main__":

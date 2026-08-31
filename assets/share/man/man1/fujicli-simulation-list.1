@@ -1,0 +1,22 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH fujicli-simulation-list 1  "list "
+.SH NAME
+fujicli\-simulation\-list \- List simulations
+.SH SYNOPSIS
+\fBfujicli simulation list\fR [\fB\-j\fR|\fB\-\-json\fR] [\fB\-d\fR|\fB\-\-device\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-h\fR|\fB\-\-help\fR]
+.SH DESCRIPTION
+List simulations
+.SH OPTIONS
+.TP
+\fB\-j\fR, \fB\-\-json\fR
+Format output using JSON
+.TP
+\fB\-d\fR, \fB\-\-device\fR \fI<DEVICE>\fR
+Manually specify target device using USB <BUS>.<ADDRESS>
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Log extra debugging information (multiple instances increase verbosity)
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help

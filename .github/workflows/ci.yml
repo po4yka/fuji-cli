@@ -28,7 +28,7 @@ jobs:
       - name: Install native dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes libusb-1.0-0-dev pkg-config
+          sudo apt-get install --yes fish libusb-1.0-0-dev mandoc pkg-config zsh
 
       - name: Install CUE
         run: |
@@ -67,6 +67,19 @@ jobs:
       - name: Test all targets
         run: cargo test --locked --all-features --all-targets --workspace --jobs 4
 
+      - name: Test release packaging
+        run: python3 -m unittest support/test_package_release.py -v
+
+      - name: Validate completion and man assets
+        run: |
+          bash -n assets/share/bash-completion/completions/fujicli
+          bash --noprofile --norc -c 'source assets/share/bash-completion/completions/fujicli; complete -p fujicli >/dev/null'
+          zsh -n assets/share/zsh/site-functions/_fujicli
+          zsh -f -c 'autoload -Uz compinit; compinit -D; source assets/share/zsh/site-functions/_fujicli; (( $+functions[_fujicli] ))'
+          fish -n assets/share/fish/vendor_completions.d/fujicli.fish
+          fish --no-config -c 'source assets/share/fish/vendor_completions.d/fujicli.fish; test (count (complete --command fujicli)) -gt 0'
+          for page in assets/share/man/man1/*.1; do mandoc -T utf8 "$page" >/dev/null; done
+
       - name: Build workspace
         run: cargo build --locked --workspace --jobs 4
 
@@ -102,6 +115,22 @@ jobs:
 
       - name: Build workspace
         run: cargo build --locked --workspace --jobs 4
+
+      - name: Validate PowerShell completion
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'assets/share/powershell/Completions/fujicli.ps1'),
+            [ref]$tokens,
+            [ref]$errors
+          ) > $null
+          if ($errors.Count -ne 0) {
+            $errors | ForEach-Object { Write-Error $_ }
+            exit 1
+          }
 
   coverage:
     name: CI / Coverage

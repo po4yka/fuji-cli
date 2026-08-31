@@ -10,7 +10,8 @@ nix run github:po4yka/fuji-cli
 ```
 
 Or add the flake to your system inputs and use the `fujicli` package from
-`overlays.default`.
+`overlays.default`. The package installs Bash, Zsh, Fish, and PowerShell
+completion files plus section 1 man pages below its `share/` output.
 
 For a dev shell with the pinned Rust toolchain, CUE, and native dependencies:
 
@@ -39,6 +40,11 @@ cd fuji-cli
 cargo build --locked --release
 ./target/release/fujicli --help
 ```
+
+Source builds produce only the executable. The generated completion files and
+man pages used by the Nix and release packages are available under
+`assets/share/`; copy that tree into the matching `share/` directory of your
+installation prefix when installing manually.
 
 ## Per-Platform Notes
 

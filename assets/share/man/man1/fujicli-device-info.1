@@ -1,0 +1,25 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH fujicli-device-info 1  "info "
+.SH NAME
+fujicli\-device\-info \- Get camera info
+.SH SYNOPSIS
+\fBfujicli device info\fR [\fB\-j\fR|\fB\-\-json\fR] [\fB\-d\fR|\fB\-\-device\fR] [\fB\-\-emulate\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-h\fR|\fB\-\-help\fR]
+.SH DESCRIPTION
+Get camera info
+.SH OPTIONS
+.TP
+\fB\-j\fR, \fB\-\-json\fR
+Format output using JSON
+.TP
+\fB\-d\fR, \fB\-\-device\fR \fI<DEVICE>\fR
+Manually specify target device using USB <BUS>.<ADDRESS>
+.TP
+\fB\-\-emulate\fR \fI<EMULATE>\fR
+Treat device as a different model using <VENDOR_ID>:<PRODUCT_ID>
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Log extra debugging information (multiple instances increase verbosity)
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help

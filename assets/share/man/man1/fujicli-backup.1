@@ -1,0 +1,26 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH fujicli-backup 1  "backup "
+.SH NAME
+fujicli\-backup \- Manage backups
+.SH SYNOPSIS
+\fBfujicli backup\fR [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-h\fR|\fB\-\-help\fR] <\fIsubcommands\fR>
+.SH DESCRIPTION
+Manage backups
+.SH OPTIONS
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Log extra debugging information (multiple instances increase verbosity)
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.SH SUBCOMMANDS
+.TP
+fujicli\-backup\-export(1)
+Export backup
+.TP
+fujicli\-backup\-inspect(1)
+Inspect and validate a backup artifact without connecting a camera
+.TP
+fujicli\-backup\-import(1)
+Import backup

@@ -1,0 +1,937 @@
+#compdef fujicli
+
+autoload -U is-at-least
+
+_fujicli() {
+    typeset -A opt_args
+    typeset -a _arguments_options
+    local ret=1
+
+    if is-at-least 5.2; then
+        _arguments_options=(-s -S -C)
+    else
+        _arguments_options=(-s -C)
+    fi
+
+    local context curcontext="$curcontext" state line
+    _arguments "${_arguments_options[@]}" : \
+'*-v[Log extra debugging information (multiple instances increase verbosity)]' \
+'*--verbose[Log extra debugging information (multiple instances increase verbosity)]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'-V[Print version]' \
+'--version[Print version]' \
+":: :_fujicli_commands" \
+"*::: :->fujicli" \
+&& ret=0
+    case $state in
+    (fujicli)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:fujicli-command-$line[1]:"
+        case $line[1] in
+            (device)
+_arguments "${_arguments_options[@]}" : \
+'*-v[Log extra debugging information (multiple instances increase verbosity)]' \
+'*--verbose[Log extra debugging information (multiple instances increase verbosity)]' \
+'-h[Print help]' \
+'--help[Print help]' \
+":: :_fujicli__subcmd__device_commands" \
+"*::: :->device" \
+&& ret=0
+
+    case $state in
+    (device)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:fujicli-device-command-$line[1]:"
+        case $line[1] in
+            (list)
+_arguments "${_arguments_options[@]}" : \
+'-j[Format output using JSON]' \
+'--json[Format output using JSON]' \
+'*-v[Log extra debugging information (multiple instances increase verbosity)]' \
+'*--verbose[Log extra debugging information (multiple instances increase verbosity)]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(info)
+_arguments "${_arguments_options[@]}" : \
+'-d+[Manually specify target device using USB <BUS>.<ADDRESS>]:DEVICE:_default' \
+'--device=[Manually specify target device using USB <BUS>.<ADDRESS>]:DEVICE:_default' \
+'--emulate=[Treat device as a different model using <VENDOR_ID>\:<PRODUCT_ID>]:EMULATE:_default' \
+'-j[Format output using JSON]' \
+'--json[Format output using JSON]' \
+'*-v[Log extra debugging information (multiple instances increase verbosity)]' \
+'*--verbose[Log extra debugging information (multiple instances increase verbosity)]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+":: :_fujicli__subcmd__device__subcmd__help_commands" \
+"*::: :->help" \
+&& ret=0
+
+    case $state in
+    (help)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:fujicli-device-help-command-$line[1]:"
+        case $line[1] in
+            (list)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(info)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+;;
+(simulation)
+_arguments "${_arguments_options[@]}" : \
+'*-v[Log extra debugging information (multiple instances increase verbosity)]' \
+'*--verbose[Log extra debugging information (multiple instances increase verbosity)]' \
+'-h[Print help]' \
+'--help[Print help]' \
+":: :_fujicli__subcmd__simulation_commands" \
+"*::: :->simulation" \
+&& ret=0
+
+    case $state in
+    (simulation)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:fujicli-simulation-command-$line[1]:"
+        case $line[1] in
+            (list)
+_arguments "${_arguments_options[@]}" : \
+'-d+[Manually specify target device using USB <BUS>.<ADDRESS>]:DEVICE:_default' \
+'--device=[Manually specify target device using USB <BUS>.<ADDRESS>]:DEVICE:_default' \
+'-j[Format output using JSON]' \
+'--json[Format output using JSON]' \
+'*-v[Log extra debugging information (multiple instances increase verbosity)]' \
+'*--verbose[Log extra debugging information (multiple instances increase verbosity)]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(get)
+_arguments "${_arguments_options[@]}" : \
+'-d+[Manually specify target device using USB <BUS>.<ADDRESS>]:DEVICE:_default' \
+'--device=[Manually specify target device using USB <BUS>.<ADDRESS>]:DEVICE:_default' \
+'-j[Format output using JSON]' \
+'--json[Format output using JSON]' \
+'*-v[Log extra debugging information (multiple instances increase verbosity)]' \
+'*--verbose[Log extra debugging information (multiple instances increase verbosity)]' \
+'-h[Print help]' \
+'--help[Print help]' \
+':slot -- Simulation slot number:_default' \
+&& ret=0
+;;
+(set)
+_arguments "${_arguments_options[@]}" : \
+'--clarity=[Clarity]:CLARITY:_default' \
+'--color=[Color]:COLOR:_default' \
+'--color-chrome-effect=[Color Chrome Effect]:COLOR_CHROME_EFFECT:_default' \
+'--color-chrome-fx-blue=[Color Chrome FX Blue]:COLOR_CHROME_FX_BLUE:_default' \
+'--color-space=[Color Space]:COLOR_SPACE:_default' \
+'--custom-setting-name=[Custom Setting Name]:CUSTOM_SETTING_NAME:_default' \
+'--dynamic-range=[Dynamic Range]:DYNAMIC_RANGE:_default' \
+'--dynamic-range-priority=[Dynamic Range Priority]:DYNAMIC_RANGE_PRIORITY:_default' \
+'--film-simulation=[Film Simulation]:FILM_SIMULATION:_default' \
+'--grain-effect=[Grain Effect]:GRAIN_EFFECT:_default' \
+'--highlight-tone=[Highlight Tone]:HIGHLIGHT_TONE:_default' \
+'--image-quality=[Image Quality]:IMAGE_QUALITY:_default' \
+'--image-size=[Image Size]:IMAGE_SIZE:_default' \
+'--lens-modulation-optimizer=[Lens Modulation Optimizer]:LENS_MODULATION_OPTIMIZER:_default' \
+'--monochromatic-color-temperature=[Monochromatic Color Temperature]:MONOCHROMATIC_COLOR_TEMPERATURE:_default' \
+'--monochromatic-color-tint=[Monochromatic Color Tint]:MONOCHROMATIC_COLOR_TINT:_default' \
+'--noise-reduction=[High ISO Noise Reduction]:NOISE_REDUCTION:_default' \
+'--shadow-tone=[Shadow Tone]:SHADOW_TONE:_default' \
+'--sharpness=[Sharpness]:SHARPNESS:_default' \
+'--smooth-skin-effect=[Smooth Skin Effect]:SMOOTH_SKIN_EFFECT:_default' \
+'--white-balance=[White Balance]:WHITE_BALANCE:_default' \
+'--white-balance-shift-blue=[White Balance Shift Blue]:WHITE_BALANCE_SHIFT_BLUE:_default' \
+'--white-balance-shift-red=[White Balance Shift Red]:WHITE_BALANCE_SHIFT_RED:_default' \
+'--white-balance-temperature=[White Balance Temperature]:WHITE_BALANCE_TEMPERATURE:_default' \
+'--target-serial-sha256=[SHA-256 fingerprint of the exact physical camera serial number]:TARGET_SERIAL_SHA256:_default' \
+'-d+[Manually specify target device using USB <BUS>.<ADDRESS>]:DEVICE:_default' \
+'--device=[Manually specify target device using USB <BUS>.<ADDRESS>]:DEVICE:_default' \
+'*-v[Log extra debugging information (multiple instances increase verbosity)]' \
+'*--verbose[Log extra debugging information (multiple instances increase verbosity)]' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+':slot -- Simulation slot number:_default' \
+&& ret=0
+;;
+(export)
+_arguments "${_arguments_options[@]}" : \
+'-d+[Manually specify target device using USB <BUS>.<ADDRESS>]:DEVICE:_default' \
+'--device=[Manually specify target device using USB <BUS>.<ADDRESS>]:DEVICE:_default' \
+'--force[Replace an existing regular output file]' \
+'*-v[Log extra debugging information (multiple instances increase verbosity)]' \
+'*--verbose[Log extra debugging information (multiple instances increase verbosity)]' \
+'-h[Print help]' \
+'--help[Print help]' \
+':slot -- Simulation slot number:_default' \
+':output -- Output file (use '\''-'\'' to write to stdout):_default' \
+&& ret=0
+;;
+(import)
+_arguments "${_arguments_options[@]}" : \
+'--target-serial-sha256=[SHA-256 fingerprint of the exact physical camera serial number]:TARGET_SERIAL_SHA256:_default' \
+'-d+[Manually specify target device using USB <BUS>.<ADDRESS>]:DEVICE:_default' \
+'--device=[Manually specify target device using USB <BUS>.<ADDRESS>]:DEVICE:_default' \
+'*-v[Log extra debugging information (multiple instances increase verbosity)]' \
+'*--verbose[Log extra debugging information (multiple instances increase verbosity)]' \
+'-h[Print help]' \
+'--help[Print help]' \
+':slot -- Simulation slot number:_default' \
+':input -- Input file (use '\''-'\'' to read from stdin):_default' \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+":: :_fujicli__subcmd__simulation__subcmd__help_commands" \
+"*::: :->help" \
+&& ret=0
+
+    case $state in
+    (help)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:fujicli-simulation-help-command-$line[1]:"
+        case $line[1] in
+            (list)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(get)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(set)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(export)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(import)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+;;
+(backup)
+_arguments "${_arguments_options[@]}" : \
+'*-v[Log extra debugging information (multiple instances increase verbosity)]' \
+'*--verbose[Log extra debugging information (multiple instances increase verbosity)]' \
+'-h[Print help]' \
+'--help[Print help]' \
+":: :_fujicli__subcmd__backup_commands" \
+"*::: :->backup" \
+&& ret=0
+
+    case $state in
+    (backup)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:fujicli-backup-command-$line[1]:"
+        case $line[1] in
+            (export)
+_arguments "${_arguments_options[@]}" : \
+'-d+[Manually specify target device using USB <BUS>.<ADDRESS>]:DEVICE:_default' \
+'--device=[Manually specify target device using USB <BUS>.<ADDRESS>]:DEVICE:_default' \
+'--force[Replace an existing regular output file]' \
+'-j[Format output using JSON]' \
+'--json[Format output using JSON]' \
+'*-v[Log extra debugging information (multiple instances increase verbosity)]' \
+'*--verbose[Log extra debugging information (multiple instances increase verbosity)]' \
+'-h[Print help]' \
+'--help[Print help]' \
+':output -- Output file (use '\''-'\'' to write to stdout):_default' \
+&& ret=0
+;;
+(inspect)
+_arguments "${_arguments_options[@]}" : \
+'-j[Format output using JSON]' \
+'--json[Format output using JSON]' \
+'*-v[Log extra debugging information (multiple instances increase verbosity)]' \
+'*--verbose[Log extra debugging information (multiple instances increase verbosity)]' \
+'-h[Print help]' \
+'--help[Print help]' \
+':input -- Input file (use '\''-'\'' to read from stdin):_default' \
+&& ret=0
+;;
+(import)
+_arguments "${_arguments_options[@]}" : \
+'(--dry-run)--recovery-backup=[New file that receives the target'\''s current settings before restore]:RECOVERY_BACKUP:_default' \
+'--expect-sha256=[Expected SHA-256 of the complete input artifact]:EXPECT_SHA256:_default' \
+'--target-serial-sha256=[Expected SHA-256 fingerprint of a different target camera serial]:TARGET_SERIAL_SHA256:_default' \
+'-d+[Manually specify target device using USB <BUS>.<ADDRESS>]:DEVICE:_default' \
+'--device=[Manually specify target device using USB <BUS>.<ADDRESS>]:DEVICE:_default' \
+'(--dry-run)--yes[Confirm sending the validated backup artifact to the selected camera]' \
+'--dry-run[Validate compatibility without exporting recovery state or restoring]' \
+'--allow-stdin[Permit destructive import from stdin (also requires --expect-sha256)]' \
+'-j[Format dry-run output using JSON]' \
+'--json[Format dry-run output using JSON]' \
+'*-v[Log extra debugging information (multiple instances increase verbosity)]' \
+'*--verbose[Log extra debugging information (multiple instances increase verbosity)]' \
+'-h[Print help]' \
+'--help[Print help]' \
+':input -- Input file (use '\''-'\'' to read from stdin):_default' \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+":: :_fujicli__subcmd__backup__subcmd__help_commands" \
+"*::: :->help" \
+&& ret=0
+
+    case $state in
+    (help)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:fujicli-backup-help-command-$line[1]:"
+        case $line[1] in
+            (export)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(inspect)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(import)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+;;
+(image)
+_arguments "${_arguments_options[@]}" : \
+'*-v[Log extra debugging information (multiple instances increase verbosity)]' \
+'*--verbose[Log extra debugging information (multiple instances increase verbosity)]' \
+'-h[Print help]' \
+'--help[Print help]' \
+":: :_fujicli__subcmd__image_commands" \
+"*::: :->image" \
+&& ret=0
+
+    case $state in
+    (image)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:fujicli-image-command-$line[1]:"
+        case $line[1] in
+            (render)
+_arguments "${_arguments_options[@]}" : \
+'--target-serial-sha256=[SHA-256 fingerprint of the exact physical camera serial number]:TARGET_SERIAL_SHA256:_default' \
+'--simulation-file=[Path to exported simulation file]:SIMULATION_FILE:_default' \
+'--clarity=[Clarity]:CLARITY:_default' \
+'--color=[Color]:COLOR:_default' \
+'--color-chrome-effect=[Color Chrome Effect]:COLOR_CHROME_EFFECT:_default' \
+'--color-chrome-fx-blue=[Color Chrome FX Blue]:COLOR_CHROME_FX_BLUE:_default' \
+'--color-space=[Color Space]:COLOR_SPACE:_default' \
+'--dynamic-range=[Dynamic Range]:DYNAMIC_RANGE:_default' \
+'--dynamic-range-priority=[Dynamic Range Priority]:DYNAMIC_RANGE_PRIORITY:_default' \
+'--exposure-offset=[Exposure Offset]:EXPOSURE_OFFSET:_default' \
+'--file-type=[File Type]:FILE_TYPE:_default' \
+'--film-simulation=[Film Simulation]:FILM_SIMULATION:_default' \
+'--grain-effect=[Grain Effect]:GRAIN_EFFECT:_default' \
+'--highlight-tone=[Highlight Tone]:HIGHLIGHT_TONE:_default' \
+'--image-quality=[Image Quality]:IMAGE_QUALITY:_default' \
+'--image-size=[Image Size]:IMAGE_SIZE:_default' \
+'--lens-modulation-optimizer=[Lens Modulation Optimizer]:LENS_MODULATION_OPTIMIZER:_default' \
+'--monochromatic-color-temperature=[Monochromatic Color Temperature]:MONOCHROMATIC_COLOR_TEMPERATURE:_default' \
+'--monochromatic-color-tint=[Monochromatic Color Tint]:MONOCHROMATIC_COLOR_TINT:_default' \
+'--noise-reduction=[High ISO Noise Reduction]:NOISE_REDUCTION:_default' \
+'--shadow-tone=[Shadow Tone]:SHADOW_TONE:_default' \
+'--sharpness=[Sharpness]:SHARPNESS:_default' \
+'--smooth-skin-effect=[Smooth Skin Effect]:SMOOTH_SKIN_EFFECT:_default' \
+'--teleconverter=[Teleconverter]:TELECONVERTER:_default' \
+'--white-balance=[White Balance]:WHITE_BALANCE:_default' \
+'--white-balance-shift-blue=[White Balance Shift Blue]:WHITE_BALANCE_SHIFT_BLUE:_default' \
+'--white-balance-shift-red=[White Balance Shift Red]:WHITE_BALANCE_SHIFT_RED:_default' \
+'--white-balance-temperature=[White Balance Temperature]:WHITE_BALANCE_TEMPERATURE:_default' \
+'-d+[Manually specify target device using USB <BUS>.<ADDRESS>]:DEVICE:_default' \
+'--device=[Manually specify target device using USB <BUS>.<ADDRESS>]:DEVICE:_default' \
+'--draft[Render a lower-quality (faster) preview]' \
+'--force[Replace an existing regular output file]' \
+'*-v[Log extra debugging information (multiple instances increase verbosity)]' \
+'*--verbose[Log extra debugging information (multiple instances increase verbosity)]' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+':input -- RAF input file (use '\''-'\'' to read from stdin):_default' \
+':output -- Output file (use '\''-'\'' to write to stdout):_default' \
+&& ret=0
+;;
+(recover)
+_arguments "${_arguments_options[@]}" : \
+'--target-serial-sha256=[SHA-256 fingerprint of the exact physical camera serial number]:TARGET_SERIAL_SHA256:_default' \
+'-d+[Manually specify target device using USB <BUS>.<ADDRESS>]:DEVICE:_default' \
+'--device=[Manually specify target device using USB <BUS>.<ADDRESS>]:DEVICE:_default' \
+'--force[Replace an existing regular output file]' \
+'--delete-after-save[Delete the camera object after a verified local file save]' \
+'*-v[Log extra debugging information (multiple instances increase verbosity)]' \
+'*--verbose[Log extra debugging information (multiple instances increase verbosity)]' \
+'-h[Print help]' \
+'--help[Print help]' \
+':handle -- Camera object handle reported by a failed render:_default' \
+':output -- Output file (use '\''-'\'' to write to stdout):_default' \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+":: :_fujicli__subcmd__image__subcmd__help_commands" \
+"*::: :->help" \
+&& ret=0
+
+    case $state in
+    (help)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:fujicli-image-help-command-$line[1]:"
+        case $line[1] in
+            (render)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(recover)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+":: :_fujicli__subcmd__help_commands" \
+"*::: :->help" \
+&& ret=0
+
+    case $state in
+    (help)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:fujicli-help-command-$line[1]:"
+        case $line[1] in
+            (device)
+_arguments "${_arguments_options[@]}" : \
+":: :_fujicli__subcmd__help__subcmd__device_commands" \
+"*::: :->device" \
+&& ret=0
+
+    case $state in
+    (device)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:fujicli-help-device-command-$line[1]:"
+        case $line[1] in
+            (list)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(info)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+(simulation)
+_arguments "${_arguments_options[@]}" : \
+":: :_fujicli__subcmd__help__subcmd__simulation_commands" \
+"*::: :->simulation" \
+&& ret=0
+
+    case $state in
+    (simulation)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:fujicli-help-simulation-command-$line[1]:"
+        case $line[1] in
+            (list)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(get)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(set)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(export)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(import)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+(backup)
+_arguments "${_arguments_options[@]}" : \
+":: :_fujicli__subcmd__help__subcmd__backup_commands" \
+"*::: :->backup" \
+&& ret=0
+
+    case $state in
+    (backup)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:fujicli-help-backup-command-$line[1]:"
+        case $line[1] in
+            (export)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(inspect)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(import)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+(image)
+_arguments "${_arguments_options[@]}" : \
+":: :_fujicli__subcmd__help__subcmd__image_commands" \
+"*::: :->image" \
+&& ret=0
+
+    case $state in
+    (image)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:fujicli-help-image-command-$line[1]:"
+        case $line[1] in
+            (render)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(recover)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+}
+
+(( $+functions[_fujicli_commands] )) ||
+_fujicli_commands() {
+    local commands; commands=(
+'device:Manage devices' \
+'simulation:Manage film simulations' \
+'backup:Manage backups' \
+'image:Manage and render images' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'fujicli commands' commands "$@"
+}
+(( $+functions[_fujicli__subcmd__backup_commands] )) ||
+_fujicli__subcmd__backup_commands() {
+    local commands; commands=(
+'export:Export backup' \
+'inspect:Inspect and validate a backup artifact without connecting a camera' \
+'import:Import backup' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'fujicli backup commands' commands "$@"
+}
+(( $+functions[_fujicli__subcmd__backup__subcmd__export_commands] )) ||
+_fujicli__subcmd__backup__subcmd__export_commands() {
+    local commands; commands=()
+    _describe -t commands 'fujicli backup export commands' commands "$@"
+}
+(( $+functions[_fujicli__subcmd__backup__subcmd__help_commands] )) ||
+_fujicli__subcmd__backup__subcmd__help_commands() {
+    local commands; commands=(
+'export:Export backup' \
+'inspect:Inspect and validate a backup artifact without connecting a camera' \
+'import:Import backup' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'fujicli backup help commands' commands "$@"
+}
+(( $+functions[_fujicli__subcmd__backup__subcmd__help__subcmd__export_commands] )) ||
+_fujicli__subcmd__backup__subcmd__help__subcmd__export_commands() {
+    local commands; commands=()
+    _describe -t commands 'fujicli backup help export commands' commands "$@"
+}
+(( $+functions[_fujicli__subcmd__backup__subcmd__help__subcmd__help_commands] )) ||
+_fujicli__subcmd__backup__subcmd__help__subcmd__help_commands() {
+    local commands; commands=()
+    _describe -t commands 'fujicli backup help help commands' commands "$@"
+}
+(( $+functions[_fujicli__subcmd__backup__subcmd__help__subcmd__import_commands] )) ||
+_fujicli__subcmd__backup__subcmd__help__subcmd__import_commands() {
+    local commands; commands=()
+    _describe -t commands 'fujicli backup help import commands' commands "$@"
+}
+(( $+functions[_fujicli__subcmd__backup__subcmd__help__subcmd__inspect_commands] )) ||
+_fujicli__subcmd__backup__subcmd__help__subcmd__inspect_commands() {
+    local commands; commands=()
+    _describe -t commands 'fujicli backup help inspect commands' commands "$@"
+}
+(( $+functions[_fujicli__subcmd__backup__subcmd__import_commands] )) ||
+_fujicli__subcmd__backup__subcmd__import_commands() {
+    local commands; commands=()
+    _describe -t commands 'fujicli backup import commands' commands "$@"
+}
+(( $+functions[_fujicli__subcmd__backup__subcmd__inspect_commands] )) ||
+_fujicli__subcmd__backup__subcmd__inspect_commands() {
+    local commands; commands=()
+    _describe -t commands 'fujicli backup inspect commands' commands "$@"
+}
+(( $+functions[_fujicli__subcmd__device_commands] )) ||
+_fujicli__subcmd__device_commands() {
+    local commands; commands=(
+'list:List cameras' \
+'info:Get camera info' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'fujicli device commands' commands "$@"
+}
+(( $+functions[_fujicli__subcmd__device__subcmd__help_commands] )) ||
+_fujicli__subcmd__device__subcmd__help_commands() {
+    local commands; commands=(
+'list:List cameras' \
+'info:Get camera info' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'fujicli device help commands' commands "$@"
+}
+(( $+functions[_fujicli__subcmd__device__subcmd__help__subcmd__help_commands] )) ||
+_fujicli__subcmd__device__subcmd__help__subcmd__help_commands() {
+    local commands; commands=()
+    _describe -t commands 'fujicli device help help commands' commands "$@"
+}
+(( $+functions[_fujicli__subcmd__device__subcmd__help__subcmd__info_commands] )) ||
+_fujicli__subcmd__device__subcmd__help__subcmd__info_commands() {
+    local commands; commands=()
+    _describe -t commands 'fujicli device help info commands' commands "$@"
+}
+(( $+functions[_fujicli__subcmd__device__subcmd__help__subcmd__list_commands] )) ||
+_fujicli__subcmd__device__subcmd__help__subcmd__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'fujicli device help list commands' commands "$@"
+}
+(( $+functions[_fujicli__subcmd__device__subcmd__info_commands] )) ||
+_fujicli__subcmd__device__subcmd__info_commands() {
+    local commands; commands=()
+    _describe -t commands 'fujicli device info commands' commands "$@"
+}
+(( $+functions[_fujicli__subcmd__device__subcmd__list_commands] )) ||
+_fujicli__subcmd__device__subcmd__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'fujicli device list commands' commands "$@"
+}
+(( $+functions[_fujicli__subcmd__help_commands] )) ||
+_fujicli__subcmd__help_commands() {
+    local commands; commands=(
+'device:Manage devices' \
+'simulation:Manage film simulations' \
+'backup:Manage backups' \
+'image:Manage and render images' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'fujicli help commands' commands "$@"
+}
+(( $+functions[_fujicli__subcmd__help__subcmd__backup_commands] )) ||
+_fujicli__subcmd__help__subcmd__backup_commands() {
+    local commands; commands=(
+'export:Export backup' \
+'inspect:Inspect and validate a backup artifact without connecting a camera' \
+'import:Import backup' \
+    )
+    _describe -t commands 'fujicli help backup commands' commands "$@"
+}
+(( $+functions[_fujicli__subcmd__help__subcmd__backup__subcmd__export_commands] )) ||
+_fujicli__subcmd__help__subcmd__backup__subcmd__export_commands() {
+    local commands; commands=()
+    _describe -t commands 'fujicli help backup export commands' commands "$@"
+}
+(( $+functions[_fujicli__subcmd__help__subcmd__backup__subcmd__import_commands] )) ||
+_fujicli__subcmd__help__subcmd__backup__subcmd__import_commands() {
+    local commands; commands=()
+    _describe -t commands 'fujicli help backup import commands' commands "$@"
+}
+(( $+functions[_fujicli__subcmd__help__subcmd__backup__subcmd__inspect_commands] )) ||
+_fujicli__subcmd__help__subcmd__backup__subcmd__inspect_commands() {
+    local commands; commands=()
+    _describe -t commands 'fujicli help backup inspect commands' commands "$@"
+}
+(( $+functions[_fujicli__subcmd__help__subcmd__device_commands] )) ||
+_fujicli__subcmd__help__subcmd__device_commands() {
+    local commands; commands=(
+'list:List cameras' \
+'info:Get camera info' \
+    )
+    _describe -t commands 'fujicli help device commands' commands "$@"
+}
+(( $+functions[_fujicli__subcmd__help__subcmd__device__subcmd__info_commands] )) ||
+_fujicli__subcmd__help__subcmd__device__subcmd__info_commands() {
+    local commands; commands=()
+    _describe -t commands 'fujicli help device info commands' commands "$@"
+}
+(( $+functions[_fujicli__subcmd__help__subcmd__device__subcmd__list_commands] )) ||
+_fujicli__subcmd__help__subcmd__device__subcmd__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'fujicli help device list commands' commands "$@"
+}
+(( $+functions[_fujicli__subcmd__help__subcmd__help_commands] )) ||
+_fujicli__subcmd__help__subcmd__help_commands() {
+    local commands; commands=()
+    _describe -t commands 'fujicli help help commands' commands "$@"
+}
+(( $+functions[_fujicli__subcmd__help__subcmd__image_commands] )) ||
+_fujicli__subcmd__help__subcmd__image_commands() {
+    local commands; commands=(
+'render:Render image' \
+'recover:Recover a retained rendered JPEG by its camera object handle' \
+    )
+    _describe -t commands 'fujicli help image commands' commands "$@"
+}
+(( $+functions[_fujicli__subcmd__help__subcmd__image__subcmd__recover_commands] )) ||
+_fujicli__subcmd__help__subcmd__image__subcmd__recover_commands() {
+    local commands; commands=()
+    _describe -t commands 'fujicli help image recover commands' commands "$@"
+}
+(( $+functions[_fujicli__subcmd__help__subcmd__image__subcmd__render_commands] )) ||
+_fujicli__subcmd__help__subcmd__image__subcmd__render_commands() {
+    local commands; commands=()
+    _describe -t commands 'fujicli help image render commands' commands "$@"
+}
+(( $+functions[_fujicli__subcmd__help__subcmd__simulation_commands] )) ||
+_fujicli__subcmd__help__subcmd__simulation_commands() {
+    local commands; commands=(
+'list:List simulations' \
+'get:Get simulation' \
+'set:Set simulation parameters' \
+'export:Export simulation' \
+'import:Import simulation' \
+    )
+    _describe -t commands 'fujicli help simulation commands' commands "$@"
+}
+(( $+functions[_fujicli__subcmd__help__subcmd__simulation__subcmd__export_commands] )) ||
+_fujicli__subcmd__help__subcmd__simulation__subcmd__export_commands() {
+    local commands; commands=()
+    _describe -t commands 'fujicli help simulation export commands' commands "$@"
+}
+(( $+functions[_fujicli__subcmd__help__subcmd__simulation__subcmd__get_commands] )) ||
+_fujicli__subcmd__help__subcmd__simulation__subcmd__get_commands() {
+    local commands; commands=()
+    _describe -t commands 'fujicli help simulation get commands' commands "$@"
+}
+(( $+functions[_fujicli__subcmd__help__subcmd__simulation__subcmd__import_commands] )) ||
+_fujicli__subcmd__help__subcmd__simulation__subcmd__import_commands() {
+    local commands; commands=()
+    _describe -t commands 'fujicli help simulation import commands' commands "$@"
+}
+(( $+functions[_fujicli__subcmd__help__subcmd__simulation__subcmd__list_commands] )) ||
+_fujicli__subcmd__help__subcmd__simulation__subcmd__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'fujicli help simulation list commands' commands "$@"
+}
+(( $+functions[_fujicli__subcmd__help__subcmd__simulation__subcmd__set_commands] )) ||
+_fujicli__subcmd__help__subcmd__simulation__subcmd__set_commands() {
+    local commands; commands=()
+    _describe -t commands 'fujicli help simulation set commands' commands "$@"
+}
+(( $+functions[_fujicli__subcmd__image_commands] )) ||
+_fujicli__subcmd__image_commands() {
+    local commands; commands=(
+'render:Render image' \
+'recover:Recover a retained rendered JPEG by its camera object handle' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'fujicli image commands' commands "$@"
+}
+(( $+functions[_fujicli__subcmd__image__subcmd__help_commands] )) ||
+_fujicli__subcmd__image__subcmd__help_commands() {
+    local commands; commands=(
+'render:Render image' \
+'recover:Recover a retained rendered JPEG by its camera object handle' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'fujicli image help commands' commands "$@"
+}
+(( $+functions[_fujicli__subcmd__image__subcmd__help__subcmd__help_commands] )) ||
+_fujicli__subcmd__image__subcmd__help__subcmd__help_commands() {
+    local commands; commands=()
+    _describe -t commands 'fujicli image help help commands' commands "$@"
+}
+(( $+functions[_fujicli__subcmd__image__subcmd__help__subcmd__recover_commands] )) ||
+_fujicli__subcmd__image__subcmd__help__subcmd__recover_commands() {
+    local commands; commands=()
+    _describe -t commands 'fujicli image help recover commands' commands "$@"
+}
+(( $+functions[_fujicli__subcmd__image__subcmd__help__subcmd__render_commands] )) ||
+_fujicli__subcmd__image__subcmd__help__subcmd__render_commands() {
+    local commands; commands=()
+    _describe -t commands 'fujicli image help render commands' commands "$@"
+}
+(( $+functions[_fujicli__subcmd__image__subcmd__recover_commands] )) ||
+_fujicli__subcmd__image__subcmd__recover_commands() {
+    local commands; commands=()
+    _describe -t commands 'fujicli image recover commands' commands "$@"
+}
+(( $+functions[_fujicli__subcmd__image__subcmd__render_commands] )) ||
+_fujicli__subcmd__image__subcmd__render_commands() {
+    local commands; commands=()
+    _describe -t commands 'fujicli image render commands' commands "$@"
+}
+(( $+functions[_fujicli__subcmd__simulation_commands] )) ||
+_fujicli__subcmd__simulation_commands() {
+    local commands; commands=(
+'list:List simulations' \
+'get:Get simulation' \
+'set:Set simulation parameters' \
+'export:Export simulation' \
+'import:Import simulation' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'fujicli simulation commands' commands "$@"
+}
+(( $+functions[_fujicli__subcmd__simulation__subcmd__export_commands] )) ||
+_fujicli__subcmd__simulation__subcmd__export_commands() {
+    local commands; commands=()
+    _describe -t commands 'fujicli simulation export commands' commands "$@"
+}
+(( $+functions[_fujicli__subcmd__simulation__subcmd__get_commands] )) ||
+_fujicli__subcmd__simulation__subcmd__get_commands() {
+    local commands; commands=()
+    _describe -t commands 'fujicli simulation get commands' commands "$@"
+}
+(( $+functions[_fujicli__subcmd__simulation__subcmd__help_commands] )) ||
+_fujicli__subcmd__simulation__subcmd__help_commands() {
+    local commands; commands=(
+'list:List simulations' \
+'get:Get simulation' \
+'set:Set simulation parameters' \
+'export:Export simulation' \
+'import:Import simulation' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'fujicli simulation help commands' commands "$@"
+}
+(( $+functions[_fujicli__subcmd__simulation__subcmd__help__subcmd__export_commands] )) ||
+_fujicli__subcmd__simulation__subcmd__help__subcmd__export_commands() {
+    local commands; commands=()
+    _describe -t commands 'fujicli simulation help export commands' commands "$@"
+}
+(( $+functions[_fujicli__subcmd__simulation__subcmd__help__subcmd__get_commands] )) ||
+_fujicli__subcmd__simulation__subcmd__help__subcmd__get_commands() {
+    local commands; commands=()
+    _describe -t commands 'fujicli simulation help get commands' commands "$@"
+}
+(( $+functions[_fujicli__subcmd__simulation__subcmd__help__subcmd__help_commands] )) ||
+_fujicli__subcmd__simulation__subcmd__help__subcmd__help_commands() {
+    local commands; commands=()
+    _describe -t commands 'fujicli simulation help help commands' commands "$@"
+}
+(( $+functions[_fujicli__subcmd__simulation__subcmd__help__subcmd__import_commands] )) ||
+_fujicli__subcmd__simulation__subcmd__help__subcmd__import_commands() {
+    local commands; commands=()
+    _describe -t commands 'fujicli simulation help import commands' commands "$@"
+}
+(( $+functions[_fujicli__subcmd__simulation__subcmd__help__subcmd__list_commands] )) ||
+_fujicli__subcmd__simulation__subcmd__help__subcmd__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'fujicli simulation help list commands' commands "$@"
+}
+(( $+functions[_fujicli__subcmd__simulation__subcmd__help__subcmd__set_commands] )) ||
+_fujicli__subcmd__simulation__subcmd__help__subcmd__set_commands() {
+    local commands; commands=()
+    _describe -t commands 'fujicli simulation help set commands' commands "$@"
+}
+(( $+functions[_fujicli__subcmd__simulation__subcmd__import_commands] )) ||
+_fujicli__subcmd__simulation__subcmd__import_commands() {
+    local commands; commands=()
+    _describe -t commands 'fujicli simulation import commands' commands "$@"
+}
+(( $+functions[_fujicli__subcmd__simulation__subcmd__list_commands] )) ||
+_fujicli__subcmd__simulation__subcmd__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'fujicli simulation list commands' commands "$@"
+}
+(( $+functions[_fujicli__subcmd__simulation__subcmd__set_commands] )) ||
+_fujicli__subcmd__simulation__subcmd__set_commands() {
+    local commands; commands=()
+    _describe -t commands 'fujicli simulation set commands' commands "$@"
+}
+
+if [ "$funcstack[1]" = "_fujicli" ]; then
+    _fujicli "$@"
+else
+    compdef _fujicli fujicli
+fi

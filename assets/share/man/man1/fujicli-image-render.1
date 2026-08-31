@@ -1,0 +1,167 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH fujicli-image-render 1  "render "
+.SH NAME
+fujicli\-image\-render \- Render image
+.SH SYNOPSIS
+\fBfujicli image render\fR [\fB\-\-simulation\-file\fR] [\fB\-\-draft\fR] [\fB\-\-clarity\fR] [\fB\-\-color\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-color\-chrome\-effect\fR] [\fB\-\-color\-chrome\-fx\-blue\fR] [\fB\-\-color\-space\fR] [\fB\-\-dynamic\-range\fR] [\fB\-\-dynamic\-range\-priority\fR] [\fB\-\-exposure\-offset\fR] [\fB\-\-file\-type\fR] [\fB\-\-film\-simulation\fR] [\fB\-\-grain\-effect\fR] [\fB\-\-highlight\-tone\fR] [\fB\-\-image\-quality\fR] [\fB\-\-image\-size\fR] [\fB\-\-lens\-modulation\-optimizer\fR] [\fB\-\-monochromatic\-color\-temperature\fR] [\fB\-\-monochromatic\-color\-tint\fR] [\fB\-\-noise\-reduction\fR] [\fB\-\-shadow\-tone\fR] [\fB\-\-sharpness\fR] [\fB\-\-smooth\-skin\-effect\fR] [\fB\-\-teleconverter\fR] [\fB\-\-white\-balance\fR] [\fB\-\-white\-balance\-shift\-blue\fR] [\fB\-\-white\-balance\-shift\-red\fR] [\fB\-\-white\-balance\-temperature\fR] [\fB\-\-force\fR] [\fB\-d\fR|\fB\-\-device\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-target\-serial\-sha256\fR> <\fIINPUT\fR> <\fIOUTPUT\fR>
+.SH DESCRIPTION
+Render image
+.SH OPTIONS
+.TP
+\fB\-\-target\-serial\-sha256\fR \fI<TARGET_SERIAL_SHA256>\fR
+SHA\-256 fingerprint of the exact physical camera serial number
+.TP
+\fB\-\-simulation\-file\fR \fI<SIMULATION_FILE>\fR
+Path to exported simulation file
+.TP
+\fB\-\-draft\fR
+Render a lower\-quality (faster) preview
+.TP
+\fB\-\-clarity\fR \fI<CLARITY>\fR
+Clarity
+
+Schema range: \-5..=5. Step: 1. Camera firmware may further restrict values.
+.TP
+\fB\-\-color\fR \fI<COLOR>\fR
+Color
+
+Schema range: \-4..=4. Step: 1. Camera firmware may further restrict values.
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Log extra debugging information (multiple instances increase verbosity)
+.TP
+\fB\-\-color\-chrome\-effect\fR \fI<COLOR_CHROME_EFFECT>\fR
+Color Chrome Effect
+
+Schema values: strong, weak, off. Camera firmware may further restrict values.
+.TP
+\fB\-\-color\-chrome\-fx\-blue\fR \fI<COLOR_CHROME_FX_BLUE>\fR
+Color Chrome FX Blue
+
+Schema values: strong, weak, off. Camera firmware may further restrict values.
+.TP
+\fB\-\-color\-space\fR \fI<COLOR_SPACE>\fR
+Color Space
+
+Schema values: srgb, adobe_rgb. Camera firmware may further restrict values.
+.TP
+\fB\-\-dynamic\-range\fR \fI<DYNAMIC_RANGE>\fR
+Dynamic Range
+
+Schema values: auto, hdr100, hdr200, hdr400, hdr800, hdr800_plus. Camera firmware may further restrict values.
+.TP
+\fB\-\-dynamic\-range\-priority\fR \fI<DYNAMIC_RANGE_PRIORITY>\fR
+Dynamic Range Priority
+
+Schema values: auto, plus, strong, weak, off. Camera firmware may further restrict values.
+.TP
+\fB\-\-exposure\-offset\fR \fI<EXPOSURE_OFFSET>\fR
+Exposure Offset
+
+Schema values: \-3.0, \-2.7, \-2.3, \-2.0, \-1.7, \-1.3, \-1.0, \-0.7, \-0.3, 0.0, 0.3, 0.7, 1.0, 1.3, 1.7, 2.0, 2.3, 2.7, 3.0. Camera firmware may further restrict values.
+.TP
+\fB\-\-file\-type\fR \fI<FILE_TYPE>\fR
+File Type
+
+Schema values: jpeg, heif, tiff8, tiff16. Camera firmware may further restrict values.
+.TP
+\fB\-\-film\-simulation\fR \fI<FILM_SIMULATION>\fR
+Film Simulation
+
+Schema values: provia, velvia, astia, pro_neg_hi, pro_neg_std, monochrome, monochrome_ye, monochrome_r, monochrome_g, sepia, classic_chrome, acros, acros_ye, acros_r, acros_g, eterna, classic_negative, eterna_bleach_bypass, nostalgic_negative, reala_ace. Camera firmware may further restrict values.
+.TP
+\fB\-\-grain\-effect\fR \fI<GRAIN_EFFECT>\fR
+Grain Effect
+
+Schema values: strong_large, weak_large, strong_small, weak_small, off. Camera firmware may further restrict values.
+.TP
+\fB\-\-highlight\-tone\fR \fI<HIGHLIGHT_TONE>\fR
+Highlight Tone
+
+Schema range: \-2..=4. Step: 0.5. Camera firmware may further restrict values.
+.TP
+\fB\-\-image\-quality\fR \fI<IMAGE_QUALITY>\fR
+Image Quality
+
+Schema values: fine_raw, fine, normal_raw, normal, raw. Camera firmware may further restrict values.
+.TP
+\fB\-\-image\-size\fR \fI<IMAGE_SIZE>\fR
+Image Size
+
+Schema values: 7728x5152, 7728x4344, 5152x5152, 6864x5152, 6432x5152, 5472x3648, 5472x3080, 3648x3648, 4864x3648, 4560x3648, 3888x2592, 3888x2184, 2592x2592, 3456x2592, 3264x2592. Camera firmware may further restrict values.
+.TP
+\fB\-\-lens\-modulation\-optimizer\fR \fI<LENS_MODULATION_OPTIMIZER>\fR
+Lens Modulation Optimizer
+
+Schema values: on, off. Camera firmware may further restrict values.
+.TP
+\fB\-\-monochromatic\-color\-temperature\fR \fI<MONOCHROMATIC_COLOR_TEMPERATURE>\fR
+Monochromatic Color Temperature
+
+Schema range: \-18..=18. Step: 1. Camera firmware may further restrict values.
+.TP
+\fB\-\-monochromatic\-color\-tint\fR \fI<MONOCHROMATIC_COLOR_TINT>\fR
+Monochromatic Color Tint
+
+Schema range: \-18..=18. Step: 1. Camera firmware may further restrict values.
+.TP
+\fB\-\-noise\-reduction\fR \fI<NOISE_REDUCTION>\fR
+High ISO Noise Reduction
+
+Schema values: \-4, \-3, \-2, \-1, 0, 1, 2, 3, 4. Camera firmware may further restrict values.
+.TP
+\fB\-\-shadow\-tone\fR \fI<SHADOW_TONE>\fR
+Shadow Tone
+
+Schema range: \-2..=4. Step: 0.5. Camera firmware may further restrict values.
+.TP
+\fB\-\-sharpness\fR \fI<SHARPNESS>\fR
+Sharpness
+
+Schema range: \-4..=4. Step: 1. Camera firmware may further restrict values.
+.TP
+\fB\-\-smooth\-skin\-effect\fR \fI<SMOOTH_SKIN_EFFECT>\fR
+Smooth Skin Effect
+
+Schema values: strong, weak, off. Camera firmware may further restrict values.
+.TP
+\fB\-\-teleconverter\fR \fI<TELECONVERTER>\fR
+Teleconverter
+
+Schema values: on, off. Camera firmware may further restrict values.
+.TP
+\fB\-\-white\-balance\fR \fI<WHITE_BALANCE>\fR
+White Balance
+
+Schema values: as_shot, white_priority, auto, ambience_priority, custom1, custom2, custom3, temperature, daylight, shade, fluorescent1, fluorescent2, fluorescent3, incandescent, underwater. Camera firmware may further restrict values.
+.TP
+\fB\-\-white\-balance\-shift\-blue\fR \fI<WHITE_BALANCE_SHIFT_BLUE>\fR
+White Balance Shift Blue
+
+Schema range: \-9..=9. Step: 1. Camera firmware may further restrict values.
+.TP
+\fB\-\-white\-balance\-shift\-red\fR \fI<WHITE_BALANCE_SHIFT_RED>\fR
+White Balance Shift Red
+
+Schema range: \-9..=9. Step: 1. Camera firmware may further restrict values.
+.TP
+\fB\-\-white\-balance\-temperature\fR \fI<WHITE_BALANCE_TEMPERATURE>\fR
+White Balance Temperature
+
+Schema range: 2500..=10000. Step: 10. Camera firmware may further restrict values.
+.TP
+\fB\-\-force\fR
+Replace an existing regular output file
+.TP
+\fB\-d\fR, \fB\-\-device\fR \fI<DEVICE>\fR
+Manually specify target device using USB <BUS>.<ADDRESS>
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+<\fIINPUT\fR>
+RAF input file (use \*(Aq\-\*(Aq to read from stdin)
+.TP
+<\fIOUTPUT\fR>
+Output file (use \*(Aq\-\*(Aq to write to stdout)

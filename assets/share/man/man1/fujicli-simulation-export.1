@@ -1,0 +1,28 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH fujicli-simulation-export 1  "export "
+.SH NAME
+fujicli\-simulation\-export \- Export simulation
+.SH SYNOPSIS
+\fBfujicli simulation export\fR [\fB\-\-force\fR] [\fB\-d\fR|\fB\-\-device\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-h\fR|\fB\-\-help\fR] <\fISLOT\fR> <\fIOUTPUT\fR>
+.SH DESCRIPTION
+Export simulation
+.SH OPTIONS
+.TP
+\fB\-\-force\fR
+Replace an existing regular output file
+.TP
+\fB\-d\fR, \fB\-\-device\fR \fI<DEVICE>\fR
+Manually specify target device using USB <BUS>.<ADDRESS>
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Log extra debugging information (multiple instances increase verbosity)
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.TP
+<\fISLOT\fR>
+Simulation slot number
+.TP
+<\fIOUTPUT\fR>
+Output file (use \*(Aq\-\*(Aq to write to stdout)

@@ -28,19 +28,32 @@ release asset is published.
 ## Pipeline and artifacts
 
 The release workflow reruns the full Rust gate, verifies the version through
-Cargo and Nix, and then builds on Ubuntu 22.04 with two compiler jobs. It
+Cargo and Nix, and then builds each supported target with two compiler jobs. It
 publishes:
 
-- `fujicli-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz`, containing the stripped
-  binary and `LICENSE`;
+- deterministic ZIP archives for Linux x86_64, macOS x86_64, and Windows
+  x86_64, containing the stripped binary, `LICENSE`, shell completions for
+  Bash, Zsh, Fish, and PowerShell, and section 1 man pages for the complete
+  command hierarchy;
 - an SPDX JSON software bill of materials;
 - `SHA256SUMS`;
 - Sigstore bundles for build provenance and the SBOM.
 
-The Linux binary dynamically links to glibc (Ubuntu 22.04 baseline) and
+Completion files and man pages live below the archive's `share/` directory in
+the same package-relative paths used by the Nix package. The Linux binary
+dynamically links to glibc (Ubuntu 22.04 baseline) and
 `libusb-1.0.so.0`. Publication waits on the protected `release` environment,
 and the workflow verifies both the release attestation and the attested assets
 after upload.
+
+The completion and man assets are generated from the production clap command
+model and checked byte-for-byte by the Rust tests. After an intentional CLI
+grammar or help change, regenerate and review them with:
+
+```sh
+BLESS_CLI_ASSETS=1 cargo test --locked --bin fujicli \
+  packaged_cli_assets_match_the_command_model
+```
 
 No release is implied by a green CI run. A release exists only after the tag
 workflow and its protected publish job complete successfully.

@@ -110,7 +110,107 @@ pub fn handle(cli: Cli) -> Result<(), anyhow::Error> {
 
 #[cfg(test)]
 mod tests {
+    use std::{collections::BTreeMap, fs, path::Path};
+
+    use clap::CommandFactory;
+    use clap_complete::{Shell, generate};
+
     use super::Cli;
+
+    fn directory_files(root: &Path) -> std::io::Result<BTreeMap<String, Vec<u8>>> {
+        fn visit(
+            root: &Path,
+            directory: &Path,
+            files: &mut BTreeMap<String, Vec<u8>>,
+        ) -> std::io::Result<()> {
+            for entry in fs::read_dir(directory)? {
+                let entry = entry?;
+                let path = entry.path();
+                if path.is_dir() {
+                    visit(root, &path, files)?;
+                } else {
+                    let relative = path
+                        .strip_prefix(root)
+                        .expect("visited files must stay below their root")
+                        .to_string_lossy()
+                        .replace(std::path::MAIN_SEPARATOR, "/");
+                    files.insert(relative, fs::read(path)?);
+                }
+            }
+            Ok(())
+        }
+
+        let mut files = BTreeMap::new();
+        if !root.exists() {
+            return Ok(files);
+        }
+        visit(root, root, &mut files)?;
+        Ok(files)
+    }
+
+    fn generate_cli_assets(root: &Path) -> anyhow::Result<()> {
+        let completions = [
+            (Shell::Bash, "bash-completion/completions/fujicli"),
+            (Shell::Zsh, "zsh/site-functions/_fujicli"),
+            (Shell::Fish, "fish/vendor_completions.d/fujicli.fish"),
+            (Shell::PowerShell, "powershell/Completions/fujicli.ps1"),
+        ];
+
+        for (shell, relative_path) in completions {
+            let path = root.join(relative_path);
+            fs::create_dir_all(path.parent().expect("completion path has a parent"))?;
+            let mut output = Vec::new();
+            generate(shell, &mut Cli::command(), "fujicli", &mut output);
+            fs::write(path, output)?;
+        }
+
+        let man_directory = root.join("man/man1");
+        fs::create_dir_all(&man_directory)?;
+        clap_mangen::generate_to(Cli::command(), &man_directory)?;
+        for entry in fs::read_dir(man_directory)? {
+            let path = entry?.path();
+            let generated = fs::read_to_string(&path)?;
+            let mut normalized = String::with_capacity(generated.len());
+            for line in generated.lines() {
+                normalized.push_str(line.trim_end());
+                normalized.push('\n');
+            }
+            fs::write(path, normalized)?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn packaged_cli_assets_match_the_command_model() -> anyhow::Result<()> {
+        let temporary = tempfile::tempdir()?;
+        generate_cli_assets(temporary.path())?;
+        let actual = directory_files(temporary.path())?;
+        let asset_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/share");
+
+        if std::env::var_os("BLESS_CLI_ASSETS").is_some() {
+            if asset_root.exists() {
+                fs::remove_dir_all(&asset_root)?;
+            }
+            generate_cli_assets(&asset_root)?;
+        }
+
+        let expected = directory_files(&asset_root)?;
+        let actual_paths = actual.keys().collect::<Vec<_>>();
+        let expected_paths = expected.keys().collect::<Vec<_>>();
+        assert_eq!(
+            actual_paths, expected_paths,
+            "packaged CLI asset set is stale"
+        );
+        for (path, actual_bytes) in actual {
+            assert!(
+                expected
+                    .get(&path)
+                    .is_some_and(|bytes| bytes == &actual_bytes),
+                "packaged CLI asset {path} is stale; regenerate it with BLESS_CLI_ASSETS=1"
+            );
+        }
+        Ok(())
+    }
 
     #[test]
     fn image_extract_is_not_advertised_until_it_is_implemented() {

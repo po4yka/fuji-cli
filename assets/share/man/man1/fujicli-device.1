@@ -1,0 +1,23 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH fujicli-device 1  "device "
+.SH NAME
+fujicli\-device \- Manage devices
+.SH SYNOPSIS
+\fBfujicli device\fR [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-h\fR|\fB\-\-help\fR] <\fIsubcommands\fR>
+.SH DESCRIPTION
+Manage devices
+.SH OPTIONS
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Log extra debugging information (multiple instances increase verbosity)
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.SH SUBCOMMANDS
+.TP
+fujicli\-device\-list(1)
+List cameras
+.TP
+fujicli\-device\-info(1)
+Get camera info
