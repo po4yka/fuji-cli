@@ -635,12 +635,15 @@ impl Ptp {
         let next_id = id
             .checked_add(1)
             .ok_or_else(|| anyhow!("PTP session-control permit identifier overflow"))?;
-        self.send_unchecked_for_operation(
-            PtpOperation::Standard,
-            CommandCode::OpenSession,
-            &[session_id],
-            None,
-        )?;
+        open_session_with_stale_recovery(session_id, |code, params| {
+            if code == CommandCode::OpenSession {
+                // PTP requires OpenSession to carry TransactionID 0; the X-T5
+                // answers ParameterNotSupported (0x2006) to a retried
+                // OpenSession that continues the counter after CloseSession.
+                self.transaction_id = 0;
+            }
+            self.send_unchecked_for_operation(PtpOperation::Standard, code, params, None)
+        })?;
         self.next_session_control_permit_id = next_id;
         self.active_session_control_permit_id = Some(id);
         Ok(SessionControlPermit {
@@ -1417,6 +1420,33 @@ fn send_with_transport_and_deadline<T: BulkTransport, C: Clock>(
     result
 }
 
+/// Opens a PTP session, recovering once from a session another host process
+/// left open on the camera (macOS `ptpcamerad` does this routinely): the camera
+/// answers `SessionAlreadyOpen`, so send `CloseSession` and retry `OpenSession`.
+/// Any other failure, including a failed retry, propagates unchanged.
+fn open_session_with_stale_recovery<S>(session_id: u32, mut send: S) -> anyhow::Result<()>
+where
+    S: FnMut(CommandCode, &[u32]) -> anyhow::Result<Vec<u8>>,
+{
+    match send(CommandCode::OpenSession, &[session_id]) {
+        Ok(_) => Ok(()),
+        Err(error) if is_session_already_open(&error) => {
+            debug!("Camera reports a stale PTP session; closing it and retrying OpenSession");
+            send(CommandCode::CloseSession, &[])
+                .context("closing the stale PTP session left by another host process")?;
+            send(CommandCode::OpenSession, &[session_id]).map(drop)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn is_session_already_open(error: &anyhow::Error) -> bool {
+    matches!(
+        error.downcast_ref::<error::Error>(),
+        Some(error::Error::Response(code)) if *code == ResponseCode::SessionAlreadyOpen as u16
+    )
+}
+
 fn encode_command_params(params: &[u32]) -> anyhow::Result<Vec<u8>> {
     let payload_capacity = params
         .len()
@@ -1642,6 +1672,7 @@ mod tests {
     use std::{
         cell::RefCell,
         collections::VecDeque,
+        rc::Rc,
         time::{Duration, Instant},
     };
 
@@ -1650,12 +1681,12 @@ mod tests {
         ContainerType, Deadline, MAX_PTP_CONTAINER_PAYLOAD_BYTES, PTP_BULK_TIMEOUT,
         PTP_DATA_IDLE_TIMEOUT, PTP_TRANSACTION_TIMEOUT, PtpDeadlineExceeded, PtpDeadlineKind,
         PtpDeadlinePhase, PtpOperation, ResponseCode, TransportOutcome, TransportSummary,
-        encode_command_params, read_container, read_container_with_deadline, send_with_transport,
-        send_with_transport_and_clock, send_with_transport_and_read_state,
-        send_with_transport_for_operation_and_clock, send_with_transport_until_and_clock,
-        session_is_safe_to_close, validate_bulk_read_geometry, validate_mutation_permit,
-        validate_raw_conversion_live_envelope, validate_read_only_send, write_all_bulk,
-        write_container,
+        encode_command_params, open_session_with_stale_recovery, read_container,
+        read_container_with_deadline, send_with_transport, send_with_transport_and_clock,
+        send_with_transport_and_read_state, send_with_transport_for_operation_and_clock,
+        send_with_transport_until_and_clock, session_is_safe_to_close, validate_bulk_read_geometry,
+        validate_mutation_permit, validate_raw_conversion_live_envelope, validate_read_only_send,
+        write_all_bulk, write_container,
     };
 
     #[test]
@@ -1704,6 +1735,92 @@ mod tests {
             result.is_err(),
             "a raw property write must require an explicit operation-scoped permit"
         );
+    }
+
+    type SentCommands = Rc<RefCell<Vec<(CommandCode, Vec<u32>)>>>;
+
+    fn scripted_session_sender(
+        responses: Vec<anyhow::Result<Vec<u8>>>,
+    ) -> (
+        SentCommands,
+        impl FnMut(CommandCode, &[u32]) -> anyhow::Result<Vec<u8>>,
+    ) {
+        let sent = Rc::new(RefCell::new(Vec::new()));
+        let log = Rc::clone(&sent);
+        let mut responses = VecDeque::from(responses);
+        let send = move |code: CommandCode, params: &[u32]| {
+            log.borrow_mut().push((code, params.to_vec()));
+            responses
+                .pop_front()
+                .unwrap_or_else(|| Err(anyhow::anyhow!("unexpected extra PTP command {code:?}")))
+        };
+        (sent, send)
+    }
+
+    fn response_error(code: ResponseCode) -> anyhow::Error {
+        super::error::Error::Response(code as u16).into()
+    }
+
+    #[test]
+    fn open_session_recovers_once_from_a_stale_session() {
+        let (sent, send) = scripted_session_sender(vec![
+            Err(response_error(ResponseCode::SessionAlreadyOpen)),
+            Ok(vec![]),
+            Ok(vec![]),
+        ]);
+
+        open_session_with_stale_recovery(1, send)
+            .expect("a stale session must be closed and OpenSession retried");
+
+        assert_eq!(
+            *sent.borrow(),
+            vec![
+                (CommandCode::OpenSession, vec![1]),
+                (CommandCode::CloseSession, vec![]),
+                (CommandCode::OpenSession, vec![1]),
+            ]
+        );
+    }
+
+    #[test]
+    fn open_session_does_not_retry_other_failures() {
+        let (sent, send) =
+            scripted_session_sender(vec![Err(response_error(ResponseCode::DeviceBusy))]);
+
+        let error = open_session_with_stale_recovery(1, send)
+            .expect_err("only SessionAlreadyOpen is recoverable");
+
+        assert!(error.to_string().contains("DeviceBusy"), "{error}");
+        assert_eq!(sent.borrow().len(), 1);
+    }
+
+    #[test]
+    fn open_session_propagates_a_failed_retry_without_looping() {
+        let (sent, send) = scripted_session_sender(vec![
+            Err(response_error(ResponseCode::SessionAlreadyOpen)),
+            Ok(vec![]),
+            Err(response_error(ResponseCode::SessionAlreadyOpen)),
+        ]);
+
+        let error = open_session_with_stale_recovery(1, send)
+            .expect_err("a second SessionAlreadyOpen must not trigger another recovery");
+
+        assert!(error.to_string().contains("SessionAlreadyOpen"), "{error}");
+        assert_eq!(sent.borrow().len(), 3);
+    }
+
+    #[test]
+    fn open_session_reports_a_failed_stale_close() {
+        let (sent, send) = scripted_session_sender(vec![
+            Err(response_error(ResponseCode::SessionAlreadyOpen)),
+            Err(anyhow::anyhow!("bulk write failed")),
+        ]);
+
+        let error = open_session_with_stale_recovery(1, send)
+            .expect_err("a failed CloseSession must surface instead of retrying OpenSession");
+
+        assert!(error.to_string().contains("stale PTP session"), "{error}");
+        assert_eq!(sent.borrow().len(), 2);
     }
 
     #[test]

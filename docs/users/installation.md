@@ -250,8 +250,21 @@ rules may independently grant access.
 
 ### macOS
 
-Usually no driver changes are required. Connect the camera, make sure it is in
+No driver changes are required. Connect the camera, make sure it is in
 PTP / USB mode in its menus, and `fujicli device list` should see it.
+
+macOS starts `ptpcamerad` (Image Capture) for every PTP camera and it claims the
+interface, so `device info` and other live commands fail with
+`Access denied (insufficient permissions)`. Stop it right before running
+`fujicli`; it runs as your user and macOS restarts it on the next USB event:
+
+```sh
+pkill -x ptpcamerad; fujicli device info
+```
+
+A stopped `ptpcamerad` leaves its PTP session open on the camera. `fujicli`
+detects the resulting `SessionAlreadyOpen (0x201e)` on `OpenSession`, sends
+`CloseSession`, and retries once, so no camera reconnect is needed.
 
 ### Windows
 
