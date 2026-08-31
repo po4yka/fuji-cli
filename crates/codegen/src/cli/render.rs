@@ -4,7 +4,7 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
 use crate::{
-    ast::{Camera, Field, FujiOption},
+    ast::{Camera, Field, FujiOption, SpecKind},
     common::{options, renders},
     util::ident::safe_upper_camel_case_ident,
 };
@@ -12,6 +12,7 @@ use crate::{
 struct Entry {
     ident: proc_macro2::Ident,
     type_path: TokenStream,
+    kind: SpecKind,
 }
 
 pub fn generate(
@@ -85,7 +86,11 @@ fn build_entries(
             let type_ident = safe_upper_camel_case_ident(&opt.id);
             let options_path = options::path();
             let type_path = quote! { #options_path::#type_ident };
-            Entry { ident, type_path }
+            Entry {
+                ident,
+                type_path,
+                kind: opt.spec.kind(),
+            }
         })
         .collect()
 }
@@ -94,7 +99,7 @@ fn generate_struct(entries: &[Entry]) -> TokenStream {
     let fields = entries.iter().map(|entry| {
         let ident = &entry.ident;
         let ty = &entry.type_path;
-        let attrs = quote! { #[clap(long, allow_hyphen_values(true))] };
+        let attrs = super::argument_attrs(entry.kind);
         quote! {
             #attrs
             pub #ident: Option<#ty>,

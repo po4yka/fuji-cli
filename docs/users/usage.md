@@ -175,6 +175,9 @@ The exact set of `--<field>` flags is generated from the FML schema; run
 `fujicli simulation set --help` to list what your build supports. Aliases work -
 both `--white-balance auto` and `--white-balance Auto` parse to the same
 variant, and most options accept short forms (e.g. `mono` for `monochrome`).
+Numeric options accept negative values as separate tokens. For a string or enum
+value that itself starts with `-`, use the attached form `--option=-value`; an
+unattached `--next-flag` remains a flag and a missing value is a usage error.
 Pass `--json` for machine-readable output on `get`/`list`.
 
 `get`, `export`, and `list` are not wire-level reads: selecting a stored profile

@@ -182,6 +182,93 @@ mod tests {
     }
 
     #[test]
+    fn generated_string_option_does_not_consume_following_flag() {
+        let error = Cli::try_parse_from([
+            "fujicli",
+            "simulation",
+            "set",
+            "c1",
+            "--target-serial-sha256",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+            "--custom-setting-name",
+            "--verbose",
+        ])
+        .expect_err("--verbose must not become a custom-setting-name value");
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::InvalidValue);
+        assert!(error.to_string().contains("--custom-setting-name"));
+    }
+
+    #[test]
+    fn generated_enum_option_does_not_consume_following_flag() {
+        let error = Cli::try_parse_from([
+            "fujicli",
+            "image",
+            "render",
+            "--target-serial-sha256",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+            "--film-simulation",
+            "--draft",
+            "input.raf",
+            "output.jpg",
+        ])
+        .expect_err("--draft must not become a film-simulation value");
+        let diagnostic = error.to_string();
+
+        assert!(diagnostic.contains("a value is required"), "{diagnostic}");
+        assert!(diagnostic.contains("--film-simulation"), "{diagnostic}");
+        assert!(
+            !diagnostic.contains("invalid value '--draft'"),
+            "{diagnostic}"
+        );
+    }
+
+    #[test]
+    fn generated_numeric_option_accepts_negative_value_before_following_flag() {
+        let parsed = Cli::try_parse_from([
+            "fujicli",
+            "simulation",
+            "set",
+            "c1",
+            "--target-serial-sha256",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+            "--shadow-tone",
+            "-1.0",
+            "--verbose",
+        ])
+        .expect("negative numeric values and the following flag must both parse");
+
+        assert_eq!(parsed.options.verbose, 1);
+        let super::Commands::Simulation(super::SimulationCmd::Set { simulation, .. }) =
+            parsed.command
+        else {
+            panic!("expected simulation set command");
+        };
+        assert!(simulation.shadow_tone.is_some());
+    }
+
+    #[test]
+    fn generated_string_option_accepts_attached_hyphen_value() {
+        let parsed = Cli::try_parse_from([
+            "fujicli",
+            "simulation",
+            "set",
+            "c1",
+            "--target-serial-sha256",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+            "--custom-setting-name=--draft",
+        ])
+        .expect("an attached string value may start with a hyphen");
+
+        let super::Commands::Simulation(super::SimulationCmd::Set { simulation, .. }) =
+            parsed.command
+        else {
+            panic!("expected simulation set command");
+        };
+        assert!(simulation.custom_setting_name.is_some());
+    }
+
+    #[test]
     fn simulation_reads_reject_emulation_without_an_impossible_acknowledgement_hint() {
         let cli = Cli::try_parse_from(["fujicli", "--emulate", "04cb:02fc", "simulation", "list"])
             .expect("emulated simulation command must parse before policy authorization");
