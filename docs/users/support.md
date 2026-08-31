@@ -62,6 +62,24 @@ capability/descriptor set also fails closed before a write. Adding a row require
 captured device evidence and an explicit FML preflight profile; a nearby
 firmware version is never assumed compatible.
 
+### Latest physical-device verification
+
+X-T5, PTP firmware `4.31`, USB mode `0x6` (USB RAW CONV./BACKUP RESTORE),
+battery 65%, macOS host, 2026-08-31, commits `e0654cf` and `3706f01`:
+
+- Verified: `device list`, `device info`, `backup export` (twice, identical
+  artifact SHA-256, 38780-byte payload), `backup inspect`. Simulation commands
+  fail closed with the unverified-profile error, as intended (`N`).
+- Not exercised: `backup import`, `image render`, `image recover` on a real
+  object. The Backups `Y` covers restore only through the earlier historical
+  evidence, not this run.
+- Before `e0654cf`, `backup export` failed on this camera because it answers
+  `GetObjectInfo` without the 1020-byte padding seen in the original capture.
+- In USB Card Reader mode the camera exposes no Fuji properties and every
+  command fails with `DevicePropNotSupported (0x200a)`; the USB mode above is
+  required. See the macOS notes in [installation](installation.md) for
+  `ptpcamerad`.
+
 The generated X-T5 capability matrix records Reala Ace as unavailable on
 firmware `3.01` and available from `4.00`. This records option availability only.
 Firmware `4.31` retains the current RAW code/padding/order assumptions for
