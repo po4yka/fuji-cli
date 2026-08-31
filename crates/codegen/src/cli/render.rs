@@ -13,6 +13,8 @@ struct Entry {
     ident: proc_macro2::Ident,
     type_path: TokenStream,
     kind: SpecKind,
+    help: String,
+    long_help: String,
 }
 
 pub fn generate(
@@ -90,6 +92,8 @@ fn build_entries(
                 ident,
                 type_path,
                 kind: opt.spec.kind(),
+                help: opt.spec.name().to_owned(),
+                long_help: super::option_long_help(&opt.spec),
             }
         })
         .collect()
@@ -99,7 +103,7 @@ fn generate_struct(entries: &[Entry]) -> TokenStream {
     let fields = entries.iter().map(|entry| {
         let ident = &entry.ident;
         let ty = &entry.type_path;
-        let attrs = super::argument_attrs(entry.kind);
+        let attrs = super::argument_attrs(entry.kind, &entry.help, &entry.long_help);
         quote! {
             #attrs
             pub #ident: Option<#ty>,

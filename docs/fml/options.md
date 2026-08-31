@@ -35,7 +35,8 @@ Which of the two shapes a numeric option gets depends on its `encoding`:
 ## Rules
 
 `rules` constrain the logical (user-facing) value. They drive parsing, range
-checks, and the bounds the generated `MIN`/`MAX`/`STEP` consts expose.
+checks, the bounds the generated `MIN`/`MAX`/`STEP` consts expose, and the
+schema-derived details shown by leaf-command `--help`.
 
 ```cue
 // integer

@@ -23,6 +23,12 @@ Every subcommand has a short alias: `device -> d`, `simulation -> s`,
 aliased (`list -> l`, `get -> g`, `set -> s`, `export -> e`, `import -> i`,
 `render -> r`).
 
+Leaf commands with schema-driven settings provide two help levels. Use `-h` for
+a compact list with each setting's human-readable name, or `--help` for FML
+constraints: numeric ranges and steps, string length limits, and canonical enum
+or lookup values. These are the global schema limits; the connected camera's
+exact firmware profile may support a narrower value set.
+
 Only `-v / --verbose` is global. Output formatting, camera selection, and
 emulation options are exposed only by leaf commands that consume them; put
 those options after the leaf command. A meaningless combination such as

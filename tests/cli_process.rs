@@ -28,6 +28,73 @@ fn help_is_stdout_only_and_successful() {
 }
 
 #[test]
+fn schema_driven_option_help_names_the_setting() {
+    let output = run(&["simulation", "set", "--help"]);
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let help = String::from_utf8(output.stdout).expect("help output must be UTF-8");
+    assert!(help.contains("High ISO Noise Reduction"), "{help}");
+}
+
+#[test]
+fn schema_driven_numeric_help_shows_range_and_step() {
+    let output = run(&["simulation", "set", "--help"]);
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let help = String::from_utf8(output.stdout).expect("help output must be UTF-8");
+    let help = help.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        help.contains("Clarity Schema range: -5..=5. Step: 1."),
+        "{help}"
+    );
+}
+
+#[test]
+fn schema_driven_string_help_shows_length_limit() {
+    let output = run(&["simulation", "set", "--help"]);
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let help = String::from_utf8(output.stdout).expect("help output must be UTF-8");
+    let help = help.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        help.contains("Custom Setting Name Maximum length: 25 characters."),
+        "{help}"
+    );
+}
+
+#[test]
+fn schema_driven_enum_help_lists_canonical_values() {
+    let output = run(&["simulation", "set", "--help"]);
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let help = String::from_utf8(output.stdout).expect("help output must be UTF-8");
+    let help = help.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        help.contains("Color Space Schema values: srgb, adobe_rgb."),
+        "{help}"
+    );
+}
+
+#[test]
+fn schema_driven_numeric_lookup_help_lists_values_in_numeric_order() {
+    let output = run(&["image", "render", "--help"]);
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let help = String::from_utf8(output.stdout).expect("help output must be UTF-8");
+    let help = help.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        help.contains("Exposure Offset Schema values: -3.0, -2.7, -2.3"),
+        "{help}"
+    );
+    assert!(help.contains("2.3, 2.7, 3.0."), "{help}");
+}
+
+#[test]
 fn version_has_the_stable_machine_readable_shape() {
     let output = run(&["--version"]);
 
