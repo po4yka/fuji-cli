@@ -63,6 +63,40 @@ enum PtpDeadlineKind {
     Hard,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TransportOutcome {
+    Ok,
+    Error,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TransportSummary {
+    code: CommandCode,
+    outcome: TransportOutcome,
+    response_bytes: usize,
+    read_chunk_bytes: usize,
+    write_chunk_bytes: usize,
+    elapsed_ms: u128,
+}
+
+impl fmt::Display for TransportSummary {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let outcome = match self.outcome {
+            TransportOutcome::Ok => "ok",
+            TransportOutcome::Error => "error",
+        };
+        write!(
+            formatter,
+            "PTP transport complete: code={:?}, outcome={outcome}, response_bytes={}, read_chunk_bytes={}, write_chunk_bytes={}, elapsed_ms={}",
+            self.code,
+            self.response_bytes,
+            self.read_chunk_bytes,
+            self.write_chunk_bytes,
+            self.elapsed_ms
+        )
+    }
+}
+
 #[derive(Debug)]
 struct PtpDeadlineExceeded {
     phase: PtpDeadlinePhase,
@@ -537,25 +571,28 @@ impl Ptp {
         result: anyhow::Result<Vec<u8>>,
     ) -> anyhow::Result<Vec<u8>> {
         let elapsed = started.elapsed();
+        let summary = TransportSummary {
+            code,
+            outcome: if result.is_ok() {
+                TransportOutcome::Ok
+            } else {
+                TransportOutcome::Error
+            },
+            response_bytes: result.as_ref().map_or(0, Vec::len),
+            read_chunk_bytes: read_chunk_size,
+            write_chunk_bytes: write_chunk_size,
+            elapsed_ms: elapsed.as_millis(),
+        };
+        trace!("{summary}");
+
         match result {
             Ok(response) => {
-                trace!(
-                    "PTP transport complete: code={code:?}, outcome=ok, response_bytes={}, read_chunk_bytes={read_chunk_size}, write_chunk_bytes={write_chunk_size}, elapsed_ms={}",
-                    response.len(),
-                    elapsed.as_millis()
-                );
                 if is_read_only_command(code) && !self.bulk_read_state.has_pending_bytes() {
                     self.observe_read_success(response.len(), elapsed);
                 }
                 Ok(response)
             }
-            Err(error) => {
-                trace!(
-                    "PTP transport complete: code={code:?}, outcome=error, response_bytes=0, read_chunk_bytes={read_chunk_size}, write_chunk_bytes={write_chunk_size}, elapsed_ms={}",
-                    elapsed.as_millis()
-                );
-                Err(error)
-            }
+            Err(error) => Err(error),
         }
     }
 
@@ -634,11 +671,14 @@ impl Ptp {
     ) -> anyhow::Result<()> {
         debug!("Closing PTP session");
         self.validate_session_control_permit(permit)?;
+        let started = Instant::now();
+        let read_chunk_size = self.chunk_policy.read.effective_bytes;
+        let write_chunk_size = self.chunk_policy.write.effective_bytes;
         let result = send_with_transport_until_and_read_state(
             &self.handle,
             self.bulk_in,
             self.bulk_out,
-            self.chunk_policy.write.effective_bytes,
+            write_chunk_size,
             &mut self.bulk_read_state,
             &mut self.transaction_id,
             &mut self.poisoned,
@@ -648,7 +688,14 @@ impl Ptp {
             deadline,
         );
         self.active_session_control_permit_id = None;
-        result.map(|_| ())
+        self.finish_transport_transaction(
+            CommandCode::CloseSession,
+            read_chunk_size,
+            write_chunk_size,
+            started,
+            result,
+        )
+        .map(|_| ())
     }
 
     pub(crate) fn get_info(&mut self) -> anyhow::Result<DeviceInfo> {
@@ -1602,13 +1649,31 @@ mod tests {
         BulkReadState, BulkTransport, Clock, CommandCode, ContainerCode, ContainerInfo,
         ContainerType, Deadline, MAX_PTP_CONTAINER_PAYLOAD_BYTES, PTP_BULK_TIMEOUT,
         PTP_DATA_IDLE_TIMEOUT, PTP_TRANSACTION_TIMEOUT, PtpDeadlineExceeded, PtpDeadlineKind,
-        PtpDeadlinePhase, PtpOperation, ResponseCode, encode_command_params, read_container,
-        read_container_with_deadline, send_with_transport, send_with_transport_and_clock,
-        send_with_transport_and_read_state, send_with_transport_for_operation_and_clock,
-        send_with_transport_until_and_clock, session_is_safe_to_close, validate_bulk_read_geometry,
-        validate_mutation_permit, validate_raw_conversion_live_envelope, validate_read_only_send,
-        write_all_bulk, write_container,
+        PtpDeadlinePhase, PtpOperation, ResponseCode, TransportOutcome, TransportSummary,
+        encode_command_params, read_container, read_container_with_deadline, send_with_transport,
+        send_with_transport_and_clock, send_with_transport_and_read_state,
+        send_with_transport_for_operation_and_clock, send_with_transport_until_and_clock,
+        session_is_safe_to_close, validate_bulk_read_geometry, validate_mutation_permit,
+        validate_raw_conversion_live_envelope, validate_read_only_send, write_all_bulk,
+        write_container,
     };
+
+    #[test]
+    fn close_session_transport_summary_is_bounded_and_complete() {
+        let summary = TransportSummary {
+            code: CommandCode::CloseSession,
+            outcome: TransportOutcome::Ok,
+            response_bytes: 0,
+            read_chunk_bytes: 65_536,
+            write_chunk_bytes: 16_384,
+            elapsed_ms: 7,
+        };
+
+        assert_eq!(
+            summary.to_string(),
+            "PTP transport complete: code=CloseSession, outcome=ok, response_bytes=0, read_chunk_bytes=65536, write_chunk_bytes=16384, elapsed_ms=7"
+        );
+    }
 
     #[test]
     fn healthy_session_with_camera_processing_in_flight_is_not_safe_to_close() {
