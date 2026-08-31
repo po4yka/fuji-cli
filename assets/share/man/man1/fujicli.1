@@ -47,3 +47,50 @@ Web:
 v0.2.0
 .SH AUTHORS
 Nikita Pochaev
+.SH EXIT STATUS
+.TP
+\fB0\fR
+Success.
+.TP
+\fB1\fR
+Failure before a camera write or another known-state failure. Investigate the
+cause before retrying.
+.TP
+\fB2\fR
+The command grammar was rejected; correct the arguments before retrying.
+.TP
+\fB3\fR
+A state-changing camera operation was sent but its outcome could not be
+confirmed; camera state is unknown. Do not retry the mutation automatically.
+Inspect the physical camera and establish its actual state first.
+.TP
+\fB130\fR
+Interrupted by Ctrl\-C outside a camera write.
+.SH OUTPUT
+Requested data is written to stdout. Diagnostics and logs are written to
+stderr. Commands that support \fB\-\-json\fR write one JSON document followed by
+a newline. \fBfujicli backup export \-\fR writes a binary backup artifact to
+stdout and does not add an artifact fingerprint to that stream. A consumer
+closing stdout early is treated as successful termination.
+.SH ENVIRONMENT
+No application-specific environment variables configure fujicli at runtime.
+Use command-line options such as \fB\-v\fR to control supported behavior.
+.SH FILES
+Distributions may install generated manual pages under
+\fBshare/man/man1/fujicli*.1\fR and generated completion scripts under the
+conventional \fBshare/bash\-completion/completions\fR,
+\fBshare/zsh/site\-functions\fR,
+\fBshare/fish/vendor_completions.d\fR, and
+\fBshare/powershell/Completions\fR directories. These locations are packaging
+conventions, not runtime configuration paths.
+.SH SAFETY
+Before a camera mutation, verify the intended physical camera and review the
+command's own help. Exit status 3 means camera state is unknown; do not retry
+the mutation automatically. Verbose diagnostics can contain device and host
+context, so privacy-review them before sharing.
+.SH SEE ALSO
+.BR fujicli\-device (1),
+.BR fujicli\-backup (1),
+.BR fujicli\-simulation (1),
+.BR fujicli\-image (1),
+.BR fujicli\-completion (1)

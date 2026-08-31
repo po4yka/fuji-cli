@@ -179,6 +179,73 @@ mod tests {
 
     use super::Cli;
 
+    struct ManualSection {
+        heading: &'static str,
+        body: &'static str,
+    }
+
+    const TOP_LEVEL_MANUAL_SECTIONS: &[ManualSection] = &[
+        ManualSection {
+            heading: "EXIT STATUS",
+            body: r".TP
+\fB0\fR
+Success.
+.TP
+\fB1\fR
+Failure before a camera write or another known-state failure. Investigate the
+cause before retrying.
+.TP
+\fB2\fR
+The command grammar was rejected; correct the arguments before retrying.
+.TP
+\fB3\fR
+A state-changing camera operation was sent but its outcome could not be
+confirmed; camera state is unknown. Do not retry the mutation automatically.
+Inspect the physical camera and establish its actual state first.
+.TP
+\fB130\fR
+Interrupted by Ctrl\-C outside a camera write.",
+        },
+        ManualSection {
+            heading: "OUTPUT",
+            body: r"Requested data is written to stdout. Diagnostics and logs are written to
+stderr. Commands that support \fB\-\-json\fR write one JSON document followed by
+a newline. \fBfujicli backup export \-\fR writes a binary backup artifact to
+stdout and does not add an artifact fingerprint to that stream. A consumer
+closing stdout early is treated as successful termination.",
+        },
+        ManualSection {
+            heading: "ENVIRONMENT",
+            body: r"No application-specific environment variables configure fujicli at runtime.
+Use command-line options such as \fB\-v\fR to control supported behavior.",
+        },
+        ManualSection {
+            heading: "FILES",
+            body: r"Distributions may install generated manual pages under
+\fBshare/man/man1/fujicli*.1\fR and generated completion scripts under the
+conventional \fBshare/bash\-completion/completions\fR,
+\fBshare/zsh/site\-functions\fR,
+\fBshare/fish/vendor_completions.d\fR, and
+\fBshare/powershell/Completions\fR directories. These locations are packaging
+conventions, not runtime configuration paths.",
+        },
+        ManualSection {
+            heading: "SAFETY",
+            body: r"Before a camera mutation, verify the intended physical camera and review the
+command's own help. Exit status 3 means camera state is unknown; do not retry
+the mutation automatically. Verbose diagnostics can contain device and host
+context, so privacy-review them before sharing.",
+        },
+        ManualSection {
+            heading: "SEE ALSO",
+            body: r".BR fujicli\-device (1),
+.BR fujicli\-backup (1),
+.BR fujicli\-simulation (1),
+.BR fujicli\-image (1),
+.BR fujicli\-completion (1)",
+        },
+    ];
+
     fn directory_files(root: &Path) -> std::io::Result<BTreeMap<String, Vec<u8>>> {
         fn visit(
             root: &Path,
@@ -229,6 +296,17 @@ mod tests {
         let man_directory = root.join("man/man1");
         fs::create_dir_all(&man_directory)?;
         clap_mangen::generate_to(Cli::command(), &man_directory)?;
+        let top_level_manual = man_directory.join("fujicli.1");
+        let mut top_level = fs::read_to_string(&top_level_manual)?;
+        for section in TOP_LEVEL_MANUAL_SECTIONS {
+            top_level.push_str(".SH ");
+            top_level.push_str(section.heading);
+            top_level.push('\n');
+            top_level.push_str(section.body);
+            top_level.push('\n');
+        }
+        fs::write(top_level_manual, top_level)?;
+
         for entry in fs::read_dir(man_directory)? {
             let path = entry?.path();
             let generated = fs::read_to_string(&path)?;
@@ -270,6 +348,56 @@ mod tests {
                     .is_some_and(|bytes| bytes == &actual_bytes),
                 "packaged CLI asset {path} is stale; regenerate it with BLESS_CLI_ASSETS=1"
             );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn generated_manuals_scope_the_top_level_operational_contract() -> anyhow::Result<()> {
+        let temporary = tempfile::tempdir()?;
+        generate_cli_assets(temporary.path())?;
+        let manuals = directory_files(&temporary.path().join("man/man1"))?;
+        let top_level = String::from_utf8(
+            manuals
+                .get("fujicli.1")
+                .expect("top-level manual must be generated")
+                .clone(),
+        )?;
+
+        for section in [
+            "EXIT STATUS",
+            "OUTPUT",
+            "ENVIRONMENT",
+            "FILES",
+            "SAFETY",
+            "SEE ALSO",
+        ] {
+            assert!(top_level.contains(&format!(".SH {section}\n")), "{section}");
+        }
+        assert!(top_level.contains("another known-state failure"));
+        assert!(top_level.contains("Investigate the\ncause before retrying"));
+        assert!(top_level.contains("does not add an artifact fingerprint"));
+        assert!(top_level.contains("camera state is unknown"));
+        assert!(top_level.contains("Do not retry the mutation automatically"));
+
+        for (path, contents) in manuals {
+            if path == "fujicli.1" {
+                continue;
+            }
+            let contents = String::from_utf8(contents)?;
+            for section in [
+                "EXIT STATUS",
+                "OUTPUT",
+                "ENVIRONMENT",
+                "FILES",
+                "SAFETY",
+                "SEE ALSO",
+            ] {
+                assert!(
+                    !contents.contains(&format!(".SH {section}\n")),
+                    "top-level {section} leaked into {path}"
+                );
+            }
         }
         Ok(())
     }

@@ -194,7 +194,7 @@ fn backup_inspect_json_has_a_stable_process_contract() -> anyhow::Result<()> {
 }
 
 #[test]
-fn help_is_stdout_only_and_successful() {
+fn docs_contract_help_needs_no_hardware_and_is_stdout_only() {
     let output = run(&["--help"]);
     let executable_name = Path::new(env!("CARGO_BIN_EXE_fujicli"))
         .file_name()
@@ -340,7 +340,7 @@ fn version_has_the_stable_machine_readable_shape() {
 }
 
 #[test]
-fn invalid_subcommand_is_a_usage_error_on_stderr() {
+fn docs_contract_invalid_grammar_is_a_usage_error_on_stderr() {
     let output = run(&["not-a-command"]);
 
     assert_eq!(output.status.code(), Some(2));
@@ -931,7 +931,7 @@ fn simulation_export_force_allows_existing_output_before_usb_access() -> anyhow:
 }
 
 #[test]
-fn backup_inspect_validates_artifact_without_usb_device() -> anyhow::Result<()> {
+fn docs_contract_offline_backup_inspect_needs_no_hardware() -> anyhow::Result<()> {
     let directory = tempdir()?;
     let path = directory.path().join("camera.fbk");
     let artifact = sample_backup_artifact()?;
