@@ -58,6 +58,23 @@ a privacy-reviewed vendor USB capture.
   (length, hex, decoded scalar or string); the simulation set includes the
   custom setting name text. Privacy-review the diagnostics before sharing them.
 
+### macOS: Image Capture claims every PTP camera
+
+macOS auto-claims PTP cameras the moment another application asks about them:
+`PTPCamera` (one process per camera) on older macOS, `ptpcamerad` on Ventura
+and later, which launches lazily and restarts itself while a triggering app is
+still running. `pkill -x ptpcamerad` (or `killall PTPCamera`) right before each
+run is the ecosystem-standard remedy (gphoto2 documents the same); `fujicli`
+recovers from the stale PTP session the killed daemon leaves behind. No
+SIP-preserving permanent disable is documented anywhere; `launchctl disable`
+does not reliably survive. If repeated killing gets in the way of a long
+reversing session, mejedi/mac-gphoto-enabler patches the per-user Image Capture
+device-discovery database so the daemon is never launched for a specific
+device - an unsupported, reverse-engineered mechanism, so prefer the kill. See
+[installation](../users/installation.md) for the user-facing note and
+[fuji-ptp-ecosystem-research](../internals/fuji-ptp-ecosystem-research.md) for
+sources.
+
 ## Probing Existing PTP Surface
 
 ### Base Info

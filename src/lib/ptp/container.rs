@@ -120,6 +120,15 @@ pub enum CommandCode {
     GetDevicePropDesc = 0x1014,
     GetDevicePropValue = 0x1015,
     SetDevicePropValue = 0x1016,
+    /// Fuji's own object-upload family, distinct from the standard
+    /// SendObjectInfo (0x100C): petabyt/libfuji names 0x900C "SendObjectInfo"
+    /// (create a file) and 0x900D "SendObject2" (write to file), traced back to
+    /// Fuji's FPUPDATE.DAT update utility. The RAW-upload capture this runtime
+    /// follows uses exactly this 0x900C + 0x900D pair. The camera also
+    /// advertises 0x901D ("SendObject" in libfuji, apparently equivalent to
+    /// 0x900D); no capture shows it in the exchanges this runtime implements,
+    /// so it is deliberately not defined here. See
+    /// docs/internals/fuji-ptp-ecosystem-research.md.
     FujiSendObjectInfo = 0x900c,
     FujiSendObject = 0x900d,
 }
