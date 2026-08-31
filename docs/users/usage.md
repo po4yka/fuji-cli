@@ -263,7 +263,9 @@ close, and does not replay the trigger or delete a possible result.
 Before backup restore, simulation access/write, or RAW conversion, the CLI
 checks the physical USB identity, exact PTP identity and serial, firmware
 matrix entry, USB mode, battery, advertised operations/properties, and live
-property descriptors. Unknown firmware and unverified matrix entries fail
+property descriptors (when the camera refuses a descriptor, as the X-T5 on
+firmware 4.31 does, the read-only USB mode and battery values are checked by
+their wire shape instead). Unknown firmware and unverified matrix entries fail
 closed; normal commands have no experimental override. The current X-T5 policy
 requires firmware `4.31`, USB mode `0x6`, and 100% battery. The battery value is
 a deliberately conservative project threshold, not a claimed Fujifilm minimum.

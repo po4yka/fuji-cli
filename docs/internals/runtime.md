@@ -129,6 +129,16 @@ and writability must be internally consistent with the generated policy. Every
 subsequent property write is checked dynamically against that descriptor before
 the command is sent.
 
+A physical X-T5 on firmware 4.31 in USB mode 0x6 answers `GeneralError` to
+every `GetDevicePropDesc` while serving `GetDevicePropValue`. When the camera
+refuses a descriptor with a PTP response code, preflight reads the value instead
+and checks only its wire shape against the declared datatype (scalar width or
+PTP string framing). That evidence is enough for read-only requirements such as
+the USB mode and battery properties, but it never enters the mutation permit:
+a property validated this way cannot be written, and a requirement declared
+`writable` or array-typed fails closed. Transport and decoding failures are not
+treated as a refusal.
+
 Success returns `ValidatedCameraSession<Operation>`. Only that typestate exposes
 the relevant mutation. It privately owns a non-cloneable mutation permit bound
 to that operation, the exact USB device and interface, the active PTP session,

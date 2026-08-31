@@ -3,7 +3,8 @@ use std::{
     marker::PhantomData,
 };
 
-use anyhow::{bail, ensure};
+use anyhow::{Context, bail, ensure};
+use log::debug;
 
 use crate::{
     Camera, SupportedCamera,
@@ -14,7 +15,7 @@ use crate::{
     generated::{
         cameras::{
             CameraFirmwareCapabilityProfile, CameraPreflightDataType, CameraPreflightOperation,
-            CameraPreflightProfile, CameraPreflightProfileStatus,
+            CameraPreflightProfile, CameraPreflightProfileStatus, CameraPreflightProperty,
         },
         options::CustomSetting,
         renders::RenderBase,
@@ -769,29 +770,105 @@ fn read_and_validate_descriptors(
 ) -> anyhow::Result<Vec<DevicePropDesc>> {
     let mut descriptors = Vec::with_capacity(profile.required_properties.len());
     for requirement in profile.required_properties {
-        let descriptor = ptp.get_prop_desc(requirement.code)?;
-        ensure!(
-            descriptor.property_code == requirement.code,
-            "GetDevicePropDesc returned the wrong property code"
-        );
-        if let CameraPreflightDataType::Exact(expected) = requirement.data_type {
-            ensure!(
-                descriptor.data_type.code() == expected,
-                "PTP datatype mismatch for property 0x{:04x}: expected 0x{expected:04x}, received 0x{:04x}",
-                requirement.code,
-                descriptor.data_type.code()
-            );
+        match ptp.get_prop_desc(requirement.code) {
+            Ok(descriptor) => {
+                validate_descriptor(*requirement, &descriptor)?;
+                descriptors.push(descriptor);
+            }
+            Err(error) if camera_refused(&error) => {
+                // The X-T5 on firmware 4.31 in USB mode 0x6 answers GeneralError
+                // to every GetDevicePropDesc while serving GetDevicePropValue.
+                // Fall back to the value's wire shape for read-only requirements;
+                // such a property never enters the permit, so it can't be written.
+                debug!(
+                    "Camera refused GetDevicePropDesc for 0x{:04x} ({error:#}); validating the value shape instead",
+                    requirement.code
+                );
+                let value = ptp.get_prop_raw(requirement.code).with_context(|| {
+                    format!(
+                        "reading PTP device property 0x{:04x} after the camera refused its descriptor",
+                        requirement.code
+                    )
+                })?;
+                validate_value_shape(*requirement, &value)?;
+            }
+            Err(error) => return Err(error),
         }
-        if requirement.writable {
-            ensure!(
-                descriptor.writable,
-                "required PTP device property 0x{:04x} is read-only",
-                requirement.code
-            );
-        }
-        descriptors.push(descriptor);
     }
     Ok(descriptors)
+}
+
+/// True when the camera answered with a PTP response code (it understood the
+/// command and refused it), as opposed to a transport or decoding failure.
+fn camera_refused(error: &anyhow::Error) -> bool {
+    matches!(
+        error.downcast_ref::<crate::ptp::error::Error>(),
+        Some(crate::ptp::error::Error::Response(_))
+    )
+}
+
+fn validate_descriptor(
+    requirement: CameraPreflightProperty,
+    descriptor: &DevicePropDesc,
+) -> anyhow::Result<()> {
+    ensure!(
+        descriptor.property_code == requirement.code,
+        "GetDevicePropDesc returned the wrong property code"
+    );
+    if let CameraPreflightDataType::Exact(expected) = requirement.data_type {
+        ensure!(
+            descriptor.data_type.code() == expected,
+            "PTP datatype mismatch for property 0x{:04x}: expected 0x{expected:04x}, received 0x{:04x}",
+            requirement.code,
+            descriptor.data_type.code()
+        );
+    }
+    if requirement.writable {
+        ensure!(
+            descriptor.writable,
+            "required PTP device property 0x{:04x} is read-only",
+            requirement.code
+        );
+    }
+    Ok(())
+}
+
+/// Descriptor-less evidence for a required property: the raw
+/// `GetDevicePropValue` payload must have the wire shape of the declared
+/// datatype. Writability cannot be proven this way, so writable requirements
+/// fail closed.
+fn validate_value_shape(requirement: CameraPreflightProperty, value: &[u8]) -> anyhow::Result<()> {
+    let code = requirement.code;
+    ensure!(
+        !requirement.writable,
+        "camera refused GetDevicePropDesc for required writable PTP property 0x{code:04x}; writability cannot be verified without a descriptor"
+    );
+    match requirement.data_type {
+        CameraPreflightDataType::Any => ensure!(
+            !value.is_empty(),
+            "PTP device property 0x{code:04x} returned an empty value"
+        ),
+        CameraPreflightDataType::Exact(expected) => {
+            let data_type = crate::ptp::DevicePropDataType::from_code(expected)
+                .with_context(|| format!("required PTP device property 0x{code:04x}"))?;
+            match data_type.scalar_len() {
+                Some(len) => ensure!(
+                    value.len() == len,
+                    "PTP device property 0x{code:04x} returned {} bytes, expected {len} for datatype 0x{expected:04x}",
+                    value.len()
+                ),
+                None if data_type == crate::ptp::DevicePropDataType::String => {
+                    crate::ptp::codec::decode_exact::<PtpString>(value).with_context(|| {
+                        format!("PTP device property 0x{code:04x} is not a well-formed PTP string")
+                    })?;
+                }
+                None => bail!(
+                    "camera refused GetDevicePropDesc for array-typed PTP property 0x{code:04x}; array shapes cannot be verified without a descriptor"
+                ),
+            }
+        }
+    }
+    Ok(())
 }
 
 fn backup_identity_from_evidence(evidence: &PreflightEvidence) -> BackupIdentity {
@@ -823,10 +900,97 @@ mod tests {
 
     use super::{
         MAX_DISPLAY_TEXT_CHARS, MutationAuthorization, MutationPermit, PreflightFacts,
-        decide_preflight, sanitize_for_display, select_capability_profile, select_profile,
-        validate_device_info, validate_mode_and_battery, validate_physical_identity,
-        validate_serial_binding,
+        camera_refused, decide_preflight, sanitize_for_display, select_capability_profile,
+        select_profile, validate_device_info, validate_mode_and_battery,
+        validate_physical_identity, validate_serial_binding, validate_value_shape,
     };
+
+    fn requirement(data_type: CameraPreflightDataType, writable: bool) -> CameraPreflightProperty {
+        CameraPreflightProperty {
+            code: 0xD16E,
+            data_type,
+            writable,
+        }
+    }
+
+    #[test]
+    fn value_shape_accepts_a_read_only_scalar_of_the_declared_width() {
+        validate_value_shape(
+            requirement(CameraPreflightDataType::Exact(0x0004), false),
+            &[6, 0],
+        )
+        .expect("a two-byte payload is a well-formed uint16");
+    }
+
+    #[test]
+    fn value_shape_rejects_a_scalar_of_the_wrong_width() {
+        let error = validate_value_shape(
+            requirement(CameraPreflightDataType::Exact(0x0004), false),
+            &[6, 0, 0],
+        )
+        .expect_err("three bytes are not a uint16");
+
+        assert!(error.to_string().contains("0xd16e"), "{error}");
+    }
+
+    #[test]
+    fn value_shape_accepts_a_well_formed_ptp_string_and_rejects_garbage() {
+        let encoded =
+            crate::ptp::codec::encode(&crate::ptp::codec::PtpString::from("65,0,0")).unwrap();
+        validate_value_shape(
+            requirement(CameraPreflightDataType::Exact(0xFFFF), false),
+            &encoded,
+        )
+        .expect("a PTP string payload must pass");
+
+        let error = validate_value_shape(
+            requirement(CameraPreflightDataType::Exact(0xFFFF), false),
+            &[0x09, 0x41],
+        )
+        .expect_err("a truncated PTP string must fail");
+
+        assert!(error.to_string().contains("PTP string"), "{error:#}");
+    }
+
+    #[test]
+    fn value_shape_requires_a_non_empty_value_for_untyped_requirements() {
+        validate_value_shape(requirement(CameraPreflightDataType::Any, false), &[7, 0])
+            .expect("any non-empty payload satisfies an untyped requirement");
+
+        let error = validate_value_shape(requirement(CameraPreflightDataType::Any, false), &[])
+            .expect_err("an empty payload is not evidence");
+
+        assert!(error.to_string().contains("empty"), "{error}");
+    }
+
+    #[test]
+    fn value_shape_never_grants_a_writable_requirement() {
+        let error = validate_value_shape(requirement(CameraPreflightDataType::Any, true), &[7, 0])
+            .expect_err("writability cannot be proven without a descriptor");
+
+        assert!(error.to_string().contains("writability"), "{error}");
+    }
+
+    #[test]
+    fn value_shape_rejects_array_typed_requirements() {
+        let error = validate_value_shape(
+            requirement(CameraPreflightDataType::Exact(0x4004), false),
+            &[1, 0, 0, 0, 6, 0],
+        )
+        .expect_err("array shapes are not verifiable without a descriptor");
+
+        assert!(error.to_string().contains("array"), "{error}");
+    }
+
+    #[test]
+    fn only_a_ptp_response_counts_as_the_camera_refusing_a_descriptor() {
+        let refused: anyhow::Error = crate::ptp::error::Error::Response(0x2002).into();
+        let transport: anyhow::Error = crate::ptp::error::Error::Usb(rusb::Error::Pipe).into();
+
+        assert!(camera_refused(&refused));
+        assert!(!camera_refused(&transport));
+        assert!(!camera_refused(&anyhow::anyhow!("decoding failed")));
+    }
 
     const PROFILE: CameraPreflightProfile = CameraPreflightProfile {
         operation: CameraPreflightOperation::RawConversion,
