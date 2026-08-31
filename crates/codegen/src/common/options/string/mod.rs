@@ -65,7 +65,7 @@ fn generate_struct_def(type_name: &Ident) -> anyhow::Result<TokenStream> {
             Eq,
             ::binrw::BinRead,
             ::binrw::BinWrite,
-            serde_with::SerializeDisplay,
+            serde::Serialize,
             serde_with::DeserializeFromStr,
         )]
         #[brw(little)]
@@ -140,7 +140,7 @@ fn generate_display_impl(type_name: &Ident) -> anyhow::Result<TokenStream> {
     Ok(quote! {
         impl ::std::fmt::Display for #type_name {
             fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-                f.write_str(&self.0)
+                ::std::fmt::Display::fmt(&self.0.escape_debug(), f)
             }
         }
     })

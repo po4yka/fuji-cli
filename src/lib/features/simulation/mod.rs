@@ -53,3 +53,29 @@ impl fmt::Display for SimulationListItem {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr as _;
+
+    use crate::generated::options::CustomSettingName;
+
+    #[test]
+    fn custom_setting_name_human_output_escapes_terminal_controls() {
+        let name = CustomSettingName::from_str("C1\u{1b}]0;pwn\u{7}\r\n")
+            .expect("test name must satisfy schema bounds");
+
+        assert_eq!(name.to_string(), "C1\\u{1b}]0;pwn\\u{7}\\r\\n");
+    }
+
+    #[test]
+    fn custom_setting_name_json_preserves_the_wire_value() {
+        let name = CustomSettingName::from_str("C1\u{1b}]0;pwn\u{7}\r\n")
+            .expect("test name must satisfy schema bounds");
+
+        assert_eq!(
+            serde_json::to_value(name).expect("name must serialize"),
+            "C1\u{1b}]0;pwn\u{7}\r\n"
+        );
+    }
+}

@@ -52,13 +52,13 @@ pub(crate) trait CameraBase {
         let battery_string = ptp
             .get_prop::<crate::ptp::codec::PtpString>(DevicePropCode::FujiBatteryInfo2)?
             .into_inner();
-        debug!("Raw battery string: {battery_string}");
 
         let battery: u32 = battery_string
             .split(',')
             .next()
             .ok_or_else(|| anyhow!("Failed to parse battery percentage"))?
             .parse()?;
+        debug!("Battery percentage: {battery}");
 
         let repr = DefaultCameraInfo {
             manufacturer: info.manufacturer,

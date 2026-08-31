@@ -420,9 +420,9 @@ fn simulation_namespace(
     let identity = camera.reverse_probe_device_identity()?;
     let live_fingerprint = fujicli::features::backup::sha256_hex(identity.serial_number.as_bytes());
 
-    eprintln!("Manufacturer: {}", identity.manufacturer);
-    eprintln!("Model: {}", identity.model);
-    eprintln!("Firmware: {}", identity.firmware);
+    eprintln!("Manufacturer: {}", identity.manufacturer.escape_debug());
+    eprintln!("Model: {}", identity.model.escape_debug());
+    eprintln!("Firmware: {}", identity.firmware.escape_debug());
     eprintln!("Serial fingerprint (SHA-256): {live_fingerprint}");
 
     let context = AuditContext {
