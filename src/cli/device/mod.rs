@@ -1,29 +1,35 @@
 use clap::Subcommand;
 
 use crate::cli::{
-    GlobalOptions,
+    DeviceOptions, EmulationOptions, JsonOptions,
     common::{file::write_stdout_line, usb},
 };
 use fujicli::CameraInfoListItem;
 
-#[derive(Subcommand, Debug, Clone, Copy)]
+#[derive(Subcommand, Debug, Clone)]
 pub enum DeviceCmd {
     /// List cameras
     #[command(alias = "l")]
-    List,
+    List {
+        #[command(flatten)]
+        output: JsonOptions,
+    },
 
     /// Get camera info
     #[command(alias = "i")]
-    Info,
+    Info {
+        #[command(flatten)]
+        output: JsonOptions,
+
+        #[command(flatten)]
+        device: DeviceOptions,
+
+        #[command(flatten)]
+        emulation: EmulationOptions,
+    },
 }
 
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "command handlers consume parsed CLI values"
-)]
-fn handle_list(options: GlobalOptions) -> anyhow::Result<()> {
-    let GlobalOptions { json, .. } = options;
-
+fn handle_list(json: bool) -> anyhow::Result<()> {
     let cameras: Vec<CameraInfoListItem> = usb::get_all_cameras()?;
 
     if json {
@@ -47,14 +53,13 @@ fn handle_list(options: GlobalOptions) -> anyhow::Result<()> {
     clippy::needless_pass_by_value,
     reason = "command handlers consume parsed CLI values"
 )]
-fn handle_info(options: GlobalOptions) -> anyhow::Result<()> {
-    let GlobalOptions {
-        json,
-        device,
-        emulate,
-        ..
-    } = options;
-
+fn handle_info(
+    json: bool,
+    device: DeviceOptions,
+    emulation: EmulationOptions,
+) -> anyhow::Result<()> {
+    let DeviceOptions { device } = device;
+    let EmulationOptions { emulate } = emulation;
     let mut camera = usb::get_native_camera(device, emulate)?;
 
     let repr = camera.get_info()?;
@@ -68,9 +73,13 @@ fn handle_info(options: GlobalOptions) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn handle(cmd: DeviceCmd, options: GlobalOptions) -> anyhow::Result<()> {
+pub fn handle(cmd: DeviceCmd) -> anyhow::Result<()> {
     match cmd {
-        DeviceCmd::List => handle_list(options),
-        DeviceCmd::Info => handle_info(options),
+        DeviceCmd::List { output } => handle_list(output.json),
+        DeviceCmd::Info {
+            output,
+            device,
+            emulation,
+        } => handle_info(output.json, device, emulation),
     }
 }

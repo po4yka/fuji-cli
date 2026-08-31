@@ -12,7 +12,7 @@ use fujicli::{
 use log::warn;
 
 use crate::cli::{
-    GlobalOptions,
+    DeviceOptions, JsonOptions,
     common::{camera_state::CameraStateUnknown, interrupt, usb},
 };
 
@@ -65,14 +65,10 @@ fn ensure_state_known(condition: bool, message: &'static str) -> anyhow::Result<
     }
 }
 
-fn ensure_import_confirmation(yes: bool, dry_run: bool, emulated: bool) -> anyhow::Result<()> {
+fn ensure_import_confirmation(yes: bool, dry_run: bool) -> anyhow::Result<()> {
     ensure!(
         dry_run || yes,
         "backup import requires explicit --yes confirmation"
-    );
-    ensure!(
-        !emulated,
-        "safe backup import does not support --emulate; use fujicli-dev only for explicit protocol research"
     );
     Ok(())
 }
@@ -195,6 +191,19 @@ pub struct BackupImportArgs {
     /// Permit destructive import from stdin (also requires --expect-sha256)
     #[arg(long, requires = "yes")]
     allow_stdin: bool,
+
+    #[command(flatten)]
+    output_format: DryRunJsonOptions,
+
+    #[command(flatten)]
+    device: DeviceOptions,
+}
+
+#[derive(Args, Debug, Clone)]
+struct DryRunJsonOptions {
+    /// Format dry-run output using JSON
+    #[arg(long, short = 'j', requires = "dry_run")]
+    json: bool,
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -208,12 +217,21 @@ pub enum BackupCmd {
         /// Replace an existing regular output file
         #[arg(long)]
         force: bool,
+
+        #[command(flatten)]
+        output_format: JsonOptions,
+
+        #[command(flatten)]
+        device: DeviceOptions,
     },
 
     /// Inspect and validate a backup artifact without connecting a camera
     Inspect {
         /// Input file (use '-' to read from stdin)
         input: Input,
+
+        #[command(flatten)]
+        output_format: JsonOptions,
     },
 
     /// Import backup
@@ -225,20 +243,16 @@ pub enum BackupCmd {
     clippy::needless_pass_by_value,
     reason = "command handlers consume parsed CLI values"
 )]
-fn handle_export(options: GlobalOptions, output: Output, force: bool) -> anyhow::Result<()> {
-    let GlobalOptions {
-        device,
-        emulate,
-        json,
-        ..
-    } = options;
-    ensure!(
-        emulate.is_none(),
-        "safe backup export does not support --emulate; use fujicli-dev only for explicit protocol research"
-    );
+fn handle_export(
+    device: DeviceOptions,
+    json: bool,
+    output: Output,
+    force: bool,
+) -> anyhow::Result<()> {
+    let DeviceOptions { device } = device;
     let mut output_transaction = output.begin_write(force)?;
 
-    let mut camera = usb::get_native_camera(device, emulate)?;
+    let mut camera = usb::get_native_camera(device, None)?;
 
     let backup = camera.export_backup(BackupPurpose::Portable)?;
     let artifact_sha256 = backup.fingerprint();
@@ -260,13 +274,13 @@ fn handle_export(options: GlobalOptions, output: Output, force: bool) -> anyhow:
     clippy::needless_pass_by_value,
     reason = "command handlers consume parsed CLI values"
 )]
-fn handle_inspect(options: GlobalOptions, input: Input) -> anyhow::Result<()> {
+fn handle_inspect(json: bool, input: Input) -> anyhow::Result<()> {
     let backup = input.read_limited(MAX_BACKUP_ARTIFACT_BYTES, "backup input")?;
     let backup = BackupArtifact::parse(backup)?;
     let manifest = backup.manifest();
     let artifact_sha256 = backup.fingerprint();
 
-    if options.json {
+    if json {
         let inspection = serde_json::json!({
             "formatVersion": BACKUP_ARTIFACT_FORMAT_VERSION,
             "purpose": manifest.purpose,
@@ -296,11 +310,7 @@ fn handle_inspect(options: GlobalOptions, input: Input) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "command handlers consume parsed CLI values"
-)]
-fn handle_import(options: GlobalOptions, args: BackupImportArgs) -> anyhow::Result<()> {
+fn handle_import(args: BackupImportArgs) -> anyhow::Result<()> {
     let BackupImportArgs {
         input,
         yes,
@@ -309,15 +319,11 @@ fn handle_import(options: GlobalOptions, args: BackupImportArgs) -> anyhow::Resu
         expect_sha256,
         target_serial_sha256,
         allow_stdin,
-    } = args;
-    let GlobalOptions {
+        output_format,
         device,
-        emulate,
-        json,
-        ..
-    } = options;
-    let emulated = emulate.is_some();
-    ensure_import_confirmation(yes, dry_run, emulated)?;
+    } = args;
+    let DeviceOptions { device } = device;
+    ensure_import_confirmation(yes, dry_run)?;
     if let Some(recovery_backup) = &recovery_backup {
         ensure!(
             !recovery_backup.is_stdout(),
@@ -346,7 +352,7 @@ fn handle_import(options: GlobalOptions, args: BackupImportArgs) -> anyhow::Resu
     if let Some(expected) = &expect_sha256 {
         backup.verify_fingerprint(expected)?;
     }
-    let mut camera = usb::get_native_camera(device, emulate)?;
+    let mut camera = usb::get_native_camera(device, None)?;
     let usb_id = camera.connected_usb_id();
     let binding = target_serial_sha256
         .as_deref()
@@ -358,7 +364,12 @@ fn handle_import(options: GlobalOptions, args: BackupImportArgs) -> anyhow::Resu
         if target_serial_sha256.is_some() {
             backup.validate_target(&target, target_serial_sha256.as_deref())?;
         }
-        return report_dry_run(&backup, &target, target_serial_sha256.is_some(), json);
+        return report_dry_run(
+            &backup,
+            &target,
+            target_serial_sha256.is_some(),
+            output_format.json,
+        );
     }
     let target = session.target_identity();
     backup.validate_target(&target, target_serial_sha256.as_deref())?;
@@ -436,11 +447,19 @@ fn verify_restore_persisted(
     Ok(())
 }
 
-pub fn handle(cmd: BackupCmd, options: GlobalOptions) -> anyhow::Result<()> {
+pub fn handle(cmd: BackupCmd) -> anyhow::Result<()> {
     match cmd {
-        BackupCmd::Export { output, force } => handle_export(options, output, force),
-        BackupCmd::Inspect { input } => handle_inspect(options, input),
-        BackupCmd::Import(args) => handle_import(options, args),
+        BackupCmd::Export {
+            output,
+            force,
+            output_format,
+            device,
+        } => handle_export(device, output_format.json, output, force),
+        BackupCmd::Inspect {
+            input,
+            output_format,
+        } => handle_inspect(output_format.json, input),
+        BackupCmd::Import(args) => handle_import(args),
     }
 }
 
@@ -448,8 +467,8 @@ pub fn handle(cmd: BackupCmd, options: GlobalOptions) -> anyhow::Result<()> {
 mod tests {
     use super::{
         BackupImportState, CameraStateUnknown, ImportMode, ImportSource, StdinPermission,
-        backup_import_state_is_unknown, ensure_import_confirmation, ensure_import_input_policy,
-        restore_after_recovery_saved, tag_state_unknown_error,
+        backup_import_state_is_unknown, ensure_import_input_policy, restore_after_recovery_saved,
+        tag_state_unknown_error,
     };
     use fujicli::features::backup::{BackupArtifact, BackupIdentity, BackupPurpose, sha256_hex};
 
@@ -465,14 +484,6 @@ mod tests {
 
         assert!(tagged.is::<CameraStateUnknown>());
         assert_eq!(tagged.to_string(), message);
-    }
-
-    #[test]
-    fn safe_backup_import_rejects_emulated_target() {
-        let error = ensure_import_confirmation(true, false, true)
-            .expect_err("safe import must not authorize an emulated restore target");
-
-        assert!(error.to_string().contains("--emulate"));
     }
 
     #[test]

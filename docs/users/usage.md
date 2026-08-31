@@ -13,18 +13,21 @@ Commands:
   help        Print this message or the help of the given subcommand(s)
 
 Options:
-  -j, --json               Format output using json
-  -v, --verbose...         Log extra debugging information (multiple instances increase verbosity)
-  -d, --device <DEVICE>    Manually specify target device using USB <BUS>.<ADDRESS>
-      --emulate <EMULATE>  Treat device as a different model using <VENDOR_ID>:<PRODUCT_ID>
-  -h, --help               Print help
-  -V, --version            Print version
+  -v, --verbose...  Log extra debugging information (multiple instances increase verbosity)
+  -h, --help        Print help
+  -V, --version     Print version
 ```
 
 Every subcommand has a short alias: `device -> d`, `simulation -> s`,
 `backup -> b`, `image -> i`. Within a subcommand, common operations are also
 aliased (`list -> l`, `get -> g`, `set -> s`, `export -> e`, `import -> i`,
 `render -> r`).
+
+Only `-v / --verbose` is global. Output formatting, camera selection, and
+emulation options are exposed only by leaf commands that consume them; put
+those options after the leaf command. A meaningless combination such as
+`device list --device`, `backup inspect --device`, or `image render --json` is
+a usage error with exit status `2` instead of a silently ignored request.
 
 The `-d / --device` flag accepts a USB bus/address pair (e.g. `1.4`) and is only
 needed when more than one supported camera is plugged in.
@@ -284,8 +287,11 @@ stdout leaves the camera object available for explicit recovery.
 
 ## Output and Logging
 
-`-j / --json` switches list/get commands to pretty JSON. Without it, output is
-human-readable.
+`-j / --json` selects machine-readable output for `device list`, `device info`,
+`simulation list`, `simulation get`, `backup export` to a file, `backup
+inspect`, and `backup import --dry-run`. Without it, text output is
+human-readable. Commands whose output is already binary or has no structured
+result do not accept `--json`.
 
 `-v` (repeatable: `-v`, `-vv`, `-vvv`) raises log verbosity. For `device
 reverse` commands, `-vvv` reports PTP operation metadata and response lengths,

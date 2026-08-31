@@ -6,7 +6,7 @@ use fujicli::{
 
 use super::common::file::{Input, Output, OutputTransaction};
 use crate::cli::{
-    GlobalOptions,
+    DeviceOptions,
     common::{interrupt, usb},
 };
 use clap::Subcommand;
@@ -59,7 +59,7 @@ pub enum ImageCmd {
     #[command(alias = "r")]
     Render {
         /// SHA-256 fingerprint of the exact physical camera serial number
-        #[arg(long, required_unless_present = "emulate")]
+        #[arg(long, required = true)]
         target_serial_sha256: Option<SerialFingerprint>,
 
         /// Path to exported simulation file
@@ -82,12 +82,15 @@ pub enum ImageCmd {
         /// Replace an existing regular output file
         #[arg(long)]
         force: bool,
+
+        #[command(flatten)]
+        device: DeviceOptions,
     },
 
     /// Recover a retained rendered JPEG by its camera object handle
     Recover {
         /// SHA-256 fingerprint of the exact physical camera serial number
-        #[arg(long, required_unless_present = "emulate")]
+        #[arg(long, required = true)]
         target_serial_sha256: Option<SerialFingerprint>,
 
         /// Camera object handle reported by a failed render
@@ -103,6 +106,9 @@ pub enum ImageCmd {
         /// Delete the camera object after a verified local file save
         #[arg(long)]
         delete_after_save: bool,
+
+        #[command(flatten)]
+        device: DeviceOptions,
     },
 }
 
@@ -120,7 +126,7 @@ struct RenderRequest {
     clippy::needless_pass_by_value,
     reason = "the handler consumes the flattened CLI render command"
 )]
-fn handle_render(options: GlobalOptions, request: RenderRequest) -> anyhow::Result<()> {
+fn handle_render(device: DeviceOptions, request: RenderRequest) -> anyhow::Result<()> {
     let RenderRequest {
         target_serial_sha256,
         simulation_file,
@@ -130,9 +136,6 @@ fn handle_render(options: GlobalOptions, request: RenderRequest) -> anyhow::Resu
         output,
         force,
     } = request;
-    let GlobalOptions {
-        device, emulate, ..
-    } = options;
     let output_transaction = output.begin_write(force)?;
 
     let image = input.read_limited(MAX_IMAGE_INPUT_BYTES, "RAF image")?;
@@ -147,7 +150,7 @@ fn handle_render(options: GlobalOptions, request: RenderRequest) -> anyhow::Resu
         .transpose()?;
     let delete_after_save = !output_transaction.is_stdout();
 
-    let mut camera = usb::get_native_camera(device, emulate)?;
+    let mut camera = usb::get_native_camera(device.device, None)?;
     let simulation_from_file = if let Some(buffer) = simulation_json {
         Some(camera.deserialize_simulation(&buffer)?.to_base())
     } else {
@@ -182,16 +185,13 @@ fn handle_render(options: GlobalOptions, request: RenderRequest) -> anyhow::Resu
     reason = "the handler consumes the parsed recovery command"
 )]
 fn handle_recover(
-    options: GlobalOptions,
+    device: DeviceOptions,
     target_serial_sha256: Option<SerialFingerprint>,
     handle: u32,
     output: Output,
     force: bool,
     delete_after_save: bool,
 ) -> anyhow::Result<()> {
-    let GlobalOptions {
-        device, emulate, ..
-    } = options;
     anyhow::ensure!(
         !(delete_after_save && output.is_stdout()),
         "--delete-after-save requires a file output, not stdout"
@@ -200,7 +200,7 @@ fn handle_recover(
     let target_serial_sha256 = target_serial_sha256
         .ok_or_else(|| anyhow::anyhow!("RAW recovery requires --target-serial-sha256"))?;
 
-    let mut camera = usb::get_native_camera(device, emulate)?;
+    let mut camera = usb::get_native_camera(device.device, None)?;
     let rendered = camera
         .preflight_raw_recovery_fetch(&target_serial_sha256)?
         .recover_rendered_object(handle)?;
@@ -220,7 +220,7 @@ fn handle_recover(
     )
 }
 
-pub fn handle(cmd: ImageCmd, options: GlobalOptions) -> anyhow::Result<()> {
+pub fn handle(cmd: ImageCmd) -> anyhow::Result<()> {
     match cmd {
         ImageCmd::Render {
             target_serial_sha256,
@@ -230,8 +230,9 @@ pub fn handle(cmd: ImageCmd, options: GlobalOptions) -> anyhow::Result<()> {
             input,
             output,
             force,
+            device,
         } => handle_render(
-            options,
+            device,
             RenderRequest {
                 target_serial_sha256,
                 simulation_file,
@@ -248,8 +249,9 @@ pub fn handle(cmd: ImageCmd, options: GlobalOptions) -> anyhow::Result<()> {
             output,
             force,
             delete_after_save,
+            device,
         } => handle_recover(
-            options,
+            device,
             target_serial_sha256,
             handle,
             output,
@@ -268,7 +270,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{Output, RenderOutput, handle_recover, save_rendered_object};
-    use crate::cli::GlobalOptions;
+    use crate::cli::DeviceOptions;
 
     #[derive(Default)]
     struct FailingCommitOutput {
@@ -369,12 +371,7 @@ mod tests {
     #[test]
     fn recovery_forbids_delete_after_stdout_before_camera_access() {
         let error = handle_recover(
-            GlobalOptions {
-                json: false,
-                verbose: 0,
-                device: None,
-                emulate: None,
-            },
+            DeviceOptions::default(),
             None,
             42,
             Output::Stdout,

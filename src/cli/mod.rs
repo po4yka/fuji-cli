@@ -5,7 +5,6 @@ pub mod image;
 pub mod simulation;
 
 use clap::{ArgAction, Args, Parser, Subcommand};
-use fujicli::policy::{CommandRisk, EmulationAcknowledgement, ModelBindingKind, authorize};
 
 use backup::BackupCmd;
 use device::DeviceCmd;
@@ -27,24 +26,33 @@ pub struct Cli {
 
 #[derive(Args, Debug)]
 pub struct GlobalOptions {
-    /// Format output using json
-    #[arg(long, short = 'j', global = true)]
-    pub json: bool,
-
     /// Log extra debugging information (multiple instances increase verbosity)
     #[arg(long, short = 'v', action = ArgAction::Count, global = true)]
     pub verbose: u8,
+}
 
+#[derive(Args, Debug, Default, Clone)]
+pub struct JsonOptions {
+    /// Format output using JSON
+    #[arg(long, short = 'j')]
+    pub json: bool,
+}
+
+#[derive(Args, Debug, Default, Clone)]
+pub struct DeviceOptions {
     /// Manually specify target device using USB <BUS>.<ADDRESS>
-    #[arg(long, short = 'd', global = true)]
+    #[arg(long, short = 'd')]
     pub device: Option<Location>,
+}
 
+#[derive(Args, Debug, Default, Clone)]
+pub struct EmulationOptions {
     #[expect(
         clippy::doc_markdown,
         reason = "the angle-bracket notation is user-facing CLI syntax, not Rust documentation"
     )]
     /// Treat device as a different model using <VENDOR_ID>:<PRODUCT_ID>
-    #[arg(long, global = true)]
+    #[arg(long)]
     pub emulate: Option<Identity>,
 }
 
@@ -68,80 +76,21 @@ pub enum Commands {
 }
 
 pub fn handle(cli: Cli) -> Result<(), anyhow::Error> {
-    authorize_command(&cli.command, &cli.options)?;
-
     let () = match cli.command {
-        Commands::Device(device_cmd) => device::handle(device_cmd, cli.options)?,
-        Commands::Backup(backup_cmd) => backup::handle(backup_cmd, cli.options)?,
-        Commands::Simulation(simulation_cmd) => {
-            simulation::handle(simulation_cmd, cli.options)?;
-        }
-        Commands::Image(render_cmd) => image::handle(render_cmd, cli.options)?,
+        Commands::Device(device_cmd) => device::handle(device_cmd)?,
+        Commands::Backup(backup_cmd) => backup::handle(backup_cmd)?,
+        Commands::Simulation(simulation_cmd) => simulation::handle(simulation_cmd)?,
+        Commands::Image(render_cmd) => image::handle(render_cmd)?,
     };
 
     Ok(())
-}
-
-fn authorize_command(command: &Commands, options: &GlobalOptions) -> anyhow::Result<()> {
-    let binding = if options.emulate.is_some() {
-        ModelBindingKind::Emulated
-    } else {
-        return Ok(());
-    };
-    let policy = command_policy(command);
-    let risk = match policy.emulation {
-        EmulationPolicy::Classified => policy.risk,
-        EmulationPolicy::Forbidden => CommandRisk::EmulationForbidden,
-    };
-
-    authorize(binding, risk, EmulationAcknowledgement::NotProvided)
-}
-
-struct CommandPolicy {
-    risk: CommandRisk,
-    emulation: EmulationPolicy,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum EmulationPolicy {
-    Classified,
-    Forbidden,
-}
-
-const fn command_policy(command: &Commands) -> CommandPolicy {
-    let (risk, emulation) = match command {
-        Commands::Simulation(SimulationCmd::Set { .. } | SimulationCmd::Import { .. }) => (
-            CommandRisk::PersistentSettingsWrite,
-            EmulationPolicy::Classified,
-        ),
-        Commands::Simulation(
-            SimulationCmd::List | SimulationCmd::Get { .. } | SimulationCmd::Export { .. },
-        ) => (
-            CommandRisk::ReadWithTemporaryMutation,
-            EmulationPolicy::Forbidden,
-        ),
-        Commands::Device(DeviceCmd::List) => (CommandRisk::ReadOnly, EmulationPolicy::Forbidden),
-        Commands::Device(DeviceCmd::Info) => (CommandRisk::ReadOnly, EmulationPolicy::Classified),
-        Commands::Backup(BackupCmd::Import(_)) => {
-            (CommandRisk::OpaqueRestore, EmulationPolicy::Classified)
-        }
-        Commands::Backup(BackupCmd::Export { .. } | BackupCmd::Inspect { .. }) => {
-            (CommandRisk::ReadOnly, EmulationPolicy::Forbidden)
-        }
-        Commands::Image(_) => (
-            CommandRisk::DestructiveRecoverySensitive,
-            EmulationPolicy::Classified,
-        ),
-    };
-
-    CommandPolicy { risk, emulation }
 }
 
 #[cfg(test)]
 mod tests {
     use clap::Parser;
 
-    use super::{Cli, EmulationPolicy, authorize_command, command_policy};
+    use super::Cli;
 
     #[test]
     fn image_extract_is_not_advertised_until_it_is_implemented() {
@@ -269,35 +218,200 @@ mod tests {
     }
 
     #[test]
-    fn simulation_reads_reject_emulation_without_an_impossible_acknowledgement_hint() {
-        let cli = Cli::try_parse_from(["fujicli", "--emulate", "04cb:02fc", "simulation", "list"])
-            .expect("emulated simulation command must parse before policy authorization");
+    fn device_list_rejects_device_selector() {
+        let error = Cli::try_parse_from(["fujicli", "device", "list", "--device", "1.2"])
+            .expect_err("device list must not accept a selector that it ignores");
 
-        let error = authorize_command(&cli.command, &cli.options)
-            .expect_err("temporary selector writes must reject emulation");
-
-        assert!(error.to_string().contains("--emulate is not supported"));
-        assert!(!error.to_string().contains("acknowledgement"));
+        assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
     }
 
     #[test]
-    fn simulation_reads_are_temporary_mutations_but_remain_unemulatable() {
-        let list = Cli::try_parse_from(["fujicli", "simulation", "list"])
-            .expect("simulation list must parse");
-        let get = Cli::try_parse_from(["fujicli", "simulation", "get", "c1"])
-            .expect("simulation get must parse");
-        let export = Cli::try_parse_from(["fujicli", "simulation", "export", "c1", "-"])
-            .expect("simulation export must parse");
+    fn irrelevant_leaf_options_are_rejected() {
+        const SERIAL: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+        let cases: &[&[&str]] = &[
+            &["fujicli", "device", "list", "--emulate", "04cb:02fc"],
+            &[
+                "fujicli",
+                "backup",
+                "export",
+                "backup.fbk",
+                "--emulate",
+                "04cb:02fc",
+            ],
+            &[
+                "fujicli",
+                "backup",
+                "inspect",
+                "backup.fbk",
+                "--device",
+                "1.2",
+            ],
+            &[
+                "fujicli",
+                "backup",
+                "inspect",
+                "backup.fbk",
+                "--emulate",
+                "04cb:02fc",
+            ],
+            &["fujicli", "simulation", "list", "--emulate", "04cb:02fc"],
+            &["fujicli", "simulation", "export", "c1", "-", "--json"],
+            &[
+                "fujicli",
+                "simulation",
+                "export",
+                "c1",
+                "-",
+                "--emulate",
+                "04cb:02fc",
+            ],
+            &[
+                "fujicli",
+                "simulation",
+                "set",
+                "c1",
+                "--target-serial-sha256",
+                SERIAL,
+                "--custom-setting-name",
+                "Test",
+                "--json",
+            ],
+            &[
+                "fujicli",
+                "simulation",
+                "import",
+                "c1",
+                "simulation.json",
+                "--target-serial-sha256",
+                SERIAL,
+                "--json",
+            ],
+            &[
+                "fujicli",
+                "image",
+                "render",
+                "--target-serial-sha256",
+                SERIAL,
+                "input.raf",
+                "output.jpg",
+                "--json",
+            ],
+            &[
+                "fujicli",
+                "image",
+                "recover",
+                "--target-serial-sha256",
+                SERIAL,
+                "42",
+                "output.jpg",
+                "--json",
+            ],
+        ];
 
-        for command in [&list.command, &get.command, &export.command] {
-            let policy = command_policy(command);
+        for arguments in cases {
+            let error = Cli::try_parse_from(*arguments)
+                .expect_err("an option without a consumer must be rejected by clap");
 
             assert_eq!(
-                policy.risk,
-                fujicli::policy::CommandRisk::ReadWithTemporaryMutation
+                error.kind(),
+                clap::error::ErrorKind::UnknownArgument,
+                "unexpected parser result for {arguments:?}: {error}"
             );
-            assert_eq!(policy.emulation, EmulationPolicy::Forbidden);
         }
+    }
+
+    #[test]
+    fn applicable_leaf_options_remain_available() {
+        const SERIAL: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+        let cases: &[&[&str]] = &[
+            &["fujicli", "device", "list", "--json"],
+            &[
+                "fujicli",
+                "device",
+                "info",
+                "--json",
+                "--device",
+                "1.2",
+                "--emulate",
+                "04cb:02fc",
+            ],
+            &[
+                "fujicli",
+                "backup",
+                "export",
+                "backup.fbk",
+                "--json",
+                "--device",
+                "1.2",
+            ],
+            &["fujicli", "backup", "inspect", "backup.fbk", "--json"],
+            &[
+                "fujicli",
+                "backup",
+                "import",
+                "backup.fbk",
+                "--dry-run",
+                "--json",
+                "--device",
+                "1.2",
+            ],
+            &["fujicli", "simulation", "list", "--json", "--device", "1.2"],
+            &[
+                "fujicli",
+                "simulation",
+                "set",
+                "c1",
+                "--target-serial-sha256",
+                SERIAL,
+                "--custom-setting-name",
+                "Test",
+                "--device",
+                "1.2",
+            ],
+            &[
+                "fujicli",
+                "image",
+                "render",
+                "--target-serial-sha256",
+                SERIAL,
+                "input.raf",
+                "output.jpg",
+                "--device",
+                "1.2",
+            ],
+        ];
+
+        for arguments in cases {
+            let parsed = Cli::try_parse_from(*arguments);
+
+            assert!(
+                parsed.is_ok(),
+                "an option with a leaf consumer must parse for {arguments:?}: {parsed:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn backup_import_json_requires_dry_run() {
+        let error = Cli::try_parse_from([
+            "fujicli",
+            "backup",
+            "import",
+            "backup.fbk",
+            "--yes",
+            "--recovery-backup",
+            "recovery.fbk",
+            "--expect-sha256",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+            "--json",
+        ])
+        .expect_err("restore has no JSON result to format");
+
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+        assert!(error.to_string().contains("--dry-run"));
     }
 
     #[test]
