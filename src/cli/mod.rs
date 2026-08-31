@@ -16,8 +16,25 @@ use simulation::SimulationCmd;
 
 use crate::cli::common::usb::{Identity, Location};
 
+const TOP_LEVEL_LONG_HELP: &str = "\
+Examples:
+  fujicli device list
+  fujicli device info
+
+Web:
+  Documentation: https://github.com/po4yka/fuji-cli/blob/main/docs/README.md
+  Issues:        https://github.com/po4yka/fuji-cli/issues
+  Support:       https://github.com/po4yka/fuji-cli/blob/main/SUPPORT.md
+  Security:      https://github.com/po4yka/fuji-cli/security/policy";
+
 #[derive(Parser, Debug)]
-#[command(version, about, long_about = None, author)]
+#[command(
+    version,
+    about,
+    long_about = None,
+    after_long_help = TOP_LEVEL_LONG_HELP,
+    author
+)]
 pub struct Cli {
     /// Subcommands
     #[command(subcommand)]

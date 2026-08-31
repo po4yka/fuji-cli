@@ -23,8 +23,8 @@ Register-ArgumentCompleter -Native -CommandName 'fujicli' -ScriptBlock {
         'fujicli' {
             [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Log extra debugging information (multiple instances increase verbosity)')
             [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Log extra debugging information (multiple instances increase verbosity)')
-            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
-            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
+            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
             [CompletionResult]::new('-V', '-V ', [CompletionResultType]::ParameterName, 'Print version')
             [CompletionResult]::new('--version', '--version', [CompletionResultType]::ParameterName, 'Print version')
             [CompletionResult]::new('device', 'device', [CompletionResultType]::ParameterValue, 'Manage devices')

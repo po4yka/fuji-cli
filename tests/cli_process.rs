@@ -208,6 +208,37 @@ fn help_is_stdout_only_and_successful() {
 }
 
 #[test]
+fn long_help_adds_safe_examples_and_web_routes_without_expanding_short_help() {
+    let long_help = run(&["--help"]);
+    let short_help = run(&["-h"]);
+
+    for output in [&long_help, &short_help] {
+        assert_eq!(output.status.code(), Some(0));
+        assert!(output.stderr.is_empty());
+    }
+
+    let long_help = String::from_utf8(long_help.stdout).expect("long help must be UTF-8");
+    for expected in [
+        "Examples:",
+        "fujicli device list",
+        "fujicli device info",
+        "https://github.com/po4yka/fuji-cli/blob/main/docs/README.md",
+        "https://github.com/po4yka/fuji-cli/issues",
+        "https://github.com/po4yka/fuji-cli/blob/main/SUPPORT.md",
+        "https://github.com/po4yka/fuji-cli/security/policy",
+    ] {
+        assert!(
+            long_help.contains(expected),
+            "missing {expected:?}\n{long_help}"
+        );
+    }
+
+    let short_help = String::from_utf8(short_help.stdout).expect("short help must be UTF-8");
+    assert!(!short_help.contains("Examples:"));
+    assert!(!short_help.contains("https://github.com/po4yka/fuji-cli"));
+}
+
+#[test]
 fn completion_writes_supported_shell_scripts_to_stdout() {
     let cases = [
         ("bash", "_fujicli()"),

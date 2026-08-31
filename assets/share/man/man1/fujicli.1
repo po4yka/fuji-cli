@@ -2,18 +2,18 @@
 .el .ds Aq '
 .TH fujicli 1  "fujicli 0.2.0"
 .SH NAME
-fujicli \- A CLI to manage Fujifilm devices, simulations, backups, and rendering
+fujicli \- A fail\-closed CLI for inspecting Fujifilm cameras and verified USB/PTP backup workflows
 .SH SYNOPSIS
 \fBfujicli\fR [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIsubcommands\fR>
 .SH DESCRIPTION
-A CLI to manage Fujifilm devices, simulations, backups, and rendering
+A fail\-closed CLI for inspecting Fujifilm cameras and verified USB/PTP backup workflows
 .SH OPTIONS
 .TP
 \fB\-v\fR, \fB\-\-verbose\fR
 Log extra debugging information (multiple instances increase verbosity)
 .TP
 \fB\-h\fR, \fB\-\-help\fR
-Print help
+Print help (see a summary with \*(Aq\-h\*(Aq)
 .TP
 \fB\-V\fR, \fB\-\-version\fR
 Print version
@@ -33,6 +33,16 @@ Manage and render images
 .TP
 fujicli\-completion(1)
 Generate a shell completion script
+.SH EXTRA
+Examples:
+  fujicli device list
+  fujicli device info
+
+Web:
+  Documentation: https://github.com/po4yka/fuji\-cli/blob/main/docs/README.md
+  Issues:        https://github.com/po4yka/fuji\-cli/issues
+  Support:       https://github.com/po4yka/fuji\-cli/blob/main/SUPPORT.md
+  Security:      https://github.com/po4yka/fuji\-cli/security/policy
 .SH VERSION
 v0.2.0
 .SH AUTHORS

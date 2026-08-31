@@ -25,7 +25,7 @@ function __fish_fujicli_using_subcommand
 end
 
 complete -c fujicli -n "__fish_fujicli_needs_command" -s v -l verbose -d 'Log extra debugging information (multiple instances increase verbosity)'
-complete -c fujicli -n "__fish_fujicli_needs_command" -s h -l help -d 'Print help'
+complete -c fujicli -n "__fish_fujicli_needs_command" -s h -l help -d 'Print help (see more with \'--help\')'
 complete -c fujicli -n "__fish_fujicli_needs_command" -s V -l version -d 'Print version'
 complete -c fujicli -n "__fish_fujicli_needs_command" -f -a "device" -d 'Manage devices'
 complete -c fujicli -n "__fish_fujicli_needs_command" -f -a "simulation" -d 'Manage film simulations'
