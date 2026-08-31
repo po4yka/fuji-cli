@@ -13,9 +13,9 @@ workspace = true
 default = []
 reverse-tools = ["fujicli/reverse-tools"]
 dangerous-reverse-engineering = [
-    "reverse-tools",
-    "fujicli/dangerous-reverse-engineering",
-    "dep:ctrlc",
+  "reverse-tools",
+  "fujicli/dangerous-reverse-engineering",
+  "dep:ctrlc",
 ]
 
 [[bin]]
