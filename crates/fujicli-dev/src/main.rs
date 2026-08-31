@@ -85,6 +85,31 @@ mod tests {
     }
 
     #[test]
+    fn value_printing_is_opt_in_per_probe() {
+        let parsed = Cli::try_parse_from([
+            "fujicli-dev",
+            "--device",
+            "1.2",
+            "discover",
+            "simulation",
+            "--print-values",
+        ]);
+        assert!(parsed.is_ok(), "{parsed:?}");
+
+        let error = Cli::try_parse_from([
+            "fujicli-dev",
+            "--device",
+            "1.2",
+            "discover",
+            "render-profile",
+            "--print-values",
+            "out.json",
+        ])
+        .expect_err("render-profile writes an artifact and has no value printing");
+        assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
+    }
+
+    #[test]
     fn dangerous_commands_are_not_present() {
         let error = Cli::try_parse_from(["fujicli-dev", "--device", "1.2", "dangerous", "restore"])
             .expect_err("no state-changing reverse command is implemented");
