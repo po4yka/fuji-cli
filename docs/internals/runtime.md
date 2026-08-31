@@ -302,6 +302,18 @@ does not attempt rollback, readback, retry, or session reopening. A fully
 framed PTP rejection, including `DeviceBusy`, leaves the session healthy, so
 verified recovery remains possible.
 
+### Object stores in USB mode 0x6
+
+In USB RAW CONV./BACKUP RESTORE mode the X-T5 does not expose the memory card.
+`GetStorageIDs` returns two virtual stores, `0x10000001` ("Still") and
+`0x10000002` ("Live"), both reported as fixed RAM with generic hierarchical
+filesystem, read-only-with-deletion access, unknown capacity, and no objects at
+rest. Uploaded RAFs and rendered JPEGs live there, which is why render and
+`image recover` handles refer to camera-side objects rather than card files, and
+why a handle that no longer exists answers `InvalidObjectHandle`. The card
+itself is only visible in USB CARD READER mode, where none of the Fujifilm
+vendor properties exist.
+
 ### `CameraRenderManager`
 
 [`features/render/manager.rs`](../../src/lib/features/render/manager.rs)
