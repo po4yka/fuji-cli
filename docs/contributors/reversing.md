@@ -173,12 +173,14 @@ Future Dangerous Probe" above:
    exist; the export path reuses the same validated no-clobber writer as
    `discover backup export`) and computes its SHA-256 digest.
 5. Appends one JSONL line to `audit-log` (created with mode `0600` if
-   absent, otherwise appended to) recording the attempt -- timestamp, tool
-   version, invocation ID, operation/risk class, the two PTP operation
-   codes involved, USB location, VID:PID, bounded model/firmware, the serial
-   fingerprint, the pre-backup digest, and outcome `attempted`. This record
-   is durably written *before* the mutating send, so a durable trail exists
-   even if the process is interrupted immediately afterward.
+   absent). Symlinks are rejected; on Unix, an existing file is accepted
+   only when it grants no group or other access. The line records the attempt
+   -- timestamp, tool version, invocation ID, operation/risk class, the two
+   PTP operation codes involved, USB location, VID:PID, bounded
+   model/firmware, the serial fingerprint, the pre-backup digest, and outcome
+   `attempted`. This record is durably written *before* the mutating send, so
+   a durable trail exists even if the process is interrupted immediately
+   afterward.
 6. Reads the current raw value of `0xD18C` (snapshot), writes the chosen
    C1-C7 slot's wire value once, reads `0xD18C` back (observed), writes the
    snapshot value back once (restore), and reads `0xD18C` once more to

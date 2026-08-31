@@ -94,7 +94,8 @@ pub enum ProbeCommand {
         /// New (not-yet-existing) path for the mandatory pre-probe backup.
         backup: NewOutput,
 
-        /// Path to the append-only JSONL audit log (created if absent).
+        /// Path to the append-only JSONL audit log. Symlinks are rejected;
+        /// on Unix, an existing file must grant no group/other access.
         audit_log: PathBuf,
 
         /// SHA-256 fingerprint of the connected camera's serial number, as

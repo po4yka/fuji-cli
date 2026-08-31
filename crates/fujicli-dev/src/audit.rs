@@ -8,10 +8,22 @@
 use std::{fs::OpenOptions, io::Write as _, path::Path};
 
 #[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt as _;
+use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+#[cfg(windows)]
+use std::os::windows::fs::OpenOptionsExt as _;
 
 use anyhow::Context as _;
 use serde_json::json;
+
+#[cfg(target_os = "linux")]
+// `O_NOFOLLOW` from Linux `fcntl.h`.
+const NO_FOLLOW_FLAG: i32 = 0o400_000;
+#[cfg(target_os = "macos")]
+// `O_NOFOLLOW` from macOS `fcntl.h`.
+const NO_FOLLOW_FLAG: i32 = 0x0000_0100;
+#[cfg(windows)]
+// `FILE_FLAG_OPEN_REPARSE_POINT` from the Windows file API.
+const NO_FOLLOW_FLAG: u32 = 0x0020_0000;
 
 /// One durable audit record. Every field here is allowed by the contract in
 /// `reversing.md`; do not widen this struct without updating that contract.
@@ -57,7 +69,8 @@ impl AuditRecord {
 
 /// Appends one JSONL line to `path`, creating it with restrictive
 /// permissions (Unix mode `0600`) if it does not already exist. Never
-/// truncates or overwrites existing lines.
+/// truncates or overwrites existing lines. Rejects symlinks and, on Unix,
+/// existing files that grant group or other access.
 pub fn append(path: &Path, record: &AuditRecord) -> anyhow::Result<()> {
     let mut line = serde_json::to_vec(&record.to_json()).context("serializing audit record")?;
     line.push(b'\n');
@@ -66,10 +79,29 @@ pub fn append(path: &Path, record: &AuditRecord) -> anyhow::Result<()> {
     options.create(true).append(true);
     #[cfg(unix)]
     options.mode(0o600);
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    options.custom_flags(NO_FOLLOW_FLAG);
+    #[cfg(windows)]
+    options.custom_flags(NO_FOLLOW_FLAG);
+
+    #[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+    anyhow::bail!("secure audit-log opening is unsupported on this Unix target");
 
     let mut file = options
         .open(path)
         .with_context(|| format!("opening audit log {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        let mode = file
+            .metadata()
+            .context("reading audit log permissions")?
+            .permissions()
+            .mode();
+        anyhow::ensure!(
+            mode.trailing_zeros() >= 6,
+            "audit log permissions grant group or other access"
+        );
+    }
     file.write_all(&line).context("appending audit record")?;
     file.flush().context("flushing audit log")?;
     file.sync_all().context("syncing audit log")?;
@@ -94,7 +126,7 @@ pub fn bound(value: &str, max_bytes: usize) -> String {
 mod tests {
     use std::collections::BTreeSet;
 
-    use super::{AuditRecord, bound};
+    use super::{AuditRecord, append, bound};
 
     fn sample_record() -> AuditRecord {
         AuditRecord {
@@ -195,5 +227,47 @@ mod tests {
         let long = "x".repeat(200);
         let truncated = bound(&long, 64);
         assert_eq!(truncated.len(), 64);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn audit_log_rejects_symlink_without_touching_its_target() {
+        use std::os::unix::fs::symlink;
+
+        let tempdir = tempfile::tempdir().expect("tempdir must be created");
+        let target = tempdir.path().join("target.jsonl");
+        let audit_log = tempdir.path().join("audit.jsonl");
+        std::fs::write(&target, b"sentinel\n").expect("target fixture must be written");
+        symlink(&target, &audit_log).expect("audit symlink fixture must be created");
+
+        let error = append(&audit_log, &sample_record())
+            .expect_err("an audit log symlink must be rejected");
+
+        assert!(error.to_string().contains("audit log"));
+        assert_eq!(
+            std::fs::read(&target).expect("target fixture must remain readable"),
+            b"sentinel\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn audit_log_rejects_existing_file_with_public_permissions() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let tempdir = tempfile::tempdir().expect("tempdir must be created");
+        let audit_log = tempdir.path().join("audit.jsonl");
+        std::fs::write(&audit_log, b"sentinel\n").expect("audit fixture must be written");
+        std::fs::set_permissions(&audit_log, std::fs::Permissions::from_mode(0o644))
+            .expect("audit fixture permissions must be set");
+
+        let error = append(&audit_log, &sample_record())
+            .expect_err("a publicly readable audit log must be rejected");
+
+        assert!(error.to_string().contains("permissions"));
+        assert_eq!(
+            std::fs::read(&audit_log).expect("audit fixture must remain readable"),
+            b"sentinel\n"
+        );
     }
 }
