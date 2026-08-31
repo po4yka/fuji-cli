@@ -58,7 +58,10 @@ impl Input {
                 let reader = File::open(path).with_context(|| format!("opening {description}"))?;
                 (Box::new(reader), Some(known_len))
             }
-            Self::Stdin => (Box::new(io::stdin()), None),
+            Self::Stdin => {
+                log::trace!("waiting for {description} on stdin");
+                (Box::new(io::stdin()), None)
+            }
         };
         read_limited_from(reader, known_len, max_len, description)
     }

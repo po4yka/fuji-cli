@@ -34,13 +34,16 @@ fn handle_result(result: anyhow::Result<()>) -> anyhow::Result<()> {
     }
 }
 
-/// Whether `error`'s chain carries the [`CameraStateUnknown`] marker,
-/// meaning a state-changing camera operation was already sent and its
-/// outcome is unconfirmed. `anyhow::Error::is` searches the whole context
-/// chain (not only the outermost layer), so this finds the marker
-/// regardless of how many `.context(...)` layers were added on top of it.
-fn is_camera_state_unknown(error: &anyhow::Error) -> bool {
-    error.is::<CameraStateUnknown>()
+/// Map an application error to the documented process status. A
+/// [`CameraStateUnknown`] marker means a state-changing camera operation was
+/// already sent and its outcome is unconfirmed. `anyhow::Error::is` searches
+/// the whole context chain, so the mapping is independent of added context.
+fn error_exit_code(error: &anyhow::Error) -> u8 {
+    if error.is::<CameraStateUnknown>() {
+        CAMERA_STATE_UNKNOWN_EXIT_CODE
+    } else {
+        1
+    }
 }
 
 fn main() -> ExitCode {
@@ -48,11 +51,7 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("Error: {error:?}");
-            if is_camera_state_unknown(&error) {
-                ExitCode::from(CAMERA_STATE_UNKNOWN_EXIT_CODE)
-            } else {
-                ExitCode::FAILURE
-            }
+            ExitCode::from(error_exit_code(&error))
         }
     }
 }
@@ -61,7 +60,7 @@ fn main() -> ExitCode {
 mod tests {
     use std::io;
 
-    use super::{CameraStateUnknown, handle_result, is_camera_state_unknown};
+    use super::{CameraStateUnknown, error_exit_code, handle_result};
 
     #[test]
     fn broken_stdout_pipe_is_a_successful_cli_exit() {
@@ -73,16 +72,16 @@ mod tests {
     }
 
     #[test]
-    fn error_carrying_the_marker_is_classified_as_state_unknown() {
+    fn error_carrying_the_marker_maps_to_state_unknown_exit_code() {
         let error = anyhow::Error::new(CameraStateUnknown).context("operation outcome unconfirmed");
 
-        assert!(is_camera_state_unknown(&error));
+        assert_eq!(error_exit_code(&error), 3);
     }
 
     #[test]
-    fn error_without_the_marker_is_not_classified_as_state_unknown() {
+    fn ordinary_error_maps_to_operational_failure_exit_code() {
         let error = anyhow::anyhow!("plain failure").context("more context");
 
-        assert!(!is_camera_state_unknown(&error));
+        assert_eq!(error_exit_code(&error), 1);
     }
 }

@@ -306,6 +306,17 @@ inspect`, and `backup import --dry-run`. Without it, text output is
 human-readable. Commands whose output is already binary or has no structured
 result do not accept `--json`.
 
+Each `--json` invocation writes exactly one UTF-8 JSON document followed by a
+newline. Requested data goes to stdout; diagnostics and logs go to stderr.
+Object member order is not semantic, but field names, value types, and nesting
+are part of the public process contract. In particular, `backup inspect
+--json` returns `artifactSha256`, `formatVersion`, `payloadLen`,
+`payloadSha256`, `purpose`, and `source`; `source` contains `cameraName`,
+`firmware`, `manufacturer`, `model`, numeric `productId`, `serialSha256`, and
+numeric `vendorId`. A consumer that closes stdout after receiving enough data
+is treated as a successful early termination rather than an operational
+failure.
+
 `-v` (repeatable: `-v`, `-vv`, `-vvv`) raises log verbosity. For `device
 reverse` commands, `-vvv` reports PTP operation metadata and response lengths,
 but never response payloads, camera serial numbers, backup contents, or
@@ -323,4 +334,7 @@ before any camera write. `2` means clap rejected the command line itself
 a state-changing operation was already sent to the camera and its outcome
 could not be confirmed afterward -- do not retry automatically; verify the
 camera's actual state first. `130` means the process was interrupted
-(Ctrl-C) outside of a camera write.
+(Ctrl-C) outside of a camera write. During a camera write, the first Ctrl-C is
+latched until the current PTP operation returns; the command then exits `3`
+and prints do-not-retry guidance. A second Ctrl-C forces immediate exit `3`
+because the camera state is necessarily unknown.

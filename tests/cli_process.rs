@@ -1,6 +1,15 @@
 use std::{
+    io::Write as _,
     path::Path,
-    process::{Command, Output},
+    process::{Command, Output, Stdio},
+};
+
+#[cfg(unix)]
+use std::{
+    io::{BufRead as _, BufReader, Read as _},
+    sync::mpsc,
+    thread,
+    time::Duration,
 };
 
 use fujicli::features::backup::{BackupArtifact, BackupIdentity, BackupPurpose, sha256_hex};
@@ -11,6 +20,177 @@ fn run(arguments: &[&str]) -> Output {
         .args(arguments)
         .output()
         .expect("fujicli process must start")
+}
+
+fn sample_backup_artifact() -> anyhow::Result<BackupArtifact> {
+    BackupArtifact::create(
+        BackupPurpose::Portable,
+        BackupIdentity {
+            camera_name: "FUJIFILM X-T5".to_owned(),
+            vendor_id: 0x04cb,
+            product_id: 0x02fc,
+            manufacturer: "FUJIFILM".to_owned(),
+            model: "X-T5".to_owned(),
+            firmware: "4.31".to_owned(),
+            serial_sha256: sha256_hex(b"process-test-serial"),
+        },
+        b"native backup payload",
+    )
+}
+
+#[cfg(unix)]
+#[test]
+fn idle_sigint_exits_130_without_writing_stdout() -> anyhow::Result<()> {
+    let directory = tempdir()?;
+    let recovery = directory.path().join("recovery.fbk");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_fujicli"))
+        .args([
+            "-vvv",
+            "backup",
+            "import",
+            "-",
+            "--yes",
+            "--recovery-backup",
+        ])
+        .arg(&recovery)
+        .args([
+            "--expect-sha256",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+            "--allow-stdin",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let stdin = child.stdin.take().expect("piped stdin must be available");
+    let stdout = child.stdout.take().expect("piped stdout must be available");
+    let stderr = child.stderr.take().expect("piped stderr must be available");
+
+    let stdout_reader = thread::spawn(move || {
+        let mut output = Vec::new();
+        BufReader::new(stdout).read_to_end(&mut output)?;
+        Ok::<_, std::io::Error>(output)
+    });
+    let (ready_tx, ready_rx) = mpsc::channel();
+    let stderr_reader = thread::spawn(move || {
+        let mut output = Vec::new();
+        for line in BufReader::new(stderr).lines() {
+            let line = line?;
+            if line.contains("waiting for backup input on stdin") {
+                let _ = ready_tx.send(());
+            }
+            output.extend_from_slice(line.as_bytes());
+            output.push(b'\n');
+        }
+        Ok::<_, std::io::Error>(output)
+    });
+
+    if ready_rx.recv_timeout(Duration::from_secs(5)).is_err() {
+        child.kill()?;
+        child.wait()?;
+        drop(stdin);
+        stdout_reader
+            .join()
+            .expect("stdout reader thread must not panic")?;
+        let stderr = stderr_reader
+            .join()
+            .expect("stderr reader thread must not panic")?;
+        anyhow::bail!(
+            "process did not report stdin readiness; stderr: {}",
+            String::from_utf8_lossy(&stderr)
+        );
+    }
+
+    let signal = Command::new("kill")
+        .args(["-INT", &child.id().to_string()])
+        .status()?;
+    assert!(signal.success(), "kill -INT must succeed");
+
+    let (finished_tx, finished_rx) = mpsc::channel();
+    let child_id = child.id();
+    let watchdog = thread::spawn(move || {
+        if finished_rx.recv_timeout(Duration::from_secs(5)).is_err() {
+            drop(
+                Command::new("kill")
+                    .args(["-KILL", &child_id.to_string()])
+                    .status(),
+            );
+        }
+    });
+    let status = child.wait()?;
+    let _ = finished_tx.send(());
+    watchdog.join().expect("watchdog thread must not panic");
+    drop(stdin);
+    let stdout = stdout_reader
+        .join()
+        .expect("stdout reader thread must not panic")?;
+    let stderr = stderr_reader
+        .join()
+        .expect("stderr reader thread must not panic")?;
+
+    assert_eq!(status.code(), Some(130));
+    assert!(stdout.is_empty());
+    assert!(String::from_utf8_lossy(&stderr).contains("interrupted"));
+    assert!(!recovery.exists());
+    Ok(())
+}
+
+#[test]
+fn closed_stdout_is_a_successful_process_exit() -> anyhow::Result<()> {
+    let artifact = sample_backup_artifact()?;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_fujicli"))
+        .args(["backup", "inspect", "-", "--json"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+
+    drop(child.stdout.take().expect("piped stdout must be available"));
+    let mut stdin = child.stdin.take().expect("piped stdin must be available");
+    stdin.write_all(artifact.as_bytes())?;
+    drop(stdin);
+    let output = child.wait_with_output()?;
+
+    assert_eq!(output.status.code(), Some(0));
+    assert!(output.stdout.is_empty());
+    assert!(output.stderr.is_empty());
+    Ok(())
+}
+
+#[test]
+fn backup_inspect_json_has_a_stable_process_contract() -> anyhow::Result<()> {
+    let directory = tempdir()?;
+    let path = directory.path().join("camera.fbk");
+    let artifact = sample_backup_artifact()?;
+    std::fs::write(&path, artifact.as_bytes())?;
+    let path = path.to_string_lossy();
+
+    let output = run(&["backup", "inspect", &path, "--json"]);
+
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8(output.stdout)?,
+        concat!(
+            "{\n",
+            "  \"artifactSha256\": \"85800ca4598398f7443de9be0cd19ea3af0aa102b43db231a358a56330ee3b42\",\n",
+            "  \"formatVersion\": 1,\n",
+            "  \"payloadLen\": 21,\n",
+            "  \"payloadSha256\": \"09e31808e0b2da1c8a8110bbbb6f20cb88fec0c1f03d91664b7876ac3cc6791b\",\n",
+            "  \"purpose\": \"portable\",\n",
+            "  \"source\": {\n",
+            "    \"cameraName\": \"FUJIFILM X-T5\",\n",
+            "    \"firmware\": \"4.31\",\n",
+            "    \"manufacturer\": \"FUJIFILM\",\n",
+            "    \"model\": \"X-T5\",\n",
+            "    \"productId\": 764,\n",
+            "    \"serialSha256\": \"ef1c012340f88741a524f3934ecd8e41c4fac4f7c0dbdcb0d2b30db712d58fbf\",\n",
+            "    \"vendorId\": 1227\n",
+            "  }\n",
+            "}\n",
+        )
+    );
+    assert!(output.stderr.is_empty());
+    Ok(())
 }
 
 #[test]
@@ -701,19 +881,7 @@ fn simulation_export_force_allows_existing_output_before_usb_access() -> anyhow:
 fn backup_inspect_validates_artifact_without_usb_device() -> anyhow::Result<()> {
     let directory = tempdir()?;
     let path = directory.path().join("camera.fbk");
-    let artifact = BackupArtifact::create(
-        BackupPurpose::Portable,
-        BackupIdentity {
-            camera_name: "FUJIFILM X-T5".to_owned(),
-            vendor_id: 0x04cb,
-            product_id: 0x02fc,
-            manufacturer: "FUJIFILM".to_owned(),
-            model: "X-T5".to_owned(),
-            firmware: "4.31".to_owned(),
-            serial_sha256: sha256_hex(b"process-test-serial"),
-        },
-        b"native backup payload",
-    )?;
+    let artifact = sample_backup_artifact()?;
     std::fs::write(&path, artifact.as_bytes())?;
     let path = path.to_string_lossy();
 
@@ -764,19 +932,7 @@ fn backup_fingerprint_mismatch_fails_before_usb_or_recovery_export() -> anyhow::
     let directory = tempdir()?;
     let input = directory.path().join("camera.fbk");
     let recovery = directory.path().join("recovery.fbk");
-    let artifact = BackupArtifact::create(
-        BackupPurpose::Portable,
-        BackupIdentity {
-            camera_name: "FUJIFILM X-T5".to_owned(),
-            vendor_id: 0x04cb,
-            product_id: 0x02fc,
-            manufacturer: "FUJIFILM".to_owned(),
-            model: "X-T5".to_owned(),
-            firmware: "4.31".to_owned(),
-            serial_sha256: sha256_hex(b"process-test-serial"),
-        },
-        b"native backup payload",
-    )?;
+    let artifact = sample_backup_artifact()?;
     std::fs::write(&input, artifact.as_bytes())?;
     let input_argument = input.to_string_lossy();
     let recovery_argument = recovery.to_string_lossy();
