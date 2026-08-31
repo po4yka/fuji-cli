@@ -4,8 +4,8 @@ use anyhow::{Context as _, ensure};
 use clap::{Args, Subcommand};
 use fujicli::{
     features::backup::{
-        BACKUP_ARTIFACT_FORMAT_VERSION, BackupArtifact, BackupIdentity, BackupPurpose,
-        BackupRestoreAccepted, MAX_BACKUP_ARTIFACT_BYTES,
+        BACKUP_ARTIFACT_FORMAT_VERSION, BackupArtifact, BackupIdentity, BackupImportError,
+        BackupImportState, BackupPurpose, BackupRestoreAccepted, MAX_BACKUP_ARTIFACT_BYTES,
     },
     policy::SerialFingerprint,
 };
@@ -19,6 +19,29 @@ use crate::cli::{
 use super::common::file::{Input, Output, write_stdout_line};
 
 const BACKUP_RECONNECT_TIMEOUT: Duration = Duration::from_mins(2);
+
+const fn backup_import_state_is_unknown(state: BackupImportState) -> bool {
+    match state {
+        BackupImportState::Unknown => true,
+    }
+}
+
+fn tag_state_unknown_error(error: anyhow::Error) -> anyhow::Error {
+    anyhow::Error::new(CameraStateUnknown).context(error)
+}
+
+fn tag_backup_import_state_unknown<T>(result: anyhow::Result<T>) -> anyhow::Result<T> {
+    result.map_err(|error| {
+        if error
+            .downcast_ref::<BackupImportError>()
+            .is_some_and(|error| backup_import_state_is_unknown(error.state()))
+        {
+            tag_state_unknown_error(error)
+        } else {
+            error
+        }
+    })
+}
 
 /// Attach the [`CameraStateUnknown`] marker to `result`'s error, if any,
 /// alongside the given human-readable explanation. Used after a
@@ -347,7 +370,9 @@ fn handle_import(options: GlobalOptions, args: BackupImportArgs) -> anyhow::Resu
                 validated_backup_import_target_warning(camera_name, &usb_id)
             );
             interrupt::critical_camera_write("backup restore", || {
-                session.restore(backup, target_serial_sha256.as_deref())
+                tag_backup_import_state_unknown(
+                    session.restore(backup, target_serial_sha256.as_deref()),
+                )
             })
         },
     )?;
@@ -387,12 +412,16 @@ fn verify_restore_persisted(
         camera.export_backup(BackupPurpose::Recovery),
         "backup restore was accepted, but exporting a fresh-session verification backup failed; camera state is unknown and the restore must not be retried automatically",
     )?;
-    backup.validate_target(&observed.manifest().source, target_serial_sha256)?;
+    backup
+        .validate_target(&observed.manifest().source, target_serial_sha256)
+        .map_err(tag_state_unknown_error)?;
     ensure_state_known(
         observed.manifest().source == *target,
         "fresh-session backup identity changed after restore; camera state is unknown",
     )?;
-    let verified = accepted.verify_post_restore_export(backup, &observed)?;
+    let verified = accepted
+        .verify_post_restore_export(backup, &observed)
+        .map_err(|error| tag_state_unknown_error(error.into()))?;
     warn!(
         "Backup restore was semantically verified and persisted across a fresh camera session (payload SHA-256 {})",
         verified.payload_sha256()
@@ -412,10 +441,25 @@ pub fn handle(cmd: BackupCmd, options: GlobalOptions) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ImportMode, ImportSource, StdinPermission, ensure_import_confirmation,
-        ensure_import_input_policy, restore_after_recovery_saved,
+        BackupImportState, CameraStateUnknown, ImportMode, ImportSource, StdinPermission,
+        backup_import_state_is_unknown, ensure_import_confirmation, ensure_import_input_policy,
+        restore_after_recovery_saved, tag_state_unknown_error,
     };
     use fujicli::features::backup::{BackupArtifact, BackupIdentity, BackupPurpose, sha256_hex};
+
+    #[test]
+    fn backup_import_unknown_state_is_non_retryable() {
+        assert!(backup_import_state_is_unknown(BackupImportState::Unknown));
+    }
+
+    #[test]
+    fn state_unknown_tag_preserves_the_operator_message() {
+        let message = "restore outcome unconfirmed";
+        let tagged = tag_state_unknown_error(anyhow::anyhow!(message));
+
+        assert!(tagged.is::<CameraStateUnknown>());
+        assert_eq!(tagged.to_string(), message);
+    }
 
     #[test]
     fn safe_backup_import_rejects_emulated_target() {

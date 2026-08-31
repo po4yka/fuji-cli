@@ -9,18 +9,10 @@
 use std::process::ExitCode;
 
 use clap::Parser;
-use cli::common::camera_state::CameraStateUnknown;
+use cli::common::camera_state::{CAMERA_STATE_UNKNOWN_EXIT_CODE, CameraStateUnknown};
 
 mod cli;
 mod log;
-
-/// Exit code for a failure where a state-changing camera operation was
-/// already sent and its outcome could not be confirmed. Distinct from the
-/// generic failure code (`1`) so wrapper scripts can tell "safe to retry"
-/// apart from "camera state is unknown -- do not retry automatically"
-/// without scraping stderr text. Part of the CLI's public exit-code
-/// contract; see `docs/users/usage.md`.
-const CAMERA_STATE_UNKNOWN_EXIT_CODE: u8 = 3;
 
 fn run() -> anyhow::Result<()> {
     let cli = cli::Cli::parse();

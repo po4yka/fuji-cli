@@ -1,5 +1,10 @@
 use std::fmt;
 
+/// Exit code for a failure where a state-changing camera operation was
+/// already sent and its outcome could not be confirmed. Part of the CLI's
+/// public exit-code contract; see `docs/users/usage.md`.
+pub const CAMERA_STATE_UNKNOWN_EXIT_CODE: u8 = 3;
+
 /// Marker attached to an error chain when a state-changing camera operation
 /// has already been sent to the camera and its outcome could not be
 /// confirmed afterward. Callers attach it alongside the existing

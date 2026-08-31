@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use log::warn;
 
-use super::camera_state::CameraStateUnknown;
+use super::camera_state::{CAMERA_STATE_UNKNOWN_EXIT_CODE, CameraStateUnknown};
 
 /// Set while a `critical_camera_write` operation is in flight. The Ctrl-C
 /// handler consults this to decide whether to latch the interrupt or exit
@@ -14,6 +14,14 @@ static IN_CRITICAL_WRITE: AtomicBool = AtomicBool::new(false);
 /// do-not-retry guidance instead of treating the write as a clean success.
 static INTERRUPTS_SEEN: AtomicU8 = AtomicU8::new(0);
 
+fn interrupt_exit_code(during_critical_write: bool) -> i32 {
+    if during_critical_write {
+        i32::from(CAMERA_STATE_UNKNOWN_EXIT_CODE)
+    } else {
+        130
+    }
+}
+
 /// Install the process-wide Ctrl-C handler. Call exactly once, before
 /// dispatching any command.
 pub fn install() -> anyhow::Result<()> {
@@ -21,7 +29,7 @@ pub fn install() -> anyhow::Result<()> {
         if !IN_CRITICAL_WRITE.load(Ordering::SeqCst) {
             // Not inside a camera write: behave like the default disposition.
             eprintln!("interrupted");
-            std::process::exit(130);
+            std::process::exit(interrupt_exit_code(false));
         }
         let seen = INTERRUPTS_SEEN.fetch_add(1, Ordering::SeqCst);
         if seen == 0 {
@@ -32,7 +40,7 @@ pub fn install() -> anyhow::Result<()> {
             eprintln!(
                 "forced quit during a camera write; camera state is unknown. DO NOT RETRY AUTOMATICALLY"
             );
-            std::process::exit(130);
+            std::process::exit(interrupt_exit_code(true));
         }
     })?;
     Ok(())
@@ -92,7 +100,13 @@ pub fn critical_camera_write<T>(
 mod tests {
     use std::sync::atomic::Ordering;
 
-    use super::{INTERRUPTS_SEEN, critical_camera_write};
+    use super::{INTERRUPTS_SEEN, critical_camera_write, interrupt_exit_code};
+
+    #[test]
+    fn forced_interrupt_during_camera_write_is_state_unknown() {
+        assert_eq!(interrupt_exit_code(false), 130);
+        assert_eq!(interrupt_exit_code(true), 3);
+    }
 
     /// Test-only helper: simulate an interrupt having been latched during the
     /// operation, without installing a real signal handler.
