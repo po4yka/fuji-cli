@@ -1,0 +1,2 @@
+# Generated CLI assets are compared byte-for-byte on every supported host.
+/assets/share/** text eol=lf
