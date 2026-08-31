@@ -88,7 +88,11 @@ A transformation is **invertible** iff:
 
 The first constraint makes the inverse unambiguous to detect _on read_; the
 second makes it unambiguous to _attribute_. If those conditions don't hold, the
-transformation is one-way. Codegen emits a `cargo:warning` listing it.
+transformation is one-way. Declare that intent with `one_way: true` on the
+transformation; codegen then skips the inverse silently. An undeclared one-way
+transformation still builds, but codegen emits a `cargo:warning` listing it, and
+declaring `one_way: true` on a transformation that _is_ invertible is a build
+error.
 
 ### Example: Value Flattening
 

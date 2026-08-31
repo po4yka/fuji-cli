@@ -672,12 +672,14 @@ cameras: {
 						{
 							when: {not: {ref: "white_balance", equals: "as_shot"}}
 							apply: [{ref: "white_balance_as_shot", value: 0x02}]
+							one_way: true
 						},
 						{
 							apply: [
 								{ref: "head_0", value: 0},
 								{ref: "tail_0", value: 0},
 							]
+							one_way: true
 						},
 					]
 					rules: [
