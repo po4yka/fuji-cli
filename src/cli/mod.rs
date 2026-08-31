@@ -4,9 +4,10 @@ pub mod device;
 pub mod image;
 pub mod simulation;
 
-use std::ffi::OsString;
+use std::{ffi::OsString, io::Write as _};
 
-use clap::{ArgAction, Args, CommandFactory, Parser, Subcommand};
+use clap::{ArgAction, Args, CommandFactory, Parser, Subcommand, ValueEnum};
+use clap_complete::{Shell, generate};
 
 use backup::BackupCmd;
 use device::DeviceCmd;
@@ -95,6 +96,49 @@ pub enum Commands {
     /// Manage and render images
     #[command(alias = "i", subcommand)]
     Image(ImageCmd),
+
+    /// Generate a shell completion script
+    Completion {
+        /// Shell whose completion script should be generated
+        #[arg(value_enum)]
+        shell: CompletionShell,
+    },
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum CompletionShell {
+    Bash,
+    Zsh,
+    Fish,
+    #[value(name = "powershell")]
+    PowerShell,
+}
+
+impl From<CompletionShell> for Shell {
+    fn from(shell: CompletionShell) -> Self {
+        match shell {
+            CompletionShell::Bash => Self::Bash,
+            CompletionShell::Zsh => Self::Zsh,
+            CompletionShell::Fish => Self::Fish,
+            CompletionShell::PowerShell => Self::PowerShell,
+        }
+    }
+}
+
+fn write_completion(shell: CompletionShell) -> anyhow::Result<()> {
+    let mut script = Vec::new();
+    generate(
+        Shell::from(shell),
+        &mut Cli::command(),
+        "fujicli",
+        &mut script,
+    );
+
+    let stdout = std::io::stdout();
+    let mut stdout = stdout.lock();
+    stdout.write_all(&script)?;
+    stdout.flush()?;
+    Ok(())
 }
 
 pub fn handle(cli: Cli) -> Result<(), anyhow::Error> {
@@ -103,6 +147,7 @@ pub fn handle(cli: Cli) -> Result<(), anyhow::Error> {
         Commands::Backup(backup_cmd) => backup::handle(backup_cmd)?,
         Commands::Simulation(simulation_cmd) => simulation::handle(simulation_cmd)?,
         Commands::Image(render_cmd) => image::handle(render_cmd)?,
+        Commands::Completion { shell } => write_completion(shell)?,
     };
 
     Ok(())

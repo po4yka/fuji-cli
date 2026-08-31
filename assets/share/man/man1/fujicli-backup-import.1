@@ -4,7 +4,7 @@
 .SH NAME
 fujicli\-backup\-import \- Import backup
 .SH SYNOPSIS
-\fBfujicli backup import\fR [\fB\-\-yes\fR] [\fB\-\-dry\-run\fR] [\fB\-\-recovery\-backup\fR] [\fB\-\-expect\-sha256\fR] [\fB\-\-target\-serial\-sha256\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-allow\-stdin\fR] [\fB\-j\fR|\fB\-\-json\fR] [\fB\-d\fR|\fB\-\-device\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIINPUT\fR>
+\fBfujicli backup import\fR [\fB\-\-yes\fR] [\fB\-\-dry\-run\fR] [\fB\-\-recovery\-backup\fR] [\fB\-\-expect\-sha256\fR] [\fB\-\-target\-serial\-sha256\fR] [\fB\-\-allow\-stdin\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-j\fR|\fB\-\-json\fR] [\fB\-d\fR|\fB\-\-device\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIINPUT\fR>
 .SH DESCRIPTION
 Import backup
 .SH OPTIONS
@@ -24,11 +24,11 @@ Expected SHA\-256 of the complete input artifact
 \fB\-\-target\-serial\-sha256\fR \fI<TARGET_SERIAL_SHA256>\fR
 Expected SHA\-256 fingerprint of a different target camera serial
 .TP
-\fB\-v\fR, \fB\-\-verbose\fR
-Log extra debugging information (multiple instances increase verbosity)
-.TP
 \fB\-\-allow\-stdin\fR
 Permit destructive import from stdin (also requires \-\-expect\-sha256)
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Log extra debugging information (multiple instances increase verbosity)
 .TP
 \fB\-j\fR, \fB\-\-json\fR
 Format dry\-run output using JSON

@@ -449,6 +449,15 @@ esac
     ;;
 esac
 ;;
+(completion)
+_arguments "${_arguments_options[@]}" : \
+'*-v[Log extra debugging information (multiple instances increase verbosity)]' \
+'*--verbose[Log extra debugging information (multiple instances increase verbosity)]' \
+'-h[Print help]' \
+'--help[Print help]' \
+':shell -- Shell whose completion script should be generated:(bash zsh fish powershell)' \
+&& ret=0
+;;
 (help)
 _arguments "${_arguments_options[@]}" : \
 ":: :_fujicli__subcmd__help_commands" \
@@ -573,6 +582,10 @@ _arguments "${_arguments_options[@]}" : \
     ;;
 esac
 ;;
+(completion)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
 (help)
 _arguments "${_arguments_options[@]}" : \
 && ret=0
@@ -593,6 +606,7 @@ _fujicli_commands() {
 'simulation:Manage film simulations' \
 'backup:Manage backups' \
 'image:Manage and render images' \
+'completion:Generate a shell completion script' \
 'help:Print this message or the help of the given subcommand(s)' \
     )
     _describe -t commands 'fujicli commands' commands "$@"
@@ -652,6 +666,11 @@ _fujicli__subcmd__backup__subcmd__inspect_commands() {
     local commands; commands=()
     _describe -t commands 'fujicli backup inspect commands' commands "$@"
 }
+(( $+functions[_fujicli__subcmd__completion_commands] )) ||
+_fujicli__subcmd__completion_commands() {
+    local commands; commands=()
+    _describe -t commands 'fujicli completion commands' commands "$@"
+}
 (( $+functions[_fujicli__subcmd__device_commands] )) ||
 _fujicli__subcmd__device_commands() {
     local commands; commands=(
@@ -702,6 +721,7 @@ _fujicli__subcmd__help_commands() {
 'simulation:Manage film simulations' \
 'backup:Manage backups' \
 'image:Manage and render images' \
+'completion:Generate a shell completion script' \
 'help:Print this message or the help of the given subcommand(s)' \
     )
     _describe -t commands 'fujicli help commands' commands "$@"
@@ -729,6 +749,11 @@ _fujicli__subcmd__help__subcmd__backup__subcmd__import_commands() {
 _fujicli__subcmd__help__subcmd__backup__subcmd__inspect_commands() {
     local commands; commands=()
     _describe -t commands 'fujicli help backup inspect commands' commands "$@"
+}
+(( $+functions[_fujicli__subcmd__help__subcmd__completion_commands] )) ||
+_fujicli__subcmd__help__subcmd__completion_commands() {
+    local commands; commands=()
+    _describe -t commands 'fujicli help completion commands' commands "$@"
 }
 (( $+functions[_fujicli__subcmd__help__subcmd__device_commands] )) ||
 _fujicli__subcmd__help__subcmd__device_commands() {

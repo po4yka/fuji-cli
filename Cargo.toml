@@ -79,6 +79,7 @@ codegen-units = 1
 anyhow = "1.0.104"
 binrw = { version = "0.15.2", default-features = false, features = ["std"] }
 clap = { version = "4.6.6", features = ["derive", "wrap_help"] }
+clap_complete = "=4.6.6"
 ctrlc = "3.5"
 log = "0.4.34"
 log4rs = "1.4.0"
@@ -95,5 +96,4 @@ serde_with = "3.22.0"
 tempfile = "3.27.0"
 
 [dev-dependencies]
-clap_complete = "=4.6.6"
 clap_mangen = "=0.3.3"

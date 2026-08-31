@@ -31,6 +31,7 @@ Register-ArgumentCompleter -Native -CommandName 'fujicli' -ScriptBlock {
             [CompletionResult]::new('simulation', 'simulation', [CompletionResultType]::ParameterValue, 'Manage film simulations')
             [CompletionResult]::new('backup', 'backup', [CompletionResultType]::ParameterValue, 'Manage backups')
             [CompletionResult]::new('image', 'image', [CompletionResultType]::ParameterValue, 'Manage and render images')
+            [CompletionResult]::new('completion', 'completion', [CompletionResultType]::ParameterValue, 'Generate a shell completion script')
             [CompletionResult]::new('help', 'help', [CompletionResultType]::ParameterValue, 'Print this message or the help of the given subcommand(s)')
             break
         }
@@ -340,11 +341,19 @@ Register-ArgumentCompleter -Native -CommandName 'fujicli' -ScriptBlock {
         'fujicli;image;help;help' {
             break
         }
+        'fujicli;completion' {
+            [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Log extra debugging information (multiple instances increase verbosity)')
+            [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Log extra debugging information (multiple instances increase verbosity)')
+            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
+            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
+            break
+        }
         'fujicli;help' {
             [CompletionResult]::new('device', 'device', [CompletionResultType]::ParameterValue, 'Manage devices')
             [CompletionResult]::new('simulation', 'simulation', [CompletionResultType]::ParameterValue, 'Manage film simulations')
             [CompletionResult]::new('backup', 'backup', [CompletionResultType]::ParameterValue, 'Manage backups')
             [CompletionResult]::new('image', 'image', [CompletionResultType]::ParameterValue, 'Manage and render images')
+            [CompletionResult]::new('completion', 'completion', [CompletionResultType]::ParameterValue, 'Generate a shell completion script')
             [CompletionResult]::new('help', 'help', [CompletionResultType]::ParameterValue, 'Print this message or the help of the given subcommand(s)')
             break
         }
@@ -406,6 +415,9 @@ Register-ArgumentCompleter -Native -CommandName 'fujicli' -ScriptBlock {
             break
         }
         'fujicli;help;image;recover' {
+            break
+        }
+        'fujicli;help;completion' {
             break
         }
         'fujicli;help;help' {

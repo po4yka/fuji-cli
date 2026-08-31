@@ -19,6 +19,9 @@ _fujicli() {
             fujicli,backup)
                 cmd="fujicli__subcmd__backup"
                 ;;
+            fujicli,completion)
+                cmd="fujicli__subcmd__completion"
+                ;;
             fujicli,device)
                 cmd="fujicli__subcmd__device"
                 ;;
@@ -75,6 +78,9 @@ _fujicli() {
                 ;;
             fujicli__subcmd__help,backup)
                 cmd="fujicli__subcmd__help__subcmd__backup"
+                ;;
+            fujicli__subcmd__help,completion)
+                cmd="fujicli__subcmd__help__subcmd__completion"
                 ;;
             fujicli__subcmd__help,device)
                 cmd="fujicli__subcmd__help__subcmd__device"
@@ -185,7 +191,7 @@ _fujicli() {
 
     case "${cmd}" in
         fujicli)
-            opts="-v -h -V --verbose --help --version device simulation backup image help"
+            opts="-v -h -V --verbose --help --version device simulation backup image completion help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 1 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -352,6 +358,20 @@ _fujicli() {
             COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
             return 0
             ;;
+        fujicli__subcmd__completion)
+            opts="-v -h --verbose --help bash zsh fish powershell"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
         fujicli__subcmd__device)
             opts="-v -h --verbose --help list info help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
@@ -463,7 +483,7 @@ _fujicli() {
             return 0
             ;;
         fujicli__subcmd__help)
-            opts="device simulation backup image help"
+            opts="device simulation backup image completion help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -521,6 +541,20 @@ _fujicli() {
         fujicli__subcmd__help__subcmd__backup__subcmd__inspect)
             opts=""
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        fujicli__subcmd__help__subcmd__completion)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
             fi

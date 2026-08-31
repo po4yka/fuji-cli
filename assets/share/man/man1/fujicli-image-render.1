@@ -4,7 +4,7 @@
 .SH NAME
 fujicli\-image\-render \- Render image
 .SH SYNOPSIS
-\fBfujicli image render\fR [\fB\-\-simulation\-file\fR] [\fB\-\-draft\fR] [\fB\-\-clarity\fR] [\fB\-\-color\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-color\-chrome\-effect\fR] [\fB\-\-color\-chrome\-fx\-blue\fR] [\fB\-\-color\-space\fR] [\fB\-\-dynamic\-range\fR] [\fB\-\-dynamic\-range\-priority\fR] [\fB\-\-exposure\-offset\fR] [\fB\-\-file\-type\fR] [\fB\-\-film\-simulation\fR] [\fB\-\-grain\-effect\fR] [\fB\-\-highlight\-tone\fR] [\fB\-\-image\-quality\fR] [\fB\-\-image\-size\fR] [\fB\-\-lens\-modulation\-optimizer\fR] [\fB\-\-monochromatic\-color\-temperature\fR] [\fB\-\-monochromatic\-color\-tint\fR] [\fB\-\-noise\-reduction\fR] [\fB\-\-shadow\-tone\fR] [\fB\-\-sharpness\fR] [\fB\-\-smooth\-skin\-effect\fR] [\fB\-\-teleconverter\fR] [\fB\-\-white\-balance\fR] [\fB\-\-white\-balance\-shift\-blue\fR] [\fB\-\-white\-balance\-shift\-red\fR] [\fB\-\-white\-balance\-temperature\fR] [\fB\-\-force\fR] [\fB\-d\fR|\fB\-\-device\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-target\-serial\-sha256\fR> <\fIINPUT\fR> <\fIOUTPUT\fR>
+\fBfujicli image render\fR [\fB\-\-simulation\-file\fR] [\fB\-\-draft\fR] [\fB\-\-clarity\fR] [\fB\-\-color\fR] [\fB\-\-color\-chrome\-effect\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-color\-chrome\-fx\-blue\fR] [\fB\-\-color\-space\fR] [\fB\-\-dynamic\-range\fR] [\fB\-\-dynamic\-range\-priority\fR] [\fB\-\-exposure\-offset\fR] [\fB\-\-file\-type\fR] [\fB\-\-film\-simulation\fR] [\fB\-\-grain\-effect\fR] [\fB\-\-highlight\-tone\fR] [\fB\-\-image\-quality\fR] [\fB\-\-image\-size\fR] [\fB\-\-lens\-modulation\-optimizer\fR] [\fB\-\-monochromatic\-color\-temperature\fR] [\fB\-\-monochromatic\-color\-tint\fR] [\fB\-\-noise\-reduction\fR] [\fB\-\-shadow\-tone\fR] [\fB\-\-sharpness\fR] [\fB\-\-smooth\-skin\-effect\fR] [\fB\-\-teleconverter\fR] [\fB\-\-white\-balance\fR] [\fB\-\-white\-balance\-shift\-blue\fR] [\fB\-\-white\-balance\-shift\-red\fR] [\fB\-\-white\-balance\-temperature\fR] [\fB\-\-force\fR] [\fB\-d\fR|\fB\-\-device\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-target\-serial\-sha256\fR> <\fIINPUT\fR> <\fIOUTPUT\fR>
 .SH DESCRIPTION
 Render image
 .SH OPTIONS
@@ -28,13 +28,13 @@ Color
 
 Schema range: \-4..=4. Step: 1. Camera firmware may further restrict values.
 .TP
-\fB\-v\fR, \fB\-\-verbose\fR
-Log extra debugging information (multiple instances increase verbosity)
-.TP
 \fB\-\-color\-chrome\-effect\fR \fI<COLOR_CHROME_EFFECT>\fR
 Color Chrome Effect
 
 Schema values: strong, weak, off. Camera firmware may further restrict values.
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Log extra debugging information (multiple instances increase verbosity)
 .TP
 \fB\-\-color\-chrome\-fx\-blue\fR \fI<COLOR_CHROME_FX_BLUE>\fR
 Color Chrome FX Blue

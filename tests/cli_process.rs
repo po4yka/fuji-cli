@@ -208,6 +208,28 @@ fn help_is_stdout_only_and_successful() {
 }
 
 #[test]
+fn completion_writes_supported_shell_scripts_to_stdout() {
+    let cases = [
+        ("bash", "_fujicli()"),
+        ("zsh", "#compdef fujicli"),
+        ("fish", "complete -c fujicli"),
+        (
+            "powershell",
+            "Register-ArgumentCompleter -Native -CommandName 'fujicli'",
+        ),
+    ];
+
+    for (shell, marker) in cases {
+        let output = run(&["completion", shell]);
+
+        assert_eq!(output.status.code(), Some(0), "shell: {shell}");
+        assert!(output.stderr.is_empty(), "shell: {shell}");
+        let script = String::from_utf8(output.stdout).expect("completion output must be UTF-8");
+        assert!(script.contains(marker), "shell: {shell}\n{script}");
+    }
+}
+
+#[test]
 fn schema_driven_option_help_names_the_setting() {
     let output = run(&["simulation", "set", "--help"]);
 
