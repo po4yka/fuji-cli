@@ -88,6 +88,7 @@ mod tests {
 
     fn alias_t(when: Predicate, apply: Vec<(&str, Value)>) -> Transformation {
         Transformation {
+            one_way: false,
             when: Some(when),
             apply: apply
                 .into_iter()
@@ -179,6 +180,7 @@ mod tests {
     #[test]
     fn clear_in_apply_expands_to_present_false() {
         let ts = vec![Transformation {
+            one_way: false,
             when: Some(
                 LeafEquals {
                     r#ref: "wb".into(),
@@ -207,6 +209,7 @@ mod tests {
     #[test]
     fn mixed_set_and_clear_apply_produces_conjunction() {
         let ts = vec![Transformation {
+            one_way: false,
             when: Some(
                 LeafEquals {
                     r#ref: "wb".into(),

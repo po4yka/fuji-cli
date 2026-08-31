@@ -13,6 +13,11 @@ entry, USB mode, and battery.
 It also checks advertised operations and properties plus live property
 descriptors.
 
+The X-T5 on firmware `4.31` returns `GeneralError` for every
+`GetDevicePropDesc`. For read-only USB mode and battery requirements, preflight
+therefore validates the property values by their wire shape. Writable
+requirements still fail closed when their descriptors cannot be proven.
+
 Unknown firmware, unverified matrix entries, incomplete descriptors, and
 unsupported values fail before the intended mutation. Normal production
 commands have no experimental override.

@@ -75,10 +75,15 @@ battery 65%, macOS host, 2026-08-31, commits `e0654cf` and `3706f01`:
   evidence, not this run.
 - Before `e0654cf`, `backup export` failed on this camera because it answers
   `GetObjectInfo` without the 1020-byte padding seen in the original capture.
-- In USB Card Reader mode the camera exposes no Fuji properties and every
-  command fails with `DevicePropNotSupported (0x200a)`; the USB mode above is
-  required. See [macOS camera access](how-to/macos-camera-access.md) for
-  `ptpcamerad`.
+- In USB Card Reader mode the camera exposes no Fuji properties; since
+  `bec0858` `device info` names the required USB mode instead of failing with
+  `DevicePropNotSupported (0x200a)` (verified on the camera). See
+  [macOS camera access](how-to/macos-camera-access.md) for `ptpcamerad`.
+- The camera answers `GeneralError` to every `GetDevicePropDesc` in USB mode
+  `0x6`. Since `50cc37c`, preflight validates the read-only USB mode and
+  battery properties by value shape, so `image recover` reaches the camera
+  object lookup (verified). Simulation writes stay blocked: their writable
+  requirements cannot be proven without descriptors.
 
 The generated X-T5 capability matrix records Reala Ace as unavailable on
 firmware `3.01` and available from `4.00`. This records option availability only.

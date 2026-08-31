@@ -256,6 +256,18 @@ fn value_is_in_range(
 }
 
 impl DevicePropDataType {
+    /// Encoded width of a scalar datatype; `None` for strings and arrays.
+    pub(crate) const fn scalar_len(self) -> Option<usize> {
+        match self {
+            Self::Int8 | Self::UInt8 => Some(1),
+            Self::Int16 | Self::UInt16 => Some(2),
+            Self::Int32 | Self::UInt32 => Some(4),
+            Self::Int64 | Self::UInt64 => Some(8),
+            Self::Int128 | Self::UInt128 => Some(16),
+            _ => None,
+        }
+    }
+
     pub(crate) fn code(self) -> u16 {
         match self {
             Self::Int8 => 0x0001,
@@ -282,7 +294,7 @@ impl DevicePropDataType {
         }
     }
 
-    fn from_code(code: u16) -> anyhow::Result<Self> {
+    pub(crate) fn from_code(code: u16) -> anyhow::Result<Self> {
         match code {
             0x0001 => Ok(Self::Int8),
             0x0002 => Ok(Self::UInt8),

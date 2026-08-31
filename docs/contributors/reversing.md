@@ -53,7 +53,10 @@ a privacy-reviewed vendor USB capture.
   run.
 - Run probes with maximum verbosity: `-vvv` prints PTP operation metadata,
   response lengths, and success or failure, but not response payloads or camera
-  serial numbers. Privacy-review the diagnostics before sharing them.
+  serial numbers. `discover info --print-values` and
+  `discover simulation --print-values` additionally print each property payload
+  (length, hex, decoded scalar or string); the simulation set includes the
+  custom setting name text. Privacy-review the diagnostics before sharing them.
 
 ## Probing Existing PTP Surface
 
@@ -311,6 +314,14 @@ cargo run --locked -p fujicli-dev --features reverse-tools -- \
   --device BUS.ADDRESS discover render-profile \
   /tmp/x-t5-4.31-profile.json -vvv
 ```
+
+On a physical X-T5 (firmware 4.31, USB mode 0x6) with no RAF loaded, both
+`GetDevicePropDesc(D185)` and `GetDevicePropValue(D185)` answer `GeneralError`
+(as do `D183` and `D17B`), so this read-only probe fails without producing an
+artifact. The camera appears to serve the conversion profile only while a RAF
+is loaded for conversion, which the probe never does. On that camera the
+descriptor half is moot anyway: in USB mode 0x6 it answers `GeneralError` to
+every `GetDevicePropDesc`. The vendor capture below is the only known route.
 
 The command issues only `GetDeviceInfo`, best-effort reads USB mode and the raw
 `GetDevicePropDesc(D185)` bytes, and retrieves `GetDevicePropValue(D185)`. The

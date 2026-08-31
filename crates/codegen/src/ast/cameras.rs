@@ -288,6 +288,10 @@ pub enum SpecKind {
 pub struct Transformation {
     pub when: Option<Predicate>,
     pub apply: Vec<Assignment>,
+    /// Declared in FML when the transformation intentionally has no inverse;
+    /// codegen skips it without a build warning.
+    #[serde(default)]
+    pub one_way: bool,
 }
 
 #[derive(Clone, Debug)]

@@ -304,8 +304,10 @@ Inverses run in **reverse** declaration order so chained aliases unwind
 correctly: if you wrote them in order A->B, B->C, the read applies C->B then
 B->A, getting back to the user-facing form.
 
-Non-invertible transformations are skipped with a `cargo:warning` listing them.
-That's the right behaviour because:
+Non-invertible transformations are skipped. Those declared `one_way: true` in
+FML are skipped silently; an undeclared one produces a `cargo:warning` listing
+it, and `one_way: true` on an invertible transformation fails the build.
+Skipping is the right behaviour because:
 
 - An unconditional `apply` (e.g. defaulting padding to 0) has no meaningful
   inverse: you can't tell on read whether the user set 0 or the default kicked

@@ -125,4 +125,8 @@ package fml
 #TransformationBase: {
 	when?: _
 	apply: _
+	// Declare a transformation that intentionally has no inverse (an
+	// unconditional default, or a compound trigger). Codegen then skips the
+	// inverse silently instead of warning on every build.
+	one_way?: true
 }

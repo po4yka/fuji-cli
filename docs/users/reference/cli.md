@@ -130,6 +130,11 @@ fujicli image recover --delete-after-save \
   424242 recovered.jpg
 ```
 
+The handle passed to `image recover` names an object in the camera's internal
+conversion store. In USB RAW CONV./BACKUP RESTORE mode the memory card is not
+exposed, so the handle is meaningful only on the same camera and until that
+object is deleted. A stale handle fails with `InvalidObjectHandle (0x2009)`.
+
 Render layers a simulation file, when provided, then inline setting overrides.
 Unset fields come from the camera's current RAW-conversion profile. Direct slot
 selection is unavailable until its still/movie selector domain is verified.

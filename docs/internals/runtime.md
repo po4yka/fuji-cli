@@ -129,6 +129,16 @@ and writability must be internally consistent with the generated policy. Every
 subsequent property write is checked dynamically against that descriptor before
 the command is sent.
 
+A physical X-T5 on firmware 4.31 in USB mode 0x6 answers `GeneralError` to
+every `GetDevicePropDesc` while serving `GetDevicePropValue`. When the camera
+refuses a descriptor with a PTP response code, preflight reads the value instead
+and checks only its wire shape against the declared datatype (scalar width or
+PTP string framing). That evidence is enough for read-only requirements such as
+the USB mode and battery properties, but it never enters the mutation permit:
+a property validated this way cannot be written, and a requirement declared
+`writable` or array-typed fails closed. Transport and decoding failures are not
+treated as a refusal.
+
 Success returns `ValidatedCameraSession<Operation>`. Only that typestate exposes
 the relevant mutation. It privately owns a non-cloneable mutation permit bound
 to that operation, the exact USB device and interface, the active PTP session,
@@ -291,6 +301,18 @@ stream mismatches poison the session. Once poisoned, the transaction executor
 does not attempt rollback, readback, retry, or session reopening. A fully
 framed PTP rejection, including `DeviceBusy`, leaves the session healthy, so
 verified recovery remains possible.
+
+### Object stores in USB mode 0x6
+
+In USB RAW CONV./BACKUP RESTORE mode the X-T5 does not expose the memory card.
+`GetStorageIDs` returns two virtual stores, `0x10000001` ("Still") and
+`0x10000002` ("Live"), both reported as fixed RAM with generic hierarchical
+filesystem, read-only-with-deletion access, unknown capacity, and no objects at
+rest. Uploaded RAFs and rendered JPEGs live there, which is why render and
+`image recover` handles refer to camera-side objects rather than card files, and
+why a handle that no longer exists answers `InvalidObjectHandle`. The card
+itself is only visible in USB CARD READER mode, where none of the Fujifilm
+vendor properties exist.
 
 ### `CameraRenderManager`
 
