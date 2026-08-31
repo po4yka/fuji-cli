@@ -1,19 +1,19 @@
 # Installation
 
-Prebuilt binaries are not currently published. Build from source using one of
-the options below.
+Prebuilt binaries are not currently published. Choose a method below, then
+follow the [first safe session](getting-started/first-safe-session.md) before a
+state-changing workflow.
 
-## NixOS / Nix
+| Method | Platforms | Prerequisites | Binary | Man pages and completions | Upgrade | Uninstall |
+| --- | --- | --- | --- | --- | --- | --- |
+| Nix one-off | Flake-supported Linux and macOS | Nix with flakes | Runs from the Nix store with `nix run github:po4yka/fuji-cli` | Included in the package under `share/` | Run the desired refreshed flake revision | No profile install; remove unreachable store paths with normal Nix garbage collection |
+| Nix package or overlay | Flake-supported Linux and macOS | A Nix system or profile consuming the flake | Managed by the consuming Nix configuration | Included in the package under `share/` | Update the pinned flake input and rebuild | Remove the package from the consuming configuration or profile and rebuild |
+| Source build | Linux, macOS, and Windows | Git, rustup, CUE 0.16.1, a C toolchain, and `libusb-1.0` headers | `target/release/fujicli`; copy it to a directory on `PATH` if desired | Not installed automatically; use the runtime completion command and `assets/share/` | Update the checkout deliberately, then rebuild with `--locked` | Remove the copied binary and any completion or man files you installed |
 
-```sh
-nix run github:po4yka/fuji-cli
-```
+## Nix Development Build
 
-Or add the flake to your system inputs and use the `fujicli` package from
-`overlays.default`. The package installs Bash, Zsh, Fish, and PowerShell
-completion files plus section 1 man pages below its `share/` output.
-
-For a dev shell with the pinned Rust toolchain, CUE, and native dependencies:
+The development shell supplies the pinned Rust toolchain, CUE, and native
+dependencies:
 
 ```sh
 git clone https://github.com/po4yka/fuji-cli.git
@@ -22,17 +22,17 @@ nix develop
 cargo build --locked --release
 ```
 
-## From Source (non-Nix)
+The flake also exposes the `fujicli` package through `overlays.default` for a
+system configuration that consumes this repository as an input.
 
-You need:
+## Source Build Without Nix
 
-- [rustup](https://rustup.rs/), which installs the repository's pinned Rust
-  toolchain automatically.
-- [CUE](https://cuelang.org/) 0.16.1 on `PATH` - the build script invokes
-  `cue export` to materialize the schema into JSON.
-- A C toolchain and `libusb-1.0` headers, for the `rusb` dependency.
+Install [rustup](https://rustup.rs/), [CUE 0.16.1](https://cuelang.org/), a C
+toolchain, and the development headers for `libusb-1.0`. The repository selects
+its pinned Rust toolchain.
 
-Then:
+`build.rs` invokes `cue export`, so `cue` must be on `PATH` during a source
+build.
 
 ```sh
 git clone https://github.com/po4yka/fuji-cli.git
@@ -41,239 +41,30 @@ cargo build --locked --release
 ./target/release/fujicli --help
 ```
 
-Source builds produce only the executable. The generated completion files and
-man pages used by the Nix and release packages are available under
-`assets/share/`; copy that tree into the matching `share/` directory of your
-installation prefix when installing manually.
+Source builds produce only the executable. Generated section 1 man pages remain
+under `assets/share/man/man1/`; copy them into the matching `share/` directory
+of the installation prefix when installing manually.
 
-## Per-Platform Notes
+## Shell Completions
 
-### Linux
-
-Usually no extra setup is required. First use your distribution's current
-`libgphoto2` and systemd `udev` rules. If `fujicli device info` works as your
-normal user, do not install another rule.
-
-Do not grant `MODE="0666"` to Fujifilm vendor ID `04cb`. Such a rule makes the
-raw USB node for every matching Fujifilm product writable by every local user
-and process, including products that `fujicli` does not support.
-
-Raw access is not read-only. A process can bypass `fujicli` safeguards and send
-PTP operations that change camera properties, restore backups, upload or delete
-objects, and invoke vendor-specific commands.
-
-The supported X-T5 USB identity is `04cb:02fc`. If distribution rules do not
-grant access, use one of the narrowly scoped options below.
-
-#### Desktop Linux
-
-On a systemd desktop, grant the active local seat user an ACL with `uaccess`:
-
-```udev
-# /etc/udev/rules.d/69-fujicli-x-t5.rules
-SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="04cb", ATTR{idProduct}=="02fc", TAG+="uaccess"
-```
-
-This keeps the normal single-user desktop flow: plug in the camera and run the
-CLI without `sudo`. Access follows the active seat instead of becoming
-world-writable or permanently available to every user.
-
-The ACL applies to the active user's processes, not only to `fujicli`. Desktop
-sandboxes or other host policy may restrict it further.
-
-The `69-` prefix matters. The tag must be present before systemd's late seat
-rule applies the ACL. Store local rules under `/etc/udev/rules.d`; do not edit
-distribution-owned rules under `/usr/lib/udev/rules.d`.
-
-#### Headless Linux
-
-`uaccess` needs an active local seat and is unsuitable for an SSH-only host or
-a system service. Create a dedicated group and grant that group access instead:
+Generate a completion script from the installed executable:
 
 ```sh
-sudo groupadd --system fujicli
-sudo usermod --append --groups fujicli USER
+fujicli completion bash > /path/to/bash-completion/completions/fujicli
+fujicli completion zsh > /path/to/zsh/site-functions/_fujicli
+fujicli completion fish > /path/to/fish/vendor_completions.d/fujicli.fish
+fujicli completion powershell > /path/to/Completions/fujicli.ps1
 ```
 
-```udev
-# /etc/udev/rules.d/69-fujicli-x-t5.rules
-SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="04cb", ATTR{idProduct}=="02fc", GROUP="fujicli", MODE="0660"
-```
+The command supports `bash`, `zsh`, `fish`, and `powershell`. It writes only the
+script to stdout, so choose a path loaded by the relevant shell. Nix packages
+already install generated completion files under `share/`.
 
-Replace `USER` with the one human or service account that needs the camera.
-Log out and back in after changing group membership. For a systemd service, add
-only its service account or use `SupplementaryGroups=fujicli`.
+## Configure Camera Access
 
-Group membership is a persistent capability to issue raw X-T5 USB commands.
-Do not use a broad group such as `users`, and review membership periodically.
-On a host that also has an active desktop seat, distribution rules may add a
-separate `uaccess` ACL; the group rule is a durable base grant, not an exclusive
-access policy.
+Camera access is a separate host step:
 
-Some distributions already provide an intentionally managed camera group. It
-may replace `fujicli` only when its membership policy matches the access you
-want. Package names and default group policies are distribution-specific.
-
-On Debian/Ubuntu, Fedora, Arch Linux, and derivatives, prefer the udev rules
-shipped with the distribution's current `libgphoto2` packaging. Use a local
-rule only when that integration does not cover the connected X-T5.
-
-#### NixOS
-
-For a desktop `uaccess` rule, use `services.udev.packages` so the file retains
-the required `69-` ordering:
-
-```nix
-services.udev.packages = [
-  (pkgs.writeTextFile {
-    name = "fujicli-udev";
-    destination = "/lib/udev/rules.d/69-fujicli-x-t5.rules";
-    text = ''
-      SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="04cb", ATTR{idProduct}=="02fc", TAG+="uaccess"
-    '';
-  })
-];
-```
-
-Do not put the desktop rule in `services.udev.extraRules`: NixOS emits those
-rules as `99-local.rules`, after systemd's seat ACL processing. A headless
-`GROUP`/`MODE` rule does not depend on that ordering and may use `extraRules`.
-
-Declare the dedicated group and account membership in NixOS configuration when
-using the headless variant. `nix run` does not and should not alter host USB
-permissions automatically.
-
-#### Rule scope and interface class
-
-`SUBSYSTEM=="usb"`, `DEVTYPE=="usb_device"`, and exact `ATTR` vendor/product
-matching limit the rule to the X-T5 device node. `ATTRS` is not used because it
-can match an attribute on a parent device.
-
-Do not match USB interface class `ff` for Fujifilm-specific PTP commands. The
-camera uses the standard USB imaging interface class; vendor-specific operation
-codes exist inside PTP and are not a vendor-specific USB interface.
-
-An `ID_USB_INTERFACES` match can narrow a rule to a particular camera USB mode,
-but the repository has no verified descriptor for every supported X-T5 mode.
-Exact device identity is the reliable boundary for the documented rule.
-
-Permissions still apply to the whole USB device node, not one interface. An
-interface-class condition controls when access is granted; it cannot confine an
-authorized process to that interface.
-
-#### Apply and verify
-
-After adding, replacing, or removing a rule, reload it and reconnect the camera:
-
-```sh
-sudo udevadm control --reload-rules
-# Unplug and reconnect the camera.
-lsusb -d 04cb:02fc
-```
-
-Use the bus and device numbers shown by `lsusb` in place of `BBB` and `DDD`:
-
-```sh
-stat -c '%A %U:%G %n' /dev/bus/usb/BBB/DDD
-getfacl /dev/bus/usb/BBB/DDD
-udevadm info --query=property --name=/dev/bus/usb/BBB/DDD
-fujicli device info
-```
-
-The node must not be world-writable. On a desktop, `getfacl` should show an ACL
-for the active user. On a headless host, `stat` should show group `fujicli` and
-mode `0660`.
-
-Reloading rules alone does not change permissions on an already connected
-device. Reconnect it before testing.
-
-#### Camera already in use
-
-USB permissions do not coordinate multiple camera clients. Close gphoto2,
-digiKam, Shotwell, Darktable, photo importers, and other PTP applications before
-running a command that changes camera state.
-
-GVFS may open a newly connected camera automatically. Eject or unmount the
-camera in the file manager, or inspect mounts with `gio mount --list`, before
-retrying `fujicli`.
-
-Use the device path from `lsusb` to look for another owner:
-
-```sh
-fuser -v /dev/bus/usb/BBB/DDD
-lsof /dev/bus/usb/BBB/DDD
-```
-
-A permission or `LIBUSB_ERROR_ACCESS` failure points to the rule or ACL. A busy
-or `LIBUSB_ERROR_BUSY` failure usually means another camera service has claimed
-the interface. Do not work around either error with `sudo fujicli`.
-
-Do not run simultaneous PTP clients during backup restore, simulation changes,
-or rendering. Losing ownership or disconnecting mid-transaction can leave the
-camera state unknown.
-
-#### Migrate or revoke an old rule
-
-Search local and distribution rule directories for broad Fujifilm or
-world-writable grants:
-
-```sh
-grep -R -n -E '04cb|MODE="?0666"?' \
-  /etc/udev/rules.d /usr/lib/udev/rules.d
-```
-
-Remove the old `MODE="0666"` line or its local file before adding the new rule.
-Adding a narrow rule does not cancel a broad rule that still matches. Do not
-delete package-owned rules; update the owning package instead.
-
-Earlier documentation used `/etc/udev/rules.d/70-fujifilm.rules`. If that file
-contains only the old broad rule, remove the file. Otherwise, edit out only the
-matching `04cb`/`0666` line and preserve its unrelated rules.
-
-To remove the grant introduced by this local rule, delete
-`69-fujicli-x-t5.rules`, reload rules, and reconnect the camera. For the
-headless variant, also remove each account from the `fujicli` group.
-
-```sh
-sudo gpasswd --delete USER fujicli
-sudo udevadm control --reload-rules
-# Unplug and reconnect the camera, then verify the node again.
-```
-
-On NixOS, remove the rule and group membership from system configuration and
-rebuild instead of deleting files from the generated system profile.
-
-End existing login or service sessions after revoking group membership. A
-running process keeps the supplementary groups with which it started. Verify
-the effective mode and ACL afterward: distribution `libgphoto2` or systemd PTP
-rules may independently grant access.
-
-### macOS
-
-No driver changes are required. Connect the camera, make sure it is in
-PTP / USB mode in its menus, and `fujicli device list` should see it.
-
-macOS starts `ptpcamerad` (Image Capture) for every PTP camera and it claims the
-interface, so `device info` and other live commands fail with
-`Access denied (insufficient permissions)`. Stop it right before running
-`fujicli`; it runs as your user and macOS restarts it on the next USB event:
-
-```sh
-pkill -x ptpcamerad; fujicli device info
-```
-
-A stopped `ptpcamerad` leaves its PTP session open on the camera. `fujicli`
-detects the resulting `SessionAlreadyOpen (0x201e)` on `OpenSession`, sends
-`CloseSession`, and retries once, so no camera reconnect is needed.
-
-### Windows
-
-Windows binds the camera to its default WPD / photo-import driver, which blocks
-raw PTP. Replace the driver with WinUSB or libusbK using Zadig:
-
-1. Install Zadig from <https://zadig.akeo.ie/>.
-2. Connect the camera in PTP / USB mode.
-3. In Zadig: **Options -> List All Devices**.
-4. Select the camera (often listed as "USB PTP" or by model name).
-5. Pick **WinUSB** (recommended) or **libusbK** as the target driver.
-6. Click **Replace Driver**. You can revert from Zadig later.
+- [Linux USB access](how-to/linux-usb-access.md)
+- [macOS camera access](how-to/macos-camera-access.md)
+- [Windows driver setup](how-to/windows-driver.md)
+- [Device-access troubleshooting](how-to/troubleshoot-device-access.md)

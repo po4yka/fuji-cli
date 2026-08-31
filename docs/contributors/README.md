@@ -41,16 +41,16 @@ Send contributions on [GitHub](https://github.com/po4yka/fuji-cli).
 
 ## Common Contribution Types
 
-| What you want to do                              | Where                                                                      |
-| ------------------------------------------------ | -------------------------------------------------------------------------- |
-| Add a new camera                                 | [adding-cameras.md](adding-cameras.md)                                     |
-| Confirm a `?` in the support table               | Open an issue; see [support](../users/support.md)                          |
-| Add or correct a film-simulation alias / variant | `fml/option.cue`; see [fml/options](../fml/options.md)                     |
-| Add a new validation rule                        | `fml/camera.cue` or `fml/generation.cue`; see [fml/rules](../fml/rules.md) |
-| Reverse a render profile                         | [reversing.md](reversing.md)                                               |
-| Extend the codegen language                      | `crates/codegen/`; see [internals](../internals/README.md)                 |
-| Change CLI grammar, help, or process behavior    | `src/cli/`, tests, `docs/users/usage.md`, and generated CLI assets         |
-| Change release packaging                         | `support/`, `.github/workflows/release.yml`, and [releasing](releasing.md) |
+| What you want to do | Where |
+| --- | --- |
+| Add a new camera | [adding-cameras.md](adding-cameras.md) |
+| Confirm a `?` in the support table | Open an issue; see [support](../users/support.md) |
+| Add or correct a film-simulation alias / variant | `fml/option.cue`; see [fml/options](../fml/options.md) |
+| Add a new validation rule | `fml/camera.cue` or `fml/generation.cue`; see [fml/rules](../fml/rules.md) |
+| Reverse a render profile | [reversing.md](reversing.md) |
+| Extend the codegen language | `crates/codegen/`; see [internals](../internals/README.md) |
+| Change CLI grammar, help, or process behavior | `src/cli/`, tests, [CLI reference](../users/reference/cli.md), and generated CLI assets |
+| Change release packaging | `support/`, `.github/workflows/release.yml`, and [releasing](releasing.md) |
 
 ## Testing
 

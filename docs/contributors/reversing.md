@@ -134,8 +134,10 @@ setting names, arbitrary camera strings, or full error chains.
 
 ## Design: the `simulation-namespace` Probe
 
-This section designs the still/movie namespace probe called for in
-`docs/users/support.md` and `docs/users/usage.md`: does selector `0xD18C`
+This section designs the still/movie namespace probe called for in the
+[support policy](../users/support.md) and
+[fail-closed model](../users/explanation/fail-closed-safety-model.md): does
+selector `0xD18C`
 address the X-T5's still C1-C7 custom-setting slots, its movie C1-C7 slots, or
 something else. The command is `fujicli-dev probe simulation-namespace`,
 gated behind the `dangerous-reverse-engineering` feature described above. It

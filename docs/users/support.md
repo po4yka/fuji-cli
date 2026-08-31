@@ -77,7 +77,7 @@ battery 65%, macOS host, 2026-08-31, commits `e0654cf` and `3706f01`:
   `GetObjectInfo` without the 1020-byte padding seen in the original capture.
 - In USB Card Reader mode the camera exposes no Fuji properties and every
   command fails with `DevicePropNotSupported (0x200a)`; the USB mode above is
-  required. See the macOS notes in [installation](installation.md) for
+  required. See [macOS camera access](how-to/macos-camera-access.md) for
   `ptpcamerad`.
 
 The generated X-T5 capability matrix records Reala Ace as unavailable on
