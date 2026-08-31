@@ -28,7 +28,7 @@ and dispatches everything through traits the codegen implements.
 `codegen::generate` (see [lib.rs](../../crates/codegen/src/lib.rs)):
 
 ```text
-options     -> $OUT_DIR/generated/options.rs      (~3.4 KLOC for current schema)
+options     -> $OUT_DIR/generated/options.rs      (typed option values and codecs)
 cameras     -> $OUT_DIR/generated/cameras.rs      (one ZST + registry entry per camera)
 simulations -> $OUT_DIR/generated/simulations.rs  (SimulationBase + per-camera structs)
 renders     -> $OUT_DIR/generated/renders.rs      (RenderBase + per-camera profiles)

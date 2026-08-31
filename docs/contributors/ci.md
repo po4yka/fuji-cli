@@ -44,8 +44,9 @@ cargo test --locked --all-features --all-targets --workspace --jobs 4
 cargo build --locked --workspace --jobs 4
 cargo udeps --locked --workspace --all-features --all-targets --jobs 4
 cargo deny --locked check
-markdownlint-cli2 "docs/**/*.md"
-lychee --offline --include-fragments=anchor-only --no-progress "docs/**/*.md"
+markdownlint-cli2 "README.md" "docs/**/*.md"
+lychee --offline --include-fragments=anchor-only --no-progress \
+  "README.md" "docs/**/*.md"
 ```
 
 On the managed development Mac, wrap each compiler-backed Cargo command with

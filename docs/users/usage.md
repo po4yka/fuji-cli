@@ -40,8 +40,8 @@ needed when more than one supported camera is plugged in.
 `--emulate VENDOR:PRODUCT` selects another generated logical model while the
 physical USB identity remains unchanged and must identify a supported camera.
 Only `device info` is read-only under emulation. Simulation access first writes
-Fujifilm's custom-setting selector, so all simulation commands, backups, RAW
-rendering, and reverse commands reject emulation; see
+Fujifilm's custom-setting selector, so all simulation commands, backups, and RAW
+rendering reject emulation; see
 [camera support](support.md#emulation-mode).
 
 ## Devices
@@ -317,11 +317,14 @@ numeric `vendorId`. A consumer that closes stdout after receiving enough data
 is treated as a successful early termination rather than an operational
 failure.
 
-`-v` (repeatable: `-v`, `-vv`, `-vvv`) raises log verbosity. For `device
-reverse` commands, `-vvv` reports PTP operation metadata and response lengths,
-but never response payloads, camera serial numbers, backup contents, or
-custom-setting names. Privacy-review diagnostics before attaching them to a bug
-report.
+`-v` (repeatable: `-v`, `-vv`, `-vvv`) raises log verbosity. Requested data
+continues to use stdout while logs and diagnostics use stderr. Verbose output
+can contain device and host context even when sensitive payloads are omitted;
+privacy-review it before attaching it to a bug report.
+
+The production binary has no reverse-engineering subcommand. Contributor-only
+discovery and probe workflows use the separately gated `fujicli-dev` crate; see
+[reversing](../contributors/reversing.md).
 
 ## Exit Codes
 

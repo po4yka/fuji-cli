@@ -139,5 +139,5 @@ Stop and report back (do not improvise) if:
 
 ## Maintenance notes
 
-- If a new `DevicePropDataType` variant is ever added, `wire_size` must be extended; the `ensure!` on `None` makes the omission fail loudly instead of mis-sizing.
+- If a new `DevicePropDataType` variant is ever added, `wire_size` must be extended; the `ensure!` on `None` makes the omission fail loudly instead of calculating an incorrect size.
 - Reviewer focus: confirm the remaining-bytes computation uses the cursor position at the time of the check (after the count field was consumed), and that well-formed fixtures still decode byte-identically.

@@ -1,10 +1,11 @@
 # Camera Support
 
-This tool has only been extensively tested with the **Fujifilm X-T5**. While the
-underlying PTP commands are likely compatible with other Fujifilm models,
-**compatibility is not guaranteed**. Use this software at your own risk: the
-author is not responsible for damage, lost data, or any other adverse outcomes -
-physical or psychological - to your camera or equipment.
+The schema recognizes several Fujifilm generations, but physical-device
+evidence is limited and state-changing support is narrower still. Do not infer
+compatibility from a shared generation, a nearby firmware version, or a
+successful build. Use this software at your own risk: the author is not
+responsible for damage, lost data, or any other adverse outcome involving your
+camera or equipment.
 
 | Model           | Generation  | Base Info | Backups | Simulations | Rendering |
 | --------------- | ----------- | --------- | ------- | ----------- | --------- |
@@ -34,8 +35,8 @@ physical or psychological - to your camera or equipment.
 
 ## Legend
 
-- **Y** - Known to work; the corresponding command set is implemented and
-  tested.
+- **Y** - Historical physical-device evidence confirms the command set worked
+  on that model. Current mutation authority is defined separately below.
 - **?** - Untested but likely works. The camera is recognised over USB and the
   relevant PTP commands are present, but nobody has confirmed end-to-end
   behaviour.
@@ -77,8 +78,7 @@ device must itself be a supported camera.
 - `device info` is the only purely read-only emulated command.
 - Simulation access writes the transient custom-setting selector, so every
   simulation command rejects emulation.
-- Every backup command, RAW rendering, and all reverse commands reject
-  emulation.
+- Every backup command and RAW rendering reject emulation.
 - Selecting a USB device explicitly with `--device BUS.ADDRESS` does not bypass
   physical identity validation.
 
@@ -93,7 +93,13 @@ issue with:
 - Model, firmware version, and the camera's USB ID (`fujicli device
   list`).
 - The command that worked (`fujicli ... -vvv`).
-- For rendering, a small sample image plus the rendered output.
+- A privacy-reviewed diagnostic excerpt. Do not upload private RAF/JPEG files,
+  serial numbers, backup artifacts, or custom-setting names unless they are
+  necessary and you intend to disclose them.
 
 If a feature is blank, see [adding a camera](../contributors/adding-cameras.md)
 and [reversing](../contributors/reversing.md).
+
+The production `fujicli` binary does not expose reverse-engineering commands.
+Those workflows use the separately gated, non-distributable `fujicli-dev`
+crate.

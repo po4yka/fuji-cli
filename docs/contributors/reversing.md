@@ -178,7 +178,7 @@ Future Dangerous Probe" above:
    -- timestamp, tool version, invocation ID, operation/risk class, the two
    PTP operation codes involved, USB location, VID:PID, bounded
    model/firmware, the serial fingerprint, the pre-backup digest, and outcome
-   `attempted`. This record is durably written *before* the mutating send, so
+   `attempted`. This record is durably written _before_ the mutating send, so
    a durable trail exists even if the process is interrupted immediately
    afterward.
 6. Reads the current raw value of `0xD18C` (snapshot), writes the chosen

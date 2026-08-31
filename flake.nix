@@ -203,7 +203,7 @@
             pkgs.runCommand "markdownlint-check" { nativeBuildInputs = [ pkgs.markdownlint-cli2 ]; }
               ''
                 cd ${inputs.self}
-                markdownlint-cli2 "docs/**/*.md"
+                markdownlint-cli2 "README.md" "docs/**/*.md"
                 touch "$out"
               '';
           package-fujicli = inputs.self.packages.${system}.fujicli;

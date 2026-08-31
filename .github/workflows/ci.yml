@@ -178,7 +178,9 @@ jobs:
           printf '%s\n' "$RUNNER_TEMP/lychee-bin" >>"$GITHUB_PATH"
 
       - name: Check documentation links
-        run: lychee --offline --include-fragments=anchor-only --no-progress 'docs/**/*.md'
+        run: >-
+          lychee --offline --include-fragments=anchor-only --no-progress
+          'README.md' 'docs/**/*.md'
 
   nix:
     name: CI / Nix

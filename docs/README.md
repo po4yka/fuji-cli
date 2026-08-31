@@ -1,5 +1,11 @@
 # fujicli Documentation
 
+Start with [installation](users/installation.md), then check the
+[camera support matrix](users/support.md) before connecting a camera. The CLI is
+fail-closed for unknown firmware, USB modes, capability profiles, and wire
+descriptors; a schema entry alone is not proof that a state-changing operation
+is authorized.
+
 ## For Users
 
 - [Installation](users/installation.md) - per-platform setup.
@@ -36,3 +42,7 @@
 - [Analyses](internals/analyses.md) - DNF, alias substitution, the presence DAG,
   repair, and inverse transformations.
 - [Runtime](internals/runtime.md) - how the generated modules are consumed.
+
+Historical implementation plans live in [`plans/`](../plans/README.md). They
+record past decisions and remaining hardware-validation gaps; the user and
+contributor guides above describe the current supported contract.

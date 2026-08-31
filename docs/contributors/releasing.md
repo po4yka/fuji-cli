@@ -27,9 +27,10 @@ release asset is published.
 
 ## Pipeline and artifacts
 
-The release workflow reruns the full Rust gate, verifies the version through
-Cargo and Nix, and then builds each supported target with two compiler jobs. It
-publishes:
+The release workflow verifies the version through Cargo and Nix, then reruns
+Cargo check, formatting, Clippy, rustdoc, all workspace tests, and the release
+packager tests. Each supported target is subsequently built with two compiler
+jobs. The workflow publishes:
 
 - deterministic ZIP archives for Linux x86_64, macOS x86_64, and Windows
   x86_64, containing the stripped binary, `LICENSE`, shell completions for
