@@ -105,6 +105,13 @@ existing path before it sends `SendObjectInfo`. A recovery artifact is bound to
 that exact camera serial. Any validation, compatibility, export, or
 recovery-write failure stops before restore metadata is sent.
 
+Backup import combinations are validated as command grammar before any input
+file or camera is opened. Artifact and target serial fingerprints must each be
+exactly 64 lowercase hexadecimal characters. `--yes` and `--recovery-backup`
+cannot be combined with `--dry-run`, and the recovery destination must be a
+file path rather than `-`. Invalid combinations are usage errors and exit with
+status 2.
+
 The envelope and hashes detect corruption, truncation, accidental substitution,
 and target mismatch; they do not authenticate Fujifilm's opaque native payload.
 Fujifilm exposes no signature or public parser here, so the value passed to
@@ -116,12 +123,12 @@ All backup commands reject `--emulate`, including offline `backup inspect`,
 where the option is meaningless.
 
 Destructive import from stdin is additionally disabled unless `--allow-stdin`
-is supplied. The external artifact fingerprint, explicit serial binding,
-confirmation, and recovery path form the unattended-automation contract. Do
-not automatically retry a restore after a timeout, disconnect, or other wire
-error: the camera state is unknown. A successful command means that the PTP
-restore operation was accepted, not that post-reboot persistence was
-independently verified.
+is supplied, and that option is rejected unless the input is `-`. The external
+artifact fingerprint, explicit serial binding, confirmation, and recovery path
+form the unattended-automation contract. Do not automatically retry a restore
+after a timeout, disconnect, or other wire error: the camera state is unknown.
+A successful command means that the PTP restore operation was accepted, not
+that post-reboot persistence was independently verified.
 
 Restore and export use large-transfer timing: byte progress may extend the
 data phase up to a fifteen-minute hard cap, and a fully uploaded restore may

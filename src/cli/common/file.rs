@@ -111,6 +111,27 @@ pub enum Output {
     Stdout,
 }
 
+#[derive(Debug, Clone)]
+pub struct FileOutput(Output);
+
+impl FromStr for FileOutput {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let output = value.parse::<Output>()?;
+        if output.is_stdout() {
+            bail!("value must be a file path, not '-'");
+        }
+        Ok(Self(output))
+    }
+}
+
+impl FileOutput {
+    pub fn write_all_new(&self, data: &[u8]) -> anyhow::Result<()> {
+        self.0.write_all_new(data)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OverwritePolicy {
     Deny,

@@ -8,7 +8,6 @@
 
 use std::process::ExitCode;
 
-use clap::Parser;
 use cli::common::camera_state::{CAMERA_STATE_UNKNOWN_EXIT_CODE, CameraStateUnknown};
 
 mod cli;

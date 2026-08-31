@@ -4,7 +4,9 @@ pub mod device;
 pub mod image;
 pub mod simulation;
 
-use clap::{ArgAction, Args, Parser, Subcommand};
+use std::ffi::OsString;
+
+use clap::{ArgAction, Args, CommandFactory, Parser, Subcommand};
 
 use backup::BackupCmd;
 use device::DeviceCmd;
@@ -22,6 +24,26 @@ pub struct Cli {
 
     #[command(flatten)]
     pub options: GlobalOptions,
+}
+
+impl Cli {
+    pub fn parse() -> Self {
+        Self::try_parse_from(std::env::args_os()).unwrap_or_else(|error| error.exit())
+    }
+
+    pub fn try_parse_from<I, T>(arguments: I) -> Result<Self, clap::Error>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<OsString> + Clone,
+    {
+        let parsed = <Self as Parser>::try_parse_from(arguments)?;
+        if let Commands::Backup(BackupCmd::Import(args)) = &parsed.command
+            && let Some((kind, message)) = args.validation_error()
+        {
+            return Err(Self::command().error(kind, message));
+        }
+        Ok(parsed)
+    }
 }
 
 #[derive(Args, Debug)]
@@ -88,8 +110,6 @@ pub fn handle(cli: Cli) -> Result<(), anyhow::Error> {
 
 #[cfg(test)]
 mod tests {
-    use clap::Parser;
-
     use super::Cli;
 
     #[test]
@@ -352,8 +372,24 @@ mod tests {
                 "backup.fbk",
                 "--dry-run",
                 "--json",
+                "--expect-sha256",
+                SERIAL,
+                "--target-serial-sha256",
+                SERIAL,
                 "--device",
                 "1.2",
+            ],
+            &[
+                "fujicli",
+                "backup",
+                "import",
+                "-",
+                "--yes",
+                "--recovery-backup",
+                "recovery.fbk",
+                "--expect-sha256",
+                SERIAL,
+                "--allow-stdin",
             ],
             &["fujicli", "simulation", "list", "--json", "--device", "1.2"],
             &[

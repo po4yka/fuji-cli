@@ -394,6 +394,147 @@ fn backup_import_without_confirmation_fails_before_device_io() {
 }
 
 #[test]
+fn malformed_backup_fingerprint_is_a_usage_error_before_file_access() {
+    let output = run(&[
+        "backup",
+        "import",
+        "/definitely/missing.fbk",
+        "--yes",
+        "--recovery-backup",
+        "recovery.fbk",
+        "--expect-sha256",
+        "not-a-sha256",
+    ]);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("exactly 64 lowercase hexadecimal characters"));
+    assert!(!stderr.contains("No such file or directory"));
+}
+
+#[test]
+fn malformed_backup_target_fingerprint_is_a_usage_error_before_file_access() {
+    let output = run(&[
+        "backup",
+        "import",
+        "/definitely/missing.fbk",
+        "--dry-run",
+        "--target-serial-sha256",
+        "not-a-sha256",
+    ]);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("exactly 64 lowercase hexadecimal characters"));
+    assert!(!stderr.contains("No such file or directory"));
+}
+
+#[test]
+fn backup_dry_run_rejects_restore_confirmation_before_file_access() {
+    let output = run(&[
+        "backup",
+        "import",
+        "/definitely/missing.fbk",
+        "--dry-run",
+        "--yes",
+    ]);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("cannot be used with"));
+    assert!(stderr.contains("--dry-run"));
+    assert!(stderr.contains("--yes"));
+    assert!(!stderr.contains("No such file or directory"));
+}
+
+#[test]
+fn backup_dry_run_rejects_recovery_output_before_file_access() {
+    let output = run(&[
+        "backup",
+        "import",
+        "/definitely/missing.fbk",
+        "--dry-run",
+        "--recovery-backup",
+        "recovery.fbk",
+    ]);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("cannot be used with"));
+    assert!(stderr.contains("--dry-run"));
+    assert!(stderr.contains("--recovery-backup"));
+    assert!(!stderr.contains("No such file or directory"));
+}
+
+#[test]
+fn backup_recovery_output_rejects_stdout_as_a_usage_error() {
+    let output = run(&[
+        "backup",
+        "import",
+        "/definitely/missing.fbk",
+        "--yes",
+        "--recovery-backup",
+        "-",
+        "--expect-sha256",
+        "0000000000000000000000000000000000000000000000000000000000000000",
+    ]);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--recovery-backup"));
+    assert!(stderr.contains("file path"));
+    assert!(!stderr.contains("No such file or directory"));
+}
+
+#[test]
+fn backup_allow_stdin_rejects_file_input_as_a_usage_error() {
+    let output = run(&[
+        "backup",
+        "import",
+        "/definitely/missing.fbk",
+        "--yes",
+        "--recovery-backup",
+        "recovery.fbk",
+        "--expect-sha256",
+        "0000000000000000000000000000000000000000000000000000000000000000",
+        "--allow-stdin",
+    ]);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--allow-stdin"));
+    assert!(stderr.contains("input '-'"));
+    assert!(!stderr.contains("No such file or directory"));
+}
+
+#[test]
+fn destructive_backup_stdin_requires_opt_in_as_a_usage_error() {
+    let output = run(&[
+        "backup",
+        "import",
+        "-",
+        "--yes",
+        "--recovery-backup",
+        "recovery.fbk",
+        "--expect-sha256",
+        "0000000000000000000000000000000000000000000000000000000000000000",
+    ]);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("input '-'"));
+    assert!(stderr.contains("--allow-stdin"));
+    assert!(!stderr.contains("backup artifact is truncated"));
+}
+
+#[test]
 fn backup_export_rejects_existing_output_before_usb_access() -> anyhow::Result<()> {
     let directory = tempdir()?;
     let destination = directory.path().join("camera.fbk");

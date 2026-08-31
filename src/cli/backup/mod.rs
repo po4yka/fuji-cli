@@ -1,7 +1,7 @@
-use std::time::Duration;
+use std::{str::FromStr, time::Duration};
 
 use anyhow::{Context as _, ensure};
-use clap::{Args, Subcommand};
+use clap::{Args, Subcommand, error::ErrorKind};
 use fujicli::{
     features::backup::{
         BACKUP_ARTIFACT_FORMAT_VERSION, BackupArtifact, BackupIdentity, BackupImportError,
@@ -16,9 +16,33 @@ use crate::cli::{
     common::{camera_state::CameraStateUnknown, interrupt, usb},
 };
 
-use super::common::file::{Input, Output, write_stdout_line};
+use super::common::file::{FileOutput, Input, Output, write_stdout_line};
 
 const BACKUP_RECONNECT_TIMEOUT: Duration = Duration::from_mins(2);
+
+#[derive(Debug, Clone)]
+struct ArtifactFingerprint(String);
+
+impl ArtifactFingerprint {
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl FromStr for ArtifactFingerprint {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        ensure!(
+            value.len() == 64
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+            "backup artifact fingerprint must contain exactly 64 lowercase hexadecimal characters"
+        );
+        Ok(Self(value.to_owned()))
+    }
+}
 
 const fn backup_import_state_is_unknown(state: BackupImportState) -> bool {
     match state {
@@ -169,7 +193,7 @@ pub struct BackupImportArgs {
     input: Input,
 
     /// Confirm sending the validated backup artifact to the selected camera
-    #[arg(long, required_unless_present = "dry_run")]
+    #[arg(long, required_unless_present = "dry_run", conflicts_with = "dry_run")]
     yes: bool,
 
     /// Validate compatibility without exporting recovery state or restoring
@@ -177,16 +201,16 @@ pub struct BackupImportArgs {
     dry_run: bool,
 
     /// New file that receives the target's current settings before restore
-    #[arg(long, required_unless_present = "dry_run")]
-    recovery_backup: Option<Output>,
+    #[arg(long, required_unless_present = "dry_run", conflicts_with = "dry_run")]
+    recovery_backup: Option<FileOutput>,
 
     /// Expected SHA-256 of the complete input artifact
     #[arg(long, required_unless_present = "dry_run")]
-    expect_sha256: Option<String>,
+    expect_sha256: Option<ArtifactFingerprint>,
 
     /// Expected SHA-256 fingerprint of a different target camera serial
     #[arg(long)]
-    target_serial_sha256: Option<String>,
+    target_serial_sha256: Option<SerialFingerprint>,
 
     /// Permit destructive import from stdin (also requires --expect-sha256)
     #[arg(long, requires = "yes")]
@@ -204,6 +228,29 @@ struct DryRunJsonOptions {
     /// Format dry-run output using JSON
     #[arg(long, short = 'j', requires = "dry_run")]
     json: bool,
+}
+
+impl BackupImportArgs {
+    pub(crate) const fn validation_error(&self) -> Option<(ErrorKind, &'static str)> {
+        if self.output_format.json && !self.dry_run {
+            Some((
+                ErrorKind::MissingRequiredArgument,
+                "--json requires --dry-run",
+            ))
+        } else if self.allow_stdin && !self.input.is_stdin() {
+            Some((
+                ErrorKind::ArgumentConflict,
+                "--allow-stdin can only be used with input '-'",
+            ))
+        } else if !self.dry_run && self.input.is_stdin() && !self.allow_stdin {
+            Some((
+                ErrorKind::ArgumentConflict,
+                "destructive input '-' requires --allow-stdin",
+            ))
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -323,13 +370,8 @@ fn handle_import(args: BackupImportArgs) -> anyhow::Result<()> {
         device,
     } = args;
     let DeviceOptions { device } = device;
+    let target_serial = target_serial_sha256.as_ref().map(SerialFingerprint::as_str);
     ensure_import_confirmation(yes, dry_run)?;
-    if let Some(recovery_backup) = &recovery_backup {
-        ensure!(
-            !recovery_backup.is_stdout(),
-            "--recovery-backup requires a file path, not stdout"
-        );
-    }
     let mode = if dry_run {
         ImportMode::DryRun
     } else {
@@ -345,24 +387,34 @@ fn handle_import(args: BackupImportArgs) -> anyhow::Result<()> {
     } else {
         ImportSource::File
     };
-    ensure_import_input_policy(mode, source, expect_sha256.as_deref())?;
+    ensure_import_input_policy(
+        mode,
+        source,
+        expect_sha256.as_ref().map(ArtifactFingerprint::as_str),
+    )?;
 
     let backup = input.read_limited(MAX_BACKUP_ARTIFACT_BYTES, "backup input")?;
     let backup = BackupArtifact::parse(backup)?;
     if let Some(expected) = &expect_sha256 {
-        backup.verify_fingerprint(expected)?;
+        backup.verify_fingerprint(expected.as_str())?;
     }
     let mut camera = usb::get_native_camera(device, None)?;
     let usb_id = camera.connected_usb_id();
-    let binding = target_serial_sha256
-        .as_deref()
-        .unwrap_or(&backup.manifest().source.serial_sha256)
-        .parse::<SerialFingerprint>()?;
+    let binding = target_serial_sha256.clone().map_or_else(
+        || {
+            backup
+                .manifest()
+                .source
+                .serial_sha256
+                .parse::<SerialFingerprint>()
+        },
+        Ok,
+    )?;
     let mut session = camera.preflight_backup_restore(&binding)?;
     if dry_run {
         let target = session.target_identity();
         if target_serial_sha256.is_some() {
-            backup.validate_target(&target, target_serial_sha256.as_deref())?;
+            backup.validate_target(&target, target_serial)?;
         }
         return report_dry_run(
             &backup,
@@ -372,7 +424,7 @@ fn handle_import(args: BackupImportArgs) -> anyhow::Result<()> {
         );
     }
     let target = session.target_identity();
-    backup.validate_target(&target, target_serial_sha256.as_deref())?;
+    backup.validate_target(&target, target_serial)?;
     let recovery_backup = recovery_backup
         .ok_or_else(|| anyhow::anyhow!("backup import requires --recovery-backup"))?;
     let recovery = session.export_recovery()?;
@@ -387,9 +439,7 @@ fn handle_import(args: BackupImportArgs) -> anyhow::Result<()> {
                 validated_backup_import_target_warning(camera_name, &usb_id)
             );
             interrupt::critical_camera_write("backup restore", || {
-                tag_backup_import_state_unknown(
-                    session.restore(backup, target_serial_sha256.as_deref()),
-                )
+                tag_backup_import_state_unknown(session.restore(backup, target_serial))
             })
         },
     )?;
@@ -400,7 +450,7 @@ fn handle_import(args: BackupImportArgs) -> anyhow::Result<()> {
         &binding,
         camera_name,
         &target,
-        target_serial_sha256.as_deref(),
+        target_serial,
         &backup,
         accepted,
     )
