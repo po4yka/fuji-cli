@@ -14,6 +14,12 @@ and dispatches everything through traits the codegen implements.
   `SimulationSetting`, `ConversionProfileField`).
 - [PTP codec migration](binrw-ptp-migration-research.md) - rationale,
   implemented `binrw` architecture, wire-contract mapping, and residual risks.
+- [Fuji PTP ecosystem research](fuji-ptp-ecosystem-research.md) - prior art
+  (libgphoto2, libfuji), macOS claiming, Rust USB crate landscape, and the
+  prioritized improvement candidates derived from them.
+- [X-T5 device audit](x-t5-device-audit-2026-08-31.md) - the read-only
+  physical-device audit: per-USB-mode surface, the descriptor asymmetry,
+  virtual object stores, the property inventory, and open questions.
 
 ## Build Pipeline
 
