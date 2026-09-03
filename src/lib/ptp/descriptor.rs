@@ -373,17 +373,33 @@ const fn wire_size(element_type: DevicePropDataType) -> Option<usize> {
     }
 }
 
+/// Upper bound on the memory one decoded descriptor list may occupy. The wire
+/// check below bounds the element count by the payload, but each decoded
+/// element is a `DevicePropValue` of `size_of::<DevicePropValue>()` bytes (32
+/// on 64-bit targets because of the 128-bit variants), so a byte-typed array
+/// would otherwise amplify a payload 32x on allocation.
+const MAX_DEVICE_PROP_VALUES_ALLOCATION_BYTES: usize = 16 * 1024 * 1024;
+
+fn reserve_values(count: usize, what: &str) -> anyhow::Result<Vec<DevicePropValue>> {
+    let allocation_bytes = count
+        .checked_mul(size_of::<DevicePropValue>())
+        .ok_or_else(|| anyhow!("PTP device property {what} allocation size overflows"))?;
+    ensure!(
+        allocation_bytes <= MAX_DEVICE_PROP_VALUES_ALLOCATION_BYTES,
+        "PTP device property {what} exceeds the in-memory allocation budget: {allocation_bytes} bytes exceeds {MAX_DEVICE_PROP_VALUES_ALLOCATION_BYTES}"
+    );
+    let mut values = Vec::new();
+    values
+        .try_reserve_exact(count)
+        .map_err(|error| anyhow!("failed to reserve PTP device property {what}: {error}"))?;
+    Ok(values)
+}
+
 fn read_array(
     reader: &mut Cursor<&[u8]>,
     element_type: DevicePropDataType,
 ) -> anyhow::Result<DevicePropValue> {
-    const MAX_DEVICE_PROP_ARRAY_VALUES: usize = 4 * 1024 * 1024;
-
     let count = usize::try_from(read_u32(reader)?)?;
-    ensure!(
-        count <= MAX_DEVICE_PROP_ARRAY_VALUES,
-        "PTP device property array exceeds safety limit"
-    );
     let Some(element_size) = wire_size(element_type) else {
         bail!("PTP device property array element type has no fixed wire size");
     };
@@ -398,10 +414,7 @@ fn read_array(
         required_bytes <= remaining_bytes,
         "PTP device property array is larger than its payload"
     );
-    let mut values = Vec::new();
-    values
-        .try_reserve_exact(count)
-        .map_err(|error| anyhow!("failed to reserve PTP device property array: {error}"))?;
+    let mut values = reserve_values(count, "array")?;
     for _ in 0..count {
         values.push(read_value(reader, element_type)?);
     }
@@ -427,10 +440,7 @@ fn read_enumeration(
         required_bytes <= remaining_bytes,
         "PTP device property enumeration is larger than its payload"
     );
-    let mut values = Vec::new();
-    values
-        .try_reserve_exact(count)
-        .map_err(|error| anyhow!("failed to reserve PTP device property enumeration: {error}"))?;
+    let mut values = reserve_values(count, "enumeration")?;
     for _ in 0..count {
         values.push(read_value(reader, element_type)?);
     }
@@ -630,6 +640,28 @@ mod tests {
             .expect_err("array count exceeding its payload must be rejected before allocation");
 
         assert!(error.to_string().contains("larger than its payload"));
+    }
+
+    #[test]
+    fn array_within_its_payload_but_over_the_allocation_budget_is_rejected() {
+        // One more byte-typed element than the decoded-value budget allows.
+        // The payload is fully present, so only the in-memory amplification
+        // (32 bytes per decoded element) can reject it.
+        let count = super::MAX_DEVICE_PROP_VALUES_ALLOCATION_BYTES
+            / std::mem::size_of::<super::DevicePropValue>()
+            + 1;
+        let mut bytes = Vec::from([
+            0x01, 0xd0, // DevicePropertyCode
+            0x02, 0x40, // DataType: AUINT8
+            0x01, // GetSet: writable
+        ]);
+        bytes.extend(u32::try_from(count).expect("count fits u32").to_le_bytes());
+        bytes.resize(bytes.len() + count, 0xab);
+
+        let error = DevicePropDesc::decode(&bytes)
+            .expect_err("a payload-backed array must still respect the allocation budget");
+
+        assert!(error.to_string().contains("allocation budget"), "{error}");
     }
 
     #[test]
