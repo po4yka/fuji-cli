@@ -772,7 +772,6 @@ impl Camera {
                 &[
                     generated::cameras::CameraPreflightOperation::SimulationAccess,
                     generated::cameras::CameraPreflightOperation::SimulationWrite,
-                    generated::cameras::CameraPreflightOperation::RawConversion,
                 ],
             )?;
             let mut io = features::simulation::AuthorizedSimulationIo::new(authorized);
@@ -794,7 +793,6 @@ impl Camera {
                 &[
                     generated::cameras::CameraPreflightOperation::SimulationAccess,
                     generated::cameras::CameraPreflightOperation::SimulationWrite,
-                    generated::cameras::CameraPreflightOperation::RawConversion,
                 ],
             )?;
             let mut io = features::simulation::AuthorizedSimulationIo::new(authorized);
