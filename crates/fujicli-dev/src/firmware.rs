@@ -16,6 +16,8 @@ use clap::Subcommand;
 use fujicli::features::backup::sha256_hex;
 use serde_json::json;
 
+use crate::surface::{Category, PtpSurface, SurfaceDiff, format_codes};
+
 /// Header field sizes by container type, from the `FujiHack` wiki and its
 /// patcher. Type 6 covers every X-Processor 4 and 5 body this project knows.
 const fn model_code_size(container_type: u32) -> Option<usize> {
@@ -52,6 +54,13 @@ pub enum FirmwareCommand {
         input: PathBuf,
         /// Directory to create; an existing path is never overwritten
         output: PathBuf,
+    },
+    /// Compare the PTP surface two firmware containers declare
+    Diff {
+        /// The container the current declarations were derived from
+        before: PathBuf,
+        /// The container to check for surface changes
+        after: PathBuf,
     },
 }
 
@@ -91,7 +100,7 @@ pub struct FirmwareReport {
 /// The manifest an unpack writes beside the extracted files: everything the
 /// reader established about the container, so a later run can be diffed
 /// against it without re-deriving the layout.
-fn manifest(report: &FirmwareReport) -> serde_json::Value {
+fn manifest(report: &FirmwareReport, surface: &PtpSurface) -> serde_json::Value {
     json!({
         "schema_version": report.schema_version,
         "input_bytes": report.input_bytes,
@@ -112,6 +121,17 @@ fn manifest(report: &FirmwareReport) -> serde_json::Value {
             "decompressed_bytes": section.decompressed_bytes,
             "decompressed_sha256": section.decompressed_sha256,
         })).collect::<Vec<_>>(),
+        "ptp_surface": Category::ALL
+            .iter()
+            .map(|category| {
+                let codes: Vec<String> = surface
+                    .codes(*category)
+                    .iter()
+                    .map(|code| format!("0x{code:04X}"))
+                    .collect();
+                (category.name().replace(' ', "_"), json!(codes))
+            })
+            .collect::<serde_json::Map<String, serde_json::Value>>(),
     })
 }
 
@@ -121,6 +141,7 @@ struct Firmware {
     report: FirmwareReport,
     image: Vec<u8>,
     sections: Vec<Vec<u8>>,
+    surface: PtpSurface,
 }
 
 fn parse_header(raw: &[u8]) -> anyhow::Result<(FirmwareHeader, usize)> {
@@ -316,6 +337,14 @@ fn read(input: &Path) -> anyhow::Result<Firmware> {
         offset = (offset + stored).next_multiple_of(4);
     }
 
+    // The static code lists live in the decompressed sections, but an
+    // uncompressed region may carry one too, so both are scanned.
+    let mut surface = PtpSurface::default();
+    surface.scan(&image);
+    for section in &sections {
+        surface.scan(section);
+    }
+
     Ok(Firmware {
         report: FirmwareReport {
             schema_version: 1,
@@ -328,10 +357,11 @@ fn read(input: &Path) -> anyhow::Result<Firmware> {
         },
         image,
         sections,
+        surface,
     })
 }
 
-fn report(firmware: &FirmwareReport) {
+fn report(firmware: &FirmwareReport, surface: &PtpSurface) {
     println!(
         "Container type {}, version {}, {} model code(s)",
         firmware.header.container_type,
@@ -357,16 +387,65 @@ fn report(firmware: &FirmwareReport) {
     if firmware.sections.is_empty() {
         println!("No compressed sections recognised; the image is written as it is");
     }
+    println!(
+        "PTP surface: {} code(s) declared in static lists",
+        surface.total()
+    );
+    for category in Category::ALL {
+        let codes = surface.codes(category);
+        if !codes.is_empty() {
+            println!("  {}: {}", category.name(), codes.len());
+        }
+    }
 }
 
 fn inspect(input: &Path) -> anyhow::Result<()> {
-    report(&read(input)?.report);
+    let firmware = read(input)?;
+    report(&firmware.report, &firmware.surface);
+    Ok(())
+}
+
+/// Regression check between two releases: what the newer container adds to or
+/// removes from the PTP surface the older one declares. A change here is what
+/// invalidates an FML declaration derived from the older image.
+fn diff(before: &Path, after: &Path) -> anyhow::Result<()> {
+    let old = read(before)?;
+    let new = read(after)?;
+    println!(
+        "{} version {} -> {} version {}",
+        before.display(),
+        old.report.header.version,
+        after.display(),
+        new.report.header.version
+    );
+
+    let diff = SurfaceDiff::between(&old.surface, &new.surface);
+    if diff.is_empty() {
+        println!(
+            "PTP surface unchanged: {} code(s) on both sides",
+            old.surface.total()
+        );
+        return Ok(());
+    }
+    for (category, added, removed) in diff.changes() {
+        println!("{}:", category.name());
+        if !added.is_empty() {
+            println!("  added   {}", format_codes(added));
+        }
+        if !removed.is_empty() {
+            println!("  removed {}", format_codes(removed));
+        }
+    }
+    println!(
+        "Re-check every FML declaration derived from {}",
+        before.display()
+    );
     Ok(())
 }
 
 fn unpack(input: &Path, output: &Path) -> anyhow::Result<()> {
     let firmware = read(input)?;
-    report(&firmware.report);
+    report(&firmware.report, &firmware.surface);
     fs::create_dir(output).with_context(|| {
         format!(
             "creating the unpack directory {}; an existing path is never overwritten",
@@ -380,7 +459,7 @@ fn unpack(input: &Path, output: &Path) -> anyhow::Result<()> {
             section,
         )?;
     }
-    let mut manifest = serde_json::to_vec_pretty(&manifest(&firmware.report))?;
+    let mut manifest = serde_json::to_vec_pretty(&manifest(&firmware.report, &firmware.surface))?;
     manifest.push(b'\n');
     fs::write(output.join("manifest.json"), manifest)?;
     println!("Wrote {}", output.display());
@@ -391,12 +470,16 @@ pub fn handle(command: &FirmwareCommand) -> anyhow::Result<()> {
     match command {
         FirmwareCommand::Inspect { input } => inspect(input),
         FirmwareCommand::Unpack { input, output } => unpack(input, output),
+        FirmwareCommand::Diff { before, after } => diff(before, after),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_ascii_hex, decompress, model_codes, parse_header, section_header};
+    use super::{
+        SECTION_HEADER_BYTES, SECTION_PAGE_BYTES, decode_ascii_hex, decompress, model_codes,
+        parse_header, section_header,
+    };
 
     /// A minimal type-6 container: the type word, a 512-byte model-code field
     /// carrying one ASCII-hex body code, then the four trailer words.
@@ -488,6 +571,68 @@ mod tests {
             .expect_err("output beyond the declared size must be refused");
 
         assert!(error.to_string().contains("expands past"), "{error}");
+    }
+
+    /// A whole container around one section, so the reader can be exercised
+    /// end to end without shipping a vendor image. The section must actually
+    /// compress, because a header whose output is no larger than its input is
+    /// not a section.
+    fn container_with_section(declared: u32) -> Vec<u8> {
+        // Four literals, then four maximum-length matches at distance four.
+        let mut stream = vec![4, b'P', b'T', b'P', b'X'];
+        for _ in 0..4 {
+            stream.extend_from_slice(&[0x80, 0x4F]);
+        }
+        let stored = SECTION_HEADER_BYTES + stream.len();
+
+        let mut image = Vec::new();
+        image.extend_from_slice(&declared.to_le_bytes());
+        image.extend_from_slice(
+            &u32::try_from(stored)
+                .expect("test section is small")
+                .to_le_bytes(),
+        );
+        image.extend_from_slice(&1_u32.to_le_bytes());
+        image.extend_from_slice(&SECTION_PAGE_BYTES.to_le_bytes());
+        image.extend_from_slice(&4_u32.to_le_bytes());
+        image.extend_from_slice(&stream);
+
+        let mut raw = container("3030303536383831");
+        raw.pop();
+        raw.extend(image.iter().map(|byte| !byte));
+        raw
+    }
+
+    fn written(container: &[u8]) -> tempfile::NamedTempFile {
+        let file = tempfile::NamedTempFile::new().expect("a temporary container");
+        std::fs::write(file.path(), container).expect("writing the container");
+        file
+    }
+
+    #[test]
+    fn a_container_round_trips_through_the_reader() {
+        // Four literals plus four fifteen-byte matches.
+        let file = written(&container_with_section(64));
+
+        let firmware = super::read(file.path()).expect("the container must be readable");
+
+        assert_eq!(firmware.report.header.version, "4.31");
+        assert_eq!(firmware.report.sections.len(), 1);
+        assert_eq!(firmware.sections[0].len(), 64);
+        assert!(firmware.sections[0].starts_with(b"PTPXPTPX"));
+        assert_eq!(firmware.report.sections[0].decompressed_bytes, 64);
+    }
+
+    #[test]
+    fn a_section_that_decodes_short_is_an_error_not_a_warning() {
+        // The header claims one byte more than the stream can produce.
+        let file = written(&container_with_section(65));
+
+        let Err(error) = super::read(file.path()) else {
+            panic!("a size mismatch means the layout was misread")
+        };
+
+        assert!(error.to_string().contains("but decoded"), "{error}");
     }
 
     #[test]

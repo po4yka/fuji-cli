@@ -185,6 +185,37 @@ so a wrong reading of the layout cannot pass silently. See the
 [X-T5 firmware analysis](../internals/x-t5-firmware-4.31-static-analysis-2026-09-03.md)
 for the container layout and for what the decompressed sections contain.
 
+### Surface regression between releases
+
+```sh
+cargo run --locked -p fujicli-dev --features reverse-tools -- \
+  firmware diff FWUP0030.DAT FWUP0031.DAT
+```
+
+Both containers are read, the PTP code lists in their images are extracted, and
+the difference is printed per category: operations, events, and device
+properties. An empty diff means the newer release declares the same surface, so
+every FML declaration derived from the older image still describes the same
+codes. Codes that appear or disappear are exactly what to re-check before
+raising a camera's supported firmware.
+
+`inspect` and `unpack` report the same extraction, and `unpack` records it in
+`manifest.json`, so an older run can be diffed without keeping the container.
+
+What the extractor accepts is deliberately narrow. A run of `u16` codes counts
+as a list only when every entry is in one PTP code space, at least one entry is
+a standard code, no code repeats, and the run ends on a `0x0000` or `0xFFFF`
+terminator. Lists shorter than eight codes for operations and properties, or
+four for events, are ignored; on the X-T5 4.31 image that excludes the
+four-code Card Reader property list. Object formats are not extracted at all:
+their vendor space cannot be bounded from the evidence, and the standard range
+matches ordinary UTF-16 text, which produced thousands of false codes. A
+regression tool that invents changes on every release is worse than one that
+stays silent about formats.
+
+This is a static reading of what the image holds, not what a camera advertises
+in a given USB mode; `discover surface` above is the device-side counterpart.
+
 ## Requirements for Any Future Dangerous Probe
 
 Do not add a dangerous command merely by widening `reverse-tools`. If a

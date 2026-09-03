@@ -17,6 +17,7 @@ mod output;
 #[cfg(feature = "dangerous-reverse-engineering")]
 mod probe;
 mod reverse;
+mod surface;
 mod usb;
 
 use clap::{ArgAction, Parser, Subcommand};
