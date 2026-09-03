@@ -572,7 +572,7 @@ pub(crate) fn run<'camera, Operation: OperationMarker>(
         &info,
     )?;
 
-    let descriptors = read_and_validate_descriptors(&mut camera.ptp, profile)?;
+    let descriptors = collect_property_descriptors(&mut camera.ptp, profile)?;
     let writable_properties: Vec<u16> = profile
         .required_properties
         .iter()
@@ -790,7 +790,10 @@ fn validate_serial_binding(
     Ok(())
 }
 
-fn read_and_validate_descriptors(
+/// Collects the descriptor every required property will be validated against
+/// before a write. A camera-served descriptor is used as it is. A camera that
+/// refuses one is handled by [`descriptor_after_refusal`].
+fn collect_property_descriptors(
     ptp: &mut Ptp,
     profile: &CameraPreflightProfile,
 ) -> anyhow::Result<Vec<DevicePropDesc>> {
@@ -799,43 +802,59 @@ fn read_and_validate_descriptors(
         match ptp.get_prop_desc(requirement.code) {
             Ok(descriptor) => {
                 validate_descriptor(*requirement, &descriptor)?;
+                if requirement.static_descriptor.is_some() {
+                    debug!(
+                        "Camera served a descriptor for 0x{:04x}; its FML static descriptor is not used",
+                        requirement.code
+                    );
+                }
                 descriptors.push(descriptor);
             }
             Err(error) if camera_refused(&error) => {
-                // The X-T5 on firmware 4.31 in USB mode 0x6 answers GeneralError
-                // to every GetDevicePropDesc while serving GetDevicePropValue
-                // (its DeviceInfo for that mode is assembled at run time and the
-                // firmware image carries no descriptor rows for the simulation
-                // settings). Read the value instead. A requirement that the FML
-                // profile equips with a static descriptor becomes a writable
-                // descriptor from that declared shape plus the live value; any
-                // other requirement is only shape-checked and never enters the
-                // permit, so it can't be written.
-                debug!(
-                    "Camera refused GetDevicePropDesc for 0x{:04x} ({error:#}); validating the value shape instead",
-                    requirement.code
-                );
-                let value = ptp.get_prop_raw(requirement.code).with_context(|| {
-                    format!(
-                        "reading PTP device property 0x{:04x} after the camera refused its descriptor",
-                        requirement.code
-                    )
-                })?;
-                match requirement.static_descriptor {
-                    Some(static_descriptor) => {
-                        descriptors.push(descriptor_from_static(
-                            *requirement,
-                            static_descriptor,
-                            &value,
-                        )?);
-                    }
-                    None => validate_value_shape(*requirement, &value)?,
+                if let Some(descriptor) = descriptor_after_refusal(ptp, *requirement, &error)? {
+                    descriptors.push(descriptor);
                 }
             }
             Err(error) => return Err(error),
         }
     }
     Ok(descriptors)
+}
+
+/// A camera may refuse `GetDevicePropDesc` for a property it happily reads.
+/// The X-T5 on firmware 4.31 in USB mode 0x6 refuses every one of them: that
+/// mode's `GetDeviceInfo` is assembled at run time, and the firmware image
+/// carries no static descriptor rows for the simulation settings, so the
+/// refusal is how the camera is built rather than a fault to retry around
+/// (see `docs/internals/x-t5-firmware-4.31-static-analysis-2026-09-03.md`).
+///
+/// The live value is read instead. A requirement the FML profile equips with
+/// a static descriptor becomes a writable descriptor built from that declared
+/// shape plus the value. Any other requirement is only shape-checked and
+/// returns no descriptor, so it never enters the permit and cannot be written.
+fn descriptor_after_refusal(
+    ptp: &mut Ptp,
+    requirement: CameraPreflightProperty,
+    refusal: &anyhow::Error,
+) -> anyhow::Result<Option<DevicePropDesc>> {
+    let code = requirement.code;
+    debug!(
+        "Camera refused GetDevicePropDesc for 0x{code:04x} ({refusal:#}); reading the value instead"
+    );
+    let value = ptp.get_prop_raw(code).with_context(|| {
+        format!("reading PTP device property 0x{code:04x} after the camera refused its descriptor")
+    })?;
+    match requirement.static_descriptor {
+        Some(static_descriptor) => Ok(Some(descriptor_from_static(
+            requirement,
+            static_descriptor,
+            &value,
+        )?)),
+        None => {
+            validate_value_shape(requirement, &value)?;
+            Ok(None)
+        }
+    }
 }
 
 /// True when the camera answered with a PTP response code (it understood the
@@ -883,6 +902,12 @@ fn descriptor_from_static(
     value: &[u8],
 ) -> anyhow::Result<DevicePropDesc> {
     let code = requirement.code;
+    // Both invariants are enforced by CUE; asserting them here keeps the
+    // runtime contract independent of what generated the registry.
+    ensure!(
+        requirement.writable,
+        "static descriptor for PTP property 0x{code:04x} is declared on a read-only requirement"
+    );
     let CameraPreflightDataType::Exact(expected) = requirement.data_type else {
         bail!("static descriptor for PTP property 0x{code:04x} does not pin a datatype");
     };
@@ -951,7 +976,7 @@ fn validate_value_shape(requirement: CameraPreflightProperty, value: &[u8]) -> a
     let code = requirement.code;
     ensure!(
         !requirement.writable,
-        "camera refused GetDevicePropDesc for required writable PTP property 0x{code:04x}; writability cannot be verified without a descriptor"
+        "camera refused GetDevicePropDesc for required writable PTP property 0x{code:04x}; writability cannot be verified from a value alone. Declare a static_descriptor for this property in the camera's preflight profile in fml/ if its shape is known for this exact firmware"
     );
     match requirement.data_type {
         CameraPreflightDataType::Any => ensure!(
@@ -973,7 +998,7 @@ fn validate_value_shape(requirement: CameraPreflightProperty, value: &[u8]) -> a
                     })?;
                 }
                 None => bail!(
-                    "camera refused GetDevicePropDesc for array-typed PTP property 0x{code:04x}; array shapes cannot be verified without a descriptor"
+                    "camera refused GetDevicePropDesc for array-typed PTP property 0x{code:04x}; array shapes cannot be verified without a descriptor, and a static descriptor covers scalars and strings only"
                 ),
             }
         }
@@ -1106,6 +1131,35 @@ mod tests {
 
         assert_eq!(descriptor.data_type, DevicePropDataType::String);
         assert!(descriptor.validate_serialized_candidate(&encoded).is_ok());
+    }
+
+    #[test]
+    fn a_writable_requirement_without_a_static_descriptor_names_the_remedy() {
+        let error = validate_value_shape(requirement(CameraPreflightDataType::Any, true), &[7, 0])
+            .expect_err("writability cannot be proven from a value");
+
+        let message = error.to_string();
+        assert!(message.contains("static_descriptor"), "{message}");
+        assert!(message.contains("fml/"), "{message}");
+    }
+
+    #[test]
+    fn a_static_descriptor_on_a_read_only_requirement_is_refused() {
+        let descriptor = CameraPreflightStaticDescriptor {
+            evidence: "test",
+            form: CameraPreflightStaticForm::None,
+        };
+        let read_only = CameraPreflightProperty {
+            code: 0xD18C,
+            data_type: CameraPreflightDataType::Exact(0x0004),
+            writable: false,
+            static_descriptor: Some(descriptor),
+        };
+
+        let error = descriptor_from_static(read_only, descriptor, &1_u16.to_le_bytes())
+            .expect_err("a static descriptor exists to authorize writes");
+
+        assert!(error.to_string().contains("read-only"), "{error}");
     }
 
     #[test]

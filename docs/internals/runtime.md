@@ -193,7 +193,8 @@ value instead. Two outcomes follow:
   against the declared datatype (scalar width or PTP string framing). That is
   enough for read-only requirements such as the USB mode and battery
   properties, but it never enters the mutation permit: such a property cannot
-  be written, and a requirement declared `writable` or array-typed fails closed.
+  be written, and a requirement declared `writable` or array-typed fails
+  closed, naming the FML declaration that would resolve it.
 - A requirement whose FML profile declares a `static_descriptor` yields a
   writable descriptor built from the pinned datatype, the declared form, and the
   live value. The live value must decode exactly and satisfy the form, or
