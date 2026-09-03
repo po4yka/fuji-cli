@@ -28,6 +28,7 @@ use log::{debug, error, trace, warn};
 use rusb::GlobalContext;
 
 use super::preflight::MutationPermit;
+use crate::interrupt::INTERRUPTS;
 
 const PTP_BULK_TIMEOUT: Duration = Duration::from_secs(10);
 const MIN_PTP_BULK_TIMEOUT: Duration = Duration::from_millis(1);
@@ -519,6 +520,7 @@ impl Ptp {
         let started = Instant::now();
         let read_chunk_size = self.chunk_policy.read.effective_bytes;
         let write_chunk_size = self.chunk_policy.write.effective_bytes;
+        let in_flight = INTERRUPTS.enter_transaction();
         let result = send_with_transport_for_operation(
             &self.handle,
             self.bulk_in,
@@ -532,6 +534,7 @@ impl Ptp {
             data,
             operation,
         );
+        drop(in_flight);
         self.finish_transport_transaction(code, read_chunk_size, write_chunk_size, started, result)
     }
 
@@ -546,6 +549,7 @@ impl Ptp {
         let started = Instant::now();
         let read_chunk_size = self.chunk_policy.read.effective_bytes;
         let write_chunk_size = self.chunk_policy.write.effective_bytes;
+        let in_flight = INTERRUPTS.enter_transaction();
         let result = send_with_transport_until_and_read_state(
             &self.handle,
             self.bulk_in,
@@ -559,6 +563,7 @@ impl Ptp {
             data,
             deadline,
         );
+        drop(in_flight);
         self.finish_transport_transaction(code, read_chunk_size, write_chunk_size, started, result)
     }
 
@@ -585,15 +590,18 @@ impl Ptp {
         };
         trace!("{summary}");
 
-        match result {
-            Ok(response) => {
-                if is_read_only_command(code) && !self.bulk_read_state.has_pending_bytes() {
-                    self.observe_read_success(response.len(), elapsed);
-                }
-                Ok(response)
-            }
-            Err(error) => Err(error),
+        if let Ok(response) = &result
+            && is_read_only_command(code)
+            && !self.bulk_read_state.has_pending_bytes()
+        {
+            self.observe_read_success(response.len(), elapsed);
         }
+        // Session control completes anyway and never runs inside a camera
+        // write, so an interrupt recorded during it is not worth an error.
+        if command_risk(code, &[]) == CommandRisk::SessionControl {
+            return result;
+        }
+        INTERRUPTS.after_transaction(result)
     }
 
     fn observe_read_success(&mut self, response_bytes: usize, elapsed: Duration) {
@@ -677,6 +685,7 @@ impl Ptp {
         let started = Instant::now();
         let read_chunk_size = self.chunk_policy.read.effective_bytes;
         let write_chunk_size = self.chunk_policy.write.effective_bytes;
+        let in_flight = INTERRUPTS.enter_transaction();
         let result = send_with_transport_until_and_read_state(
             &self.handle,
             self.bulk_in,
@@ -690,6 +699,7 @@ impl Ptp {
             None,
             deadline,
         );
+        drop(in_flight);
         self.active_session_control_permit_id = None;
         self.finish_transport_transaction(
             CommandCode::CloseSession,

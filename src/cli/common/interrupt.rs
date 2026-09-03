@@ -1,87 +1,78 @@
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-
+use fujicli::interrupt::{INTERRUPTED_EXIT_CODE, INTERRUPTS};
 use log::warn;
 
 use super::camera_state::{CAMERA_STATE_UNKNOWN_EXIT_CODE, CameraStateUnknown};
-
-/// Set while a `critical_camera_write` operation is in flight. The Ctrl-C
-/// handler consults this to decide whether to latch the interrupt or exit
-/// immediately with the default disposition.
-static IN_CRITICAL_WRITE: AtomicBool = AtomicBool::new(false);
-
-/// Counts interrupts received while `IN_CRITICAL_WRITE` was set. A non-zero
-/// value after a critical write completes means the caller must report the
-/// do-not-retry guidance instead of treating the write as a clean success.
-static INTERRUPTS_SEEN: AtomicU8 = AtomicU8::new(0);
 
 fn interrupt_exit_code(during_critical_write: bool) -> i32 {
     if during_critical_write {
         i32::from(CAMERA_STATE_UNKNOWN_EXIT_CODE)
     } else {
-        130
+        i32::from(INTERRUPTED_EXIT_CODE)
     }
 }
 
 /// Install the process-wide Ctrl-C handler. Call exactly once, before
 /// dispatching any command.
+///
+/// The PTP transport marks every transaction as in flight on the shared
+/// [`INTERRUPTS`] latch, so an interrupt is never allowed to abandon a bulk
+/// transfer mid-stream: a read-only transaction finishes and then fails with
+/// `fujicli::interrupt::Interrupted`, while a `critical_camera_write` region
+/// runs to completion and reports the interrupt itself.
 pub fn install() -> anyhow::Result<()> {
     ctrlc::set_handler(|| {
-        if !IN_CRITICAL_WRITE.load(Ordering::SeqCst) {
-            // Not inside a camera write: behave like the default disposition.
+        if !INTERRUPTS.is_deferring() {
+            // No PTP transaction in flight: behave like the default disposition.
             eprintln!("interrupted");
             std::process::exit(interrupt_exit_code(false));
         }
-        let seen = INTERRUPTS_SEEN.fetch_add(1, Ordering::SeqCst);
-        if seen == 0 {
-            eprintln!(
+        let seen = INTERRUPTS.record_interrupt();
+        let during_critical_write = INTERRUPTS.critical_region_active();
+        match (seen, during_critical_write) {
+            (0, true) => eprintln!(
                 "interrupt received during a camera write; finishing the current PTP operation first (press Ctrl-C again to force-quit; camera state will then be unknown)"
-            );
-        } else {
-            eprintln!(
-                "forced quit during a camera write; camera state is unknown. DO NOT RETRY AUTOMATICALLY"
-            );
-            std::process::exit(interrupt_exit_code(true));
+            ),
+            (0, false) => eprintln!(
+                "interrupt received during a PTP transfer; finishing it first so the camera is not left mid-transfer (press Ctrl-C again to force-quit; the camera may then need to be reconnected)"
+            ),
+            (_, true) => {
+                eprintln!(
+                    "forced quit during a camera write; camera state is unknown. DO NOT RETRY AUTOMATICALLY"
+                );
+                std::process::exit(interrupt_exit_code(true));
+            }
+            (_, false) => {
+                eprintln!(
+                    "forced quit during a PTP transfer; disconnect and reconnect the camera before the next command"
+                );
+                std::process::exit(interrupt_exit_code(false));
+            }
         }
     })?;
     Ok(())
 }
 
-/// RAII guard that clears `IN_CRITICAL_WRITE` on drop, including on an early
-/// `?` return or a panic-driven unwind, so the latch can never be left set
-/// past the operation it was guarding.
-struct CriticalWriteGuard;
-
-impl CriticalWriteGuard {
-    fn enter() -> Self {
-        IN_CRITICAL_WRITE.store(true, Ordering::SeqCst);
-        Self
-    }
-}
-
-impl Drop for CriticalWriteGuard {
-    fn drop(&mut self) {
-        IN_CRITICAL_WRITE.store(false, Ordering::SeqCst);
-    }
-}
-
 /// Run `operation` with interrupts latched: a SIGINT arriving while it runs
-/// will not terminate the process until `operation` returns. If an interrupt
-/// arrived during the run, this logs the standard do-not-retry guidance and
-/// returns an error even when `operation` itself succeeded, so the caller's
-/// normal error path reports the message and exits non-zero without
-/// retrying automatically. `operation`'s own error is returned unchanged
-/// when it fails.
+/// will not terminate the process until `operation` returns, and the
+/// transport will not unwind between the transactions it issues. If an
+/// interrupt arrived during the run, this logs the standard do-not-retry
+/// guidance and returns an error even when `operation` itself succeeded, so
+/// the caller's normal error path reports the message and exits non-zero
+/// without retrying automatically. `operation`'s own error is returned
+/// unchanged when it fails.
 pub fn critical_camera_write<T>(
     description: &str,
     operation: impl FnOnce() -> anyhow::Result<T>,
 ) -> anyhow::Result<T> {
-    let guard = CriticalWriteGuard::enter();
+    // The guard clears the region on drop, including on an early `?` return
+    // or a panic-driven unwind, so the latch can never be left set.
+    let region = INTERRUPTS.enter_critical_region();
     let result = operation();
-    drop(guard);
+    drop(region);
 
     // Always drain the counter, whether `operation` succeeded or failed, so
     // a latched interrupt can never leak into a later critical write.
-    let interrupted = INTERRUPTS_SEEN.swap(0, Ordering::SeqCst) > 0;
+    let interrupted = INTERRUPTS.take_interrupts() > 0;
     let value = result?;
 
     if interrupted {
@@ -98,9 +89,9 @@ pub fn critical_camera_write<T>(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::Ordering;
+    use fujicli::interrupt::INTERRUPTS;
 
-    use super::{INTERRUPTS_SEEN, critical_camera_write, interrupt_exit_code};
+    use super::{critical_camera_write, interrupt_exit_code};
 
     #[test]
     fn forced_interrupt_during_camera_write_is_state_unknown() {
@@ -111,29 +102,32 @@ mod tests {
     /// Test-only helper: simulate an interrupt having been latched during the
     /// operation, without installing a real signal handler.
     fn simulate_interrupt() {
-        INTERRUPTS_SEEN.fetch_add(1, Ordering::SeqCst);
+        INTERRUPTS.record_interrupt();
     }
 
     #[test]
     fn latch_state_machine() {
         // Phase 1: no interrupt recorded -- the operation's own result passes
         // through untouched.
-        let result = critical_camera_write("phase one", || Ok(42));
+        let result = critical_camera_write("phase one", || {
+            assert!(INTERRUPTS.critical_region_active());
+            Ok(42)
+        });
         assert_eq!(result.unwrap(), 42);
-        assert!(!super::IN_CRITICAL_WRITE.load(Ordering::SeqCst));
-        assert_eq!(INTERRUPTS_SEEN.load(Ordering::SeqCst), 0);
+        assert!(!INTERRUPTS.critical_region_active());
+        assert_eq!(INTERRUPTS.take_interrupts(), 0);
 
         // Phase 2: an interrupt arrives during a successful operation -- the
         // function must still report an error naming the description, and
-        // clear the in-critical flag and the interrupt counter.
+        // clear the region flag and the interrupt counter.
         let result = critical_camera_write("phase two", || {
             simulate_interrupt();
             Ok(7)
         });
         let error = result.unwrap_err();
         assert!(error.to_string().contains("phase two"));
-        assert!(!super::IN_CRITICAL_WRITE.load(Ordering::SeqCst));
-        assert_eq!(INTERRUPTS_SEEN.load(Ordering::SeqCst), 0);
+        assert!(!INTERRUPTS.critical_region_active());
+        assert_eq!(INTERRUPTS.take_interrupts(), 0);
 
         // Phase 3: the operation itself fails, with an interrupt also
         // latched -- the operation's own error must win, and the flag must
@@ -144,7 +138,7 @@ mod tests {
         });
         let error = result.unwrap_err();
         assert_eq!(error.to_string(), "operation failed");
-        assert!(!super::IN_CRITICAL_WRITE.load(Ordering::SeqCst));
-        assert_eq!(INTERRUPTS_SEEN.load(Ordering::SeqCst), 0);
+        assert!(!INTERRUPTS.critical_region_active());
+        assert_eq!(INTERRUPTS.take_interrupts(), 0);
     }
 }

@@ -204,7 +204,9 @@ confirmed; camera state is unknown. Do not retry the mutation automatically.
 Inspect the physical camera and establish its actual state first.
 .TP
 \fB130\fR
-Interrupted by Ctrl\-C outside a camera write.",
+Interrupted by Ctrl\-C outside a camera write. An interrupt that arrives during
+a PTP transfer is honored only after that transfer completes, so the camera is
+never left mid\-transfer.",
         },
         ManualSection {
             heading: "OUTPUT",

@@ -56,6 +56,7 @@ mod camera;
 pub mod features;
 include!(concat!(env!("OUT_DIR"), "/generated_module.rs"));
 pub mod input;
+pub mod interrupt;
 pub mod policy;
 #[doc(hidden)]
 #[cfg(feature = "reverse-tools")]

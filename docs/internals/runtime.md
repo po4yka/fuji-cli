@@ -70,6 +70,24 @@ negotiated speed, endpoint packet sizes, and initial/ceiling sizes. One trace
 summary records the effective sizes and duration for each logical transaction;
 payload bytes and camera identifiers are never logged.
 
+## Interrupt Latch
+
+A bulk transfer abandoned mid-transaction wedges the camera's USB pipe; the
+X-T5 audit needed a physical cable reconnection after one aborted `GetObject`.
+The transport therefore owns the interrupt latch (`fujicli::interrupt`):
+every `Ptp` transaction holds a `TransactionGuard`, and the CLI's Ctrl-C
+handler records an interrupt instead of exiting whenever a guard is alive.
+Once the transaction completes the transport drains the recorded interrupt
+and returns an `Interrupted` error, so the caller unwinds and `Camera::drop`
+closes the session normally; `main` maps that marker to exit status 130.
+
+A `CriticalRegionGuard`, held by the CLI's `critical_camera_write`, keeps the
+recorded interrupt pending across all the transactions of one camera write.
+The transport does not unwind inside the region; the region owner drains the
+count afterwards and reports the unknown-state outcome. Session-control
+commands never convert a recorded interrupt: they complete regardless, and
+`Drop` should not log a spurious close failure.
+
 ## Top-Level Dispatch
 
 [`src/lib/mod.rs`](../../src/lib/mod.rs) wraps the trait dispatch:

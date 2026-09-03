@@ -9,6 +9,7 @@
 use std::process::ExitCode;
 
 use cli::common::camera_state::{CAMERA_STATE_UNKNOWN_EXIT_CODE, CameraStateUnknown};
+use fujicli::interrupt::{INTERRUPTED_EXIT_CODE, Interrupted};
 
 mod cli;
 mod log;
@@ -36,11 +37,15 @@ fn handle_result(result: anyhow::Result<()>) -> anyhow::Result<()> {
 
 /// Map an application error to the documented process status. A
 /// [`CameraStateUnknown`] marker means a state-changing camera operation was
-/// already sent and its outcome is unconfirmed. `anyhow::Error::is` searches
-/// the whole context chain, so the mapping is independent of added context.
+/// already sent and its outcome is unconfirmed; an [`Interrupted`] marker
+/// means a Ctrl-C was honoured once the in-flight PTP transaction completed.
+/// `anyhow::Error::is` searches the whole context chain, so the mapping is
+/// independent of added context.
 fn error_exit_code(error: &anyhow::Error) -> u8 {
     if error.is::<CameraStateUnknown>() {
         CAMERA_STATE_UNKNOWN_EXIT_CODE
+    } else if error.is::<Interrupted>() {
+        INTERRUPTED_EXIT_CODE
     } else {
         1
     }
@@ -74,6 +79,22 @@ mod tests {
     #[test]
     fn error_carrying_the_marker_maps_to_state_unknown_exit_code() {
         let error = anyhow::Error::new(CameraStateUnknown).context("operation outcome unconfirmed");
+
+        assert_eq!(error_exit_code(&error), 3);
+    }
+
+    #[test]
+    fn honoured_interrupt_maps_to_the_interrupted_exit_code() {
+        let error = anyhow::Error::new(fujicli::interrupt::Interrupted).context("after GetObject");
+
+        assert_eq!(error_exit_code(&error), 130);
+    }
+
+    #[test]
+    fn state_unknown_wins_over_an_interrupt_marker() {
+        let error = anyhow::Error::new(fujicli::interrupt::Interrupted)
+            .context(CameraStateUnknown)
+            .context("restore verification interrupted");
 
         assert_eq!(error_exit_code(&error), 3);
     }
