@@ -26,7 +26,7 @@ pub(crate) fn generate(
     rules: Option<&StringRules>,
     encoding: &StringEncoding,
 ) -> anyhow::Result<TokenStream> {
-    let StringEncoding::Raw { prop_code } = encoding;
+    let StringEncoding::Raw { prop_code, .. } = encoding;
 
     let bounds = Bounds::resolve(rules);
     let type_name = safe_upper_camel_case_ident(id);

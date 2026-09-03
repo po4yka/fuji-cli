@@ -388,7 +388,10 @@ mod tests {
             spec: OptionSpec::Integer {
                 name: "Exposure Compensation".to_owned(),
                 rules: None,
-                encoding: NumericEncoding::Raw { prop_code: None },
+                encoding: NumericEncoding::Raw {
+                    prop_code: None,
+                    data_type: None,
+                },
             },
             codegen: Codegen::default(),
         };

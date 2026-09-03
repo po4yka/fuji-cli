@@ -24,10 +24,10 @@ pub fn generate(options: &BTreeMap<String, FujiOption>) -> anyhow::Result<TokenS
             OptionSpec::Integer {
                 rules, encoding, ..
             } => match encoding {
-                NumericEncoding::Lookup { spec, prop_code } => {
-                    integer::lookup::generate(id, *prop_code, spec)
-                        .with_context(|| format!("generating integer lookup option `{id}`"))?
-                }
+                NumericEncoding::Lookup {
+                    spec, prop_code, ..
+                } => integer::lookup::generate(id, *prop_code, spec)
+                    .with_context(|| format!("generating integer lookup option `{id}`"))?,
                 NumericEncoding::Raw { prop_code, .. }
                 | NumericEncoding::Scale { prop_code, .. } => {
                     integer::scaled::generate(id, *prop_code, rules.as_ref(), encoding)
@@ -37,10 +37,10 @@ pub fn generate(options: &BTreeMap<String, FujiOption>) -> anyhow::Result<TokenS
             OptionSpec::Float {
                 rules, encoding, ..
             } => match encoding {
-                NumericEncoding::Lookup { spec, prop_code } => {
-                    float::lookup::generate(id, *prop_code, spec)
-                        .with_context(|| format!("generating float lookup option `{id}`"))?
-                }
+                NumericEncoding::Lookup {
+                    spec, prop_code, ..
+                } => float::lookup::generate(id, *prop_code, spec)
+                    .with_context(|| format!("generating float lookup option `{id}`"))?,
                 NumericEncoding::Raw { prop_code, .. }
                 | NumericEncoding::Scale { prop_code, .. } => {
                     float::scaled::generate(id, *prop_code, rules.as_ref(), encoding)

@@ -50,7 +50,9 @@ pub(crate) fn generate(
     rules: &EnumRules,
     encoding: &EnumEncoding,
 ) -> anyhow::Result<TokenStream> {
-    let EnumEncoding::Lookup { spec, prop_code } = encoding;
+    let EnumEncoding::Lookup {
+        spec, prop_code, ..
+    } = encoding;
 
     let resolved = rules
         .variants

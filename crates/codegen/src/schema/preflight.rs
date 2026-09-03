@@ -20,6 +20,32 @@ const PTP_INT16: u16 = 0x0003;
 const PTP_UINT16: u16 = 0x0004;
 const PTP_STRING: u16 = 0xFFFF;
 
+/// Every option that is a PTP device property must pin `data_type`, and the
+/// pin must be the datatype its own wire codec emits. CUE requires the field
+/// whenever `prop_code` is set; this check closes the gap between the declared
+/// code and the representation the emitters derive from the wire range.
+pub fn validate_option_data_types(options: &BTreeMap<String, FujiOption>) -> anyhow::Result<()> {
+    for option in options.values() {
+        let Some(prop_code) = option.spec.prop_code() else {
+            continue;
+        };
+        let Some(declared) = option.spec.data_type() else {
+            bail!(
+                "option `{}` is PTP property 0x{prop_code:04x} but pins no data_type",
+                option.id
+            );
+        };
+        let wire = option_wire_data_type(option)
+            .with_context(|| format!("deriving the wire datatype of option `{}`", option.id))?;
+        ensure!(
+            declared == wire,
+            "option `{}` pins data_type 0x{declared:04x} but its wire codec emits 0x{wire:04x}",
+            option.id
+        );
+    }
+    Ok(())
+}
+
 pub fn validate_static_descriptors(
     options: &BTreeMap<String, FujiOption>,
     cameras: &BTreeMap<String, Camera>,
@@ -56,6 +82,8 @@ pub fn validate_static_descriptors(
                         context(),
                         option.id
                     );
+                    validate_range_against_option(option, &descriptor.form)
+                        .with_context(context)?;
                 }
             }
         }
@@ -81,6 +109,75 @@ fn validate_form(data_type: u16, form: &StaticForm) -> anyhow::Result<()> {
             ensure!(minimum <= maximum, "range minimum exceeds its maximum");
             Ok(())
         }
+    }
+}
+
+/// A range form must be the option's own wire range. Otherwise the permit
+/// would accept words the option codec rejects, or reject words it produces.
+/// Only scaled and raw numeric options have a dense wire range; lookups carry
+/// a finite value set that the firmware capability profile owns instead.
+fn validate_range_against_option(option: &FujiOption, form: &StaticForm) -> anyhow::Result<()> {
+    let StaticForm::Range {
+        minimum,
+        maximum,
+        step,
+    } = form
+    else {
+        return Ok(());
+    };
+    let Some(wire) = option_wire_range(option) else {
+        bail!(
+            "option `{}` has no dense wire range, so it cannot carry a range form",
+            option.id
+        );
+    };
+    ensure!(
+        (*minimum, *maximum, *step) == wire,
+        "range form {minimum}/{maximum}/{step} does not match the wire range {}/{}/{} of option `{}`",
+        wire.0,
+        wire.1,
+        wire.2,
+        option.id
+    );
+    Ok(())
+}
+
+/// `(minimum, maximum, step)` in wire units for an option whose logical range
+/// maps densely onto the wire, or `None` for lookups, strings, and options
+/// with incomplete rules.
+fn option_wire_range(option: &FujiOption) -> Option<(i64, i64, i64)> {
+    match &option.spec {
+        OptionSpec::Integer {
+            rules, encoding, ..
+        } => {
+            let scale = i64::from(numeric_scale(encoding)?);
+            let rules = rules.as_ref()?;
+            Some((
+                i64::from(rules.min?) * scale,
+                i64::from(rules.max?) * scale,
+                i64::from(rules.step?) * scale,
+            ))
+        }
+        OptionSpec::Float {
+            rules, encoding, ..
+        } => {
+            let scale = numeric_scale(encoding)? as f32;
+            let rules = rules.as_ref()?;
+            Some((
+                (rules.min? * scale).round() as i64,
+                (rules.max? * scale).round() as i64,
+                (rules.step? * scale).round() as i64,
+            ))
+        }
+        OptionSpec::String { .. } | OptionSpec::Enum { .. } => None,
+    }
+}
+
+fn numeric_scale(encoding: &NumericEncoding) -> Option<i32> {
+    match encoding {
+        NumericEncoding::Raw { .. } => Some(1),
+        NumericEncoding::Scale { spec, .. } => Some(spec.scale),
+        NumericEncoding::Lookup { .. } => None,
     }
 }
 
@@ -149,7 +246,7 @@ fn lookup_wire_values(values: &BTreeMap<String, LookupValue>) -> Vec<i32> {
 mod tests {
     use std::collections::BTreeMap;
 
-    use super::validate_static_descriptors;
+    use super::{validate_option_data_types, validate_static_descriptors};
     use crate::ast::{Camera, FujiOption};
 
     fn option(json: &str) -> (String, FujiOption) {
@@ -183,7 +280,88 @@ mod tests {
 
     const SIGNED_SCALE: &str = r#"{ "id": "color", "spec": { "name": "Color", "kind": "integer",
         "rules": { "min": -4, "max": 4, "step": 1 },
-        "encoding": { "kind": "scale", "prop_code": 53663, "spec": { "scale": 10 } } } }"#;
+        "encoding": { "kind": "scale", "prop_code": 53663, "data_type": 3, "spec": { "scale": 10 } } } }"#;
+
+    #[test]
+    fn a_pinned_datatype_must_match_the_option_wire_codec() {
+        let good = BTreeMap::from([option(SIGNED_SCALE)]);
+        validate_option_data_types(&good).expect("INT16 is what a signed scale option emits");
+
+        let wrong = BTreeMap::from([option(
+            &SIGNED_SCALE.replace(r#""data_type": 3"#, r#""data_type": 4"#),
+        )]);
+        let error = validate_option_data_types(&wrong)
+            .expect_err("UINT16 must be rejected for a signed scale option");
+        assert!(format!("{error:#}").contains("0x0003"), "{error:#}");
+    }
+
+    #[test]
+    fn a_ptp_property_option_without_a_pinned_datatype_fails_the_build() {
+        let options = BTreeMap::from([option(&SIGNED_SCALE.replace(r#""data_type": 3, "#, ""))]);
+
+        let error = validate_option_data_types(&options)
+            .expect_err("an option with a prop_code must pin its datatype");
+
+        assert!(
+            format!("{error:#}").contains("pins no data_type"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn an_option_without_a_prop_code_needs_no_pin() {
+        let options = BTreeMap::from([option(
+            r#"{ "id": "slot_only", "spec": { "name": "Slot", "kind": "integer",
+                 "rules": { "min": 0, "max": 4, "step": 1 },
+                 "encoding": { "kind": "raw" } } }"#,
+        )]);
+
+        validate_option_data_types(&options).expect("render-only options carry no PTP datatype");
+    }
+
+    #[test]
+    fn a_range_form_must_equal_the_option_wire_range() {
+        let options = BTreeMap::from([option(SIGNED_SCALE)]);
+        let matching = camera(
+            r#"{ "code": 53663, "data_type": 3, "writable": true,
+                 "static_descriptor": { "evidence": "test",
+                     "form": { "kind": "range", "minimum": -40, "maximum": 40, "step": 10 } } }"#,
+        );
+        let widened = camera(
+            r#"{ "code": 53663, "data_type": 3, "writable": true,
+                 "static_descriptor": { "evidence": "test",
+                     "form": { "kind": "range", "minimum": -100, "maximum": 100, "step": 10 } } }"#,
+        );
+
+        validate_static_descriptors(&options, &matching)
+            .expect("the option's own wire range must be accepted");
+        let error = validate_static_descriptors(&options, &widened)
+            .expect_err("a range wider than the option codec accepts must fail the build");
+        assert!(format!("{error:#}").contains("-40/40/10"), "{error:#}");
+    }
+
+    #[test]
+    fn a_lookup_option_cannot_carry_a_range_form() {
+        let options = BTreeMap::from([option(
+            r#"{ "id": "noise", "spec": { "name": "Noise", "kind": "integer",
+                 "rules": { "min": -4, "max": 4, "step": 1 },
+                 "encoding": { "kind": "lookup", "prop_code": 53665, "data_type": 4,
+                     "spec": { "values": { "4": 20480, "0": 0 } } } } }"#,
+        )]);
+        let cameras = camera(
+            r#"{ "code": 53665, "data_type": 4, "writable": true,
+                 "static_descriptor": { "evidence": "test",
+                     "form": { "kind": "range", "minimum": 0, "maximum": 20480, "step": 4096 } } }"#,
+        );
+
+        let error = validate_static_descriptors(&options, &cameras)
+            .expect_err("a lookup option has no dense wire range");
+
+        assert!(
+            format!("{error:#}").contains("no dense wire range"),
+            "{error:#}"
+        );
+    }
 
     #[test]
     fn static_descriptor_matching_the_option_wire_type_passes() {

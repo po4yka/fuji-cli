@@ -86,6 +86,21 @@ option is a top-level PTP device property (readable / writable via
 `GetDevicePropValue` / `SetDevicePropValue`); absent means the option is only
 used as a positional slot inside a render profile.
 
+An encoding with a `prop_code` must also pin `data_type`, the PTP datatype code
+its wire codec puts on the wire: `0x0003` INT16, `0x0004` UINT16, or `0xFFFF`
+STR. The pins come from vendor evidence, the X-T5 `FWUP0030.DAT` 4.31 descriptor
+table and the 2026-08-31 device audit (see the
+[firmware analysis](../internals/x-t5-firmware-4.31-static-analysis-2026-09-03.md)),
+and codegen rejects a pin that differs from the representation the emitters
+derive from the option's own wire range. Nine scaled options carry a comment
+naming the firmware row whose range matches theirs, for example `color` against
+`D008` with `0/-40/40/10`.
+
+The pinned datatype and the option's wire range are what a camera preflight
+profile reuses when it declares a
+[static descriptor](cameras.md#static-descriptors), so a range declared there
+must be exactly `min * scale` to `max * scale` in `step * scale` units.
+
 ### `raw`
 
 ```cue

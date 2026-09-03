@@ -23,8 +23,18 @@ options: [string]: #Option
 
 	#SpecEncodingBase: {
 		prop_code?: uint16
+		// PTP datatype code the SimulationSetting codec puts on the wire for
+		// `prop_code`: 0x0003 INT16, 0x0004 UINT16, 0xFFFF STR. Pinned from
+		// vendor evidence (the X-T5 FWUP0030.DAT 4.31 descriptor table and the
+		// 2026-08-31 device audit); codegen rejects a value the option's own
+		// wire range cannot produce.
+		data_type?: 0x0003 | 0x0004 | 0xFFFF
 		kind:       string
 		spec?:      _
+
+		if prop_code != _|_ {
+			data_type: uint16
+		}
 	}
 
 	#SpecInteger: #SpecBase & {
@@ -227,6 +237,7 @@ options: {
 			]
 			encoding: {
 				prop_code: 0xD18C
+				data_type: 0x0004
 				kind:      "lookup"
 				spec: values: {
 					c1: 0x1
@@ -251,6 +262,7 @@ options: {
 			]
 			encoding: {
 				prop_code: 0xD16E
+				data_type: 0x0004
 				kind:      "lookup"
 				spec: values: {
 					raw_conversion: 0x6
@@ -267,6 +279,7 @@ options: {
 			rules: {max_length: 25}
 			encoding: {
 				prop_code: 0xD18D
+				data_type: 0xFFFF
 				kind:      "raw"
 			}
 		}
@@ -295,6 +308,7 @@ options: {
 			]
 			encoding: {
 				prop_code: 0xD18E
+				data_type: 0x0004
 				kind:      "lookup"
 				spec: values: {
 					"7728x5152": 0x07
@@ -331,6 +345,7 @@ options: {
 			]
 			encoding: {
 				prop_code: 0xD18F
+				data_type: 0x0004
 				kind:      "lookup"
 				spec: values: {
 					fine_raw:   0x04
@@ -371,6 +386,7 @@ options: {
 			]
 			encoding: {
 				prop_code: 0xD192
+				data_type: 0x0004
 				kind:      "lookup"
 				spec: values: {
 					provia:               0x01
@@ -405,6 +421,8 @@ options: {
 			rules: {min: -18, max: 18, step: 1}
 			encoding: {
 				prop_code: 0xD193
+				// Wire range equals FWUP0030.DAT 4.31 live-property row D031 `0/-180/180/10`.
+				data_type: 0x0003
 				kind:      "scale"
 				spec: scale: 10
 			}
@@ -418,6 +436,8 @@ options: {
 			rules: {min: -18, max: 18, step: 1}
 			encoding: {
 				prop_code: 0xD194
+				// Wire range equals FWUP0030.DAT 4.31 live-property row D104 `0/-180/180/10`.
+				data_type: 0x0003
 				kind:      "scale"
 				spec: scale: 10
 			}
@@ -437,6 +457,7 @@ options: {
 			]
 			encoding: {
 				prop_code: 0xD195
+				data_type: 0x0004
 				kind:      "lookup"
 				spec: values: {
 					strong_large: 0x05
@@ -460,6 +481,7 @@ options: {
 			]
 			encoding: {
 				prop_code: 0xD196
+				data_type: 0x0004
 				kind:      "lookup"
 				spec: values: {strong: 0x03, weak: 0x02, off: 0x01}
 			}
@@ -477,6 +499,7 @@ options: {
 			]
 			encoding: {
 				prop_code: 0xD197
+				data_type: 0x0004
 				kind:      "lookup"
 				spec: values: {strong: 0x03, weak: 0x02, off: 0x01}
 			}
@@ -506,6 +529,7 @@ options: {
 			]
 			encoding: {
 				prop_code: 0xD199
+				data_type: 0x0004
 				kind:      "lookup"
 				spec: values: {
 					as_shot:           0x0000
@@ -535,6 +559,8 @@ options: {
 			rules: {min: -9, max: 9, step: 1}
 			encoding: {
 				prop_code: 0xD19A
+				// Wire range equals FWUP0030.DAT 4.31 live-property row D00B `0/-9/9/1`.
+				data_type: 0x0003
 				kind:      "scale"
 				spec: scale: 1
 			}
@@ -548,6 +574,8 @@ options: {
 			rules: {min: -9, max: 9, step: 1}
 			encoding: {
 				prop_code: 0xD19B
+				// Wire range equals FWUP0030.DAT 4.31 live-property row D00C `0/-9/9/1`.
+				data_type: 0x0003
 				kind:      "scale"
 				spec: scale: 1
 			}
@@ -561,6 +589,7 @@ options: {
 			rules: {min: 2500, max: 10000, step: 10}
 			encoding: {
 				prop_code: 0xD19C
+				data_type: 0x0004
 				kind:      "scale"
 				spec: scale: 1
 			}
@@ -574,6 +603,8 @@ options: {
 			rules: {min: -2.0, max: 4.0, step: 0.5}
 			encoding: {
 				prop_code: 0xD19D
+				// Wire range equals FWUP0030.DAT 4.31 live-property row D320 `0/-20/40/5`.
+				data_type: 0x0003
 				kind:      "scale"
 				spec: scale: 10
 			}
@@ -587,6 +618,8 @@ options: {
 			rules: {min: -2.0, max: 4.0, step: 0.5}
 			encoding: {
 				prop_code: 0xD19E
+				// Wire range equals FWUP0030.DAT 4.31 live-property row D321 `0/-20/40/5`.
+				data_type: 0x0003
 				kind:      "scale"
 				spec: scale: 10
 			}
@@ -600,6 +633,8 @@ options: {
 			rules: {min: -4, max: 4, step: 1}
 			encoding: {
 				prop_code: 0xD19F
+				// Wire range equals FWUP0030.DAT 4.31 live-property row D008 `0/-40/40/10`.
+				data_type: 0x0003
 				kind:      "scale"
 				spec: scale: 10
 			}
@@ -613,6 +648,8 @@ options: {
 			rules: {min: -4, max: 4, step: 1}
 			encoding: {
 				prop_code: 0xD1A0
+				// Wire range equals FWUP0030.DAT 4.31 live-property row 5015 `0/-40/40/10`.
+				data_type: 0x0003
 				kind:      "scale"
 				spec: scale: 10
 			}
@@ -626,6 +663,7 @@ options: {
 			rules: {min: -4, max: 4, step: 1}
 			encoding: {
 				prop_code: 0xD1A1
+				data_type: 0x0004
 				kind:      "lookup"
 				spec: values: {
 					"4":  0x5000
@@ -649,6 +687,8 @@ options: {
 			rules: {min: -5, max: 5, step: 1}
 			encoding: {
 				prop_code: 0xD1A2
+				// Wire range equals FWUP0030.DAT 4.31 live-property row D032 `0/-50/50/10`.
+				data_type: 0x0003
 				kind:      "scale"
 				spec: scale: 10
 			}
@@ -667,6 +707,7 @@ options: {
 			}
 			encoding: {
 				prop_code: 0xD1A3
+				data_type: 0x0004
 				kind:      "lookup"
 				spec: values: {on: 0x01, off: 0x02}
 			}
@@ -683,6 +724,7 @@ options: {
 			]
 			encoding: {
 				prop_code: 0xD1A4
+				data_type: 0x0004
 				kind:      "lookup"
 				spec: values: {srgb: 0x02, adobe_rgb: 0x01}
 			}
@@ -703,6 +745,7 @@ options: {
 			]
 			encoding: {
 				prop_code: 0xD190
+				data_type: 0x0004
 				kind:      "lookup"
 				spec: values: {
 					auto:        0xffff
@@ -729,6 +772,7 @@ options: {
 			]
 			encoding: {
 				prop_code: 0xD191
+				data_type: 0x0004
 				kind:      "lookup"
 				spec: values: {
 					auto:   0x8000
@@ -752,6 +796,7 @@ options: {
 			]
 			encoding: {
 				prop_code: 0xD198
+				data_type: 0x0004
 				kind:      "lookup"
 				spec: values: {
 					strong: 0x03

@@ -1,29 +1,30 @@
 package fml
 
-import "list"
+import (
+	"list"
+	"math"
+)
 
 cameras: [string]: #Camera
 
-// PTP datatype code of each option's SimulationSetting wire codec, keyed by
-// option id: PTP strings for string options, otherwise the 16-bit scalar whose
-// signedness follows the smallest wire value (codegen uses the same rule and
-// rejects a static descriptor that disagrees with it).
-_ptp_data_type: {
+// Static-descriptor form of a slot setting, derived from the option's own
+// rules so the range pinned in `option.cue` is what the mutation permit
+// enforces on the wire: scaled numeric options become a range in wire units,
+// lookups and strings carry no form (their values are checked by the
+// firmware capability profile and the option codec instead).
+_static_setting_form: {
 	for id, option in options {
 		let _spec = option.spec
-		if _spec.kind == "string" {
-			"\(id)": 0xFFFF
+		if _spec.kind != "string" && _spec.encoding.kind == "scale" && _spec.rules != _|_ && _spec.rules.min != _|_ && _spec.rules.max != _|_ && _spec.rules.step != _|_ {
+			"\(id)": {
+				kind:    "range"
+				minimum: int & math.Round(_spec.rules.min*_spec.encoding.spec.scale)
+				maximum: int & math.Round(_spec.rules.max*_spec.encoding.spec.scale)
+				step:    int & math.Round(_spec.rules.step*_spec.encoding.spec.scale)
+			}
 		}
-		if _spec.kind != "string" {
-			if _spec.encoding.kind == "lookup" {
-				let _min = list.Min(list.FlattenN([for _, v in _spec.encoding.spec.values {v}], 1))
-				if _min < 0 {"\(id)": 0x0003}
-				if _min >= 0 {"\(id)": 0x0004}
-			}
-			if _spec.encoding.kind != "lookup" && _spec.rules != _|_ && _spec.rules.min != _|_ {
-				if _spec.rules.min < 0 {"\(id)": 0x0003}
-				if _spec.rules.min >= 0 {"\(id)": 0x0004}
-			}
+		if _spec.kind == "string" || _spec.encoding.kind != "scale" || _spec.rules == _|_ || _spec.rules.min == _|_ || _spec.rules.max == _|_ || _spec.rules.step == _|_ {
+			"\(id)": kind: "none"
 		}
 	}
 }
@@ -610,11 +611,11 @@ cameras: {
 			}
 			_preflight_simulation_setting_descriptors: [for setting in features.simulation.settings {
 				code:      options[setting.ref].spec.encoding.prop_code
-				data_type: _ptp_data_type[setting.ref]
+				data_type: options[setting.ref].spec.encoding.data_type
 				writable:  true
 				static_descriptor: {
-					evidence: "2026-08-31 device audit: value decodes against the option wire type; FWUP0030.DAT 4.31 lists the code in its tether property table without a static descriptor row; writability not yet device-verified"
-					form: kind: "none"
+					evidence: "2026-08-31 device audit: value decodes against the option wire type; FWUP0030.DAT 4.31 lists the code in its tether property table without a static descriptor row, ranges match the live-property twins in its descriptor table; writability not yet device-verified"
+					form:     _static_setting_form[setting.ref]
 				}
 			}]
 			_preflight_simulation_properties: list.Concat([

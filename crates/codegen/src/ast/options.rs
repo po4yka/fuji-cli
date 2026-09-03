@@ -70,6 +70,16 @@ impl OptionSpec {
             Self::Enum { encoding, .. } => encoding.prop_code(),
         }
     }
+
+    /// PTP datatype the FML declaration pins for `prop_code`, checked against
+    /// the emitted wire codec in `schema::preflight`.
+    pub fn data_type(&self) -> Option<u16> {
+        match self {
+            Self::Integer { encoding, .. } | Self::Float { encoding, .. } => encoding.data_type(),
+            Self::String { encoding, .. } => encoding.data_type(),
+            Self::Enum { encoding, .. } => encoding.data_type(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -106,13 +116,16 @@ pub struct EnumVariant {
 pub enum NumericEncoding {
     Raw {
         prop_code: Option<u16>,
+        data_type: Option<u16>,
     },
     Scale {
         prop_code: Option<u16>,
+        data_type: Option<u16>,
         spec: ScaleSpec,
     },
     Lookup {
         prop_code: Option<u16>,
+        data_type: Option<u16>,
         spec: LookupSpec,
     },
 }
@@ -120,9 +133,17 @@ pub enum NumericEncoding {
 impl NumericEncoding {
     pub fn prop_code(&self) -> Option<u16> {
         match self {
-            Self::Raw { prop_code }
+            Self::Raw { prop_code, .. }
             | Self::Scale { prop_code, .. }
             | Self::Lookup { prop_code, .. } => *prop_code,
+        }
+    }
+
+    pub fn data_type(&self) -> Option<u16> {
+        match self {
+            Self::Raw { data_type, .. }
+            | Self::Scale { data_type, .. }
+            | Self::Lookup { data_type, .. } => *data_type,
         }
     }
 }
@@ -130,13 +151,22 @@ impl NumericEncoding {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase", deny_unknown_fields)]
 pub enum StringEncoding {
-    Raw { prop_code: Option<u16> },
+    Raw {
+        prop_code: Option<u16>,
+        data_type: Option<u16>,
+    },
 }
 
 impl StringEncoding {
     pub fn prop_code(&self) -> Option<u16> {
         match self {
-            Self::Raw { prop_code } => *prop_code,
+            Self::Raw { prop_code, .. } => *prop_code,
+        }
+    }
+
+    pub fn data_type(&self) -> Option<u16> {
+        match self {
+            Self::Raw { data_type, .. } => *data_type,
         }
     }
 }
@@ -146,6 +176,7 @@ impl StringEncoding {
 pub enum EnumEncoding {
     Lookup {
         prop_code: Option<u16>,
+        data_type: Option<u16>,
         spec: LookupSpec,
     },
 }
@@ -154,6 +185,12 @@ impl EnumEncoding {
     pub fn prop_code(&self) -> Option<u16> {
         match self {
             Self::Lookup { prop_code, .. } => *prop_code,
+        }
+    }
+
+    pub fn data_type(&self) -> Option<u16> {
+        match self {
+            Self::Lookup { data_type, .. } => *data_type,
         }
     }
 }
