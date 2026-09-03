@@ -56,6 +56,10 @@ pub(super) struct MutationPermit {
 #[derive(Debug)]
 struct MutationAuthorization {
     operations: BTreeSet<u16>,
+    /// Property codes the preflight profile declares `writable: true`. A
+    /// descriptor alone never authorizes a write: the camera may report a
+    /// property writable that the profile only needs to read.
+    writable_properties: BTreeSet<u16>,
     properties: BTreeMap<u16, DevicePropDesc>,
     capability_profile: &'static CameraFirmwareCapabilityProfile,
     raw_conversion_read_fingerprint_validated: bool,
@@ -65,11 +69,13 @@ struct MutationAuthorization {
 impl MutationAuthorization {
     fn new(
         operations: &[u16],
+        writable_properties: &[u16],
         properties: Vec<DevicePropDesc>,
         capability_profile: &'static CameraFirmwareCapabilityProfile,
     ) -> Self {
         Self {
             operations: operations.iter().copied().collect(),
+            writable_properties: writable_properties.iter().copied().collect(),
             properties: properties
                 .into_iter()
                 .map(|descriptor| (descriptor.property_code, descriptor))
@@ -116,6 +122,10 @@ impl MutationAuthorization {
     }
 
     fn validate_property_candidate(&self, property: u16, data: &[u8]) -> anyhow::Result<()> {
+        ensure!(
+            self.writable_properties.contains(&property),
+            "PTP property 0x{property:04x} is read-only under the validated preflight profile"
+        );
         let descriptor = self.properties.get(&property).ok_or_else(|| {
             anyhow::anyhow!("PTP property 0x{property:04x} was not validated by preflight")
         })?;
@@ -129,11 +139,17 @@ impl MutationPermit {
         transport_binding: (u8, u8, u8),
         operation: CameraPreflightOperation,
         operations: &[u16],
+        writable_properties: &[u16],
         properties: Vec<DevicePropDesc>,
         capability_profile: &'static CameraFirmwareCapabilityProfile,
     ) -> Self {
         Self {
-            authorization: MutationAuthorization::new(operations, properties, capability_profile),
+            authorization: MutationAuthorization::new(
+                operations,
+                writable_properties,
+                properties,
+                capability_profile,
+            ),
             id,
             bus: transport_binding.0,
             address: transport_binding.1,
@@ -554,6 +570,12 @@ pub(crate) fn run<'camera, Operation: OperationMarker>(
     )?;
 
     let descriptors = read_and_validate_descriptors(&mut camera.ptp, profile)?;
+    let writable_properties: Vec<u16> = profile
+        .required_properties
+        .iter()
+        .filter(|requirement| requirement.writable)
+        .map(|requirement| requirement.code)
+        .collect();
     let permit_id = camera.ptp.activate_mutation_permit()?;
     let (bus, address, interface) = camera.ptp.transport_binding();
     let permit = MutationPermit::new(
@@ -561,6 +583,7 @@ pub(crate) fn run<'camera, Operation: OperationMarker>(
         (bus, address, interface),
         Operation::KIND,
         profile.required_operations,
+        &writable_properties,
         descriptors,
         capability_profile,
     );
@@ -1255,8 +1278,12 @@ mod tests {
             current: DevicePropValue::UInt(1),
             form: DevicePropForm::Enumeration(vec![DevicePropValue::UInt(1)]),
         };
-        let authorization =
-            MutationAuthorization::new(&[0x1016], vec![descriptor], &EMPTY_CAPABILITY_PROFILE);
+        let authorization = MutationAuthorization::new(
+            &[0x1016],
+            &[0xD001],
+            vec![descriptor],
+            &EMPTY_CAPABILITY_PROFILE,
+        );
 
         let result = authorization.validate(
             CommandCode::SetDevicePropValue,
@@ -1268,9 +1295,37 @@ mod tests {
     }
 
     #[test]
+    fn profile_read_only_property_is_refused_even_when_the_camera_reports_it_writable() {
+        let descriptor = DevicePropDesc {
+            property_code: 0xD18D,
+            data_type: DevicePropDataType::UInt16,
+            writable: true,
+            factory_default: DevicePropValue::UInt(1),
+            current: DevicePropValue::UInt(1),
+            form: DevicePropForm::None,
+        };
+        let authorization = MutationAuthorization::new(
+            &[0x1016],
+            &[0xD18C],
+            vec![descriptor],
+            &EMPTY_CAPABILITY_PROFILE,
+        );
+
+        let error = authorization
+            .validate(
+                CommandCode::SetDevicePropValue,
+                &[0xD18D],
+                Some(&1_u16.to_le_bytes()),
+            )
+            .expect_err("the profile declared 0xD18D read-only, so the live descriptor must not authorize it");
+
+        assert!(error.to_string().contains("read-only"), "{error}");
+    }
+
+    #[test]
     fn raw_upload_requires_a_validated_conversion_profile() {
         let authorization =
-            MutationAuthorization::new(&[0x900d], vec![], &EMPTY_CAPABILITY_PROFILE);
+            MutationAuthorization::new(&[0x900d], &[], vec![], &EMPTY_CAPABILITY_PROFILE);
 
         let error = authorization
             .validate(CommandCode::FujiSendObject, &[], Some(b"RAF"))
@@ -1294,6 +1349,7 @@ mod tests {
             (1, 2, 3),
             CameraPreflightOperation::RawConversion,
             &[0x900d],
+            &[0xD18C],
             vec![selector],
             &RAW_CAPABILITY_PROFILE,
         );
@@ -1315,6 +1371,7 @@ mod tests {
             (1, 2, 3),
             CameraPreflightOperation::SimulationWrite,
             &[0x1016],
+            &[],
             vec![],
             &EMPTY_CAPABILITY_PROFILE,
         );

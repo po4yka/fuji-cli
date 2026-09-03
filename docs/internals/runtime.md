@@ -161,7 +161,9 @@ supports scalar and array PTP datatypes plus no-form, range, and enum
 constraints. The descriptor's property code, datatype, current/default values,
 and writability must be internally consistent with the generated policy. Every
 subsequent property write is checked dynamically against that descriptor before
-the command is sent.
+the command is sent, and only properties the profile declares `writable: true`
+may be written at all: a descriptor the camera reports as writable never
+widens the permit beyond what the profile asked for.
 
 A physical X-T5 on firmware 4.31 in USB mode 0x6 answers `GeneralError` to
 every `GetDevicePropDesc` while serving `GetDevicePropValue`. When the camera
