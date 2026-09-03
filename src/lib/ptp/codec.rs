@@ -109,6 +109,21 @@ where
                 ),
             )));
         }
+        // The count is device-supplied: reserve only what the payload can
+        // actually deliver, so a declared count with no element bytes behind
+        // it is rejected before any allocation.
+        let position = reader.stream_position()?;
+        let end = reader.seek(io::SeekFrom::End(0))?;
+        reader.seek(io::SeekFrom::Start(position))?;
+        let remaining = end.saturating_sub(position);
+        if !u64::try_from(allocation_bytes).is_ok_and(|needed| needed <= remaining) {
+            return Err(Error::Io(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "PTP array declares {length} elements, but only {remaining} bytes remain in the payload"
+                ),
+            )));
+        }
         let mut values = Vec::new();
         values.try_reserve_exact(length).map_err(|error| {
             Error::Io(io::Error::new(
@@ -493,6 +508,14 @@ mod tests {
                 .expect("encoded PTP array must decode exactly");
             assert_eq!(decoded, value, "failed array round trip at length {length}");
         }
+    }
+
+    #[test]
+    fn ptp_array_count_beyond_the_payload_is_rejected_before_reserving() {
+        let error = decode_exact::<PtpArray<u16>>(&[0x40, 0x42, 0x0f, 0x00])
+            .expect_err("999424 declared elements with no element bytes must not reserve");
+
+        assert!(error.to_string().contains("bytes remain"), "{error}");
     }
 
     #[test]
