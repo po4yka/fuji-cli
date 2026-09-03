@@ -54,12 +54,21 @@ rules: {variants: [...{id, name, aliases: [...]}]}
 
 `variants[*].id` is what `ref` predicates name. `variants[*].name` is the
 human-readable label (`Display`). `variants[*].aliases` is the list of strings
-accepted at parse time, in addition to the id, so a user can type
+accepted at parse time, in addition to the id and the name, so a user can type
 `--white-balance auto`, `--white-balance Auto`, or `--white-balance temp` (and
 get the closest-match suggestion if they typo).
 
+Parsing normalizes the input and every key the same way: trim, lowercase, and
+keep only ASCII letters, digits, `.`, `-`, and `+`. `PRO Neg. Hi` therefore
+matches `proneg.hi`, and `HDR800+` stays distinct from `HDR800`. Because the
+name is always a key, `Display` output round-trips through `FromStr`, which is
+what `simulation export` and `simulation import` rely on; the generator emits a
+test per enum that checks exactly that.
+
 Enum ids and variant aliases must be unique across the variants; a `_validation`
-block enforces this at export time.
+block enforces this at export time. The generator additionally fails the build
+when two variants of one option accept the same normalized input, since the
+first match arm would otherwise win silently.
 
 ## Encoding
 

@@ -1,6 +1,8 @@
-use anyhow::Context;
+use std::collections::BTreeMap;
+
+use anyhow::{Context, bail, ensure};
 use proc_macro2::{Ident, TokenStream};
-use quote::quote;
+use quote::{format_ident, quote};
 
 use super::common::{
     generate_try_from_wire_impl, resolve_enum_repr_signed, resolve_repr_type, resolve_repr_type_32,
@@ -87,6 +89,7 @@ pub(crate) fn generate(
         .with_context(|| format!("generating FromStr impl for enum option `{id}`"))?;
     let capability_value_impl =
         generate_capability_value_impl(&safe_upper_camel_case_ident(id), &resolved);
+    let round_trip_test = generate_round_trip_test(&safe_upper_camel_case_ident(id));
 
     let (ptp_serde_impl, simulation_setting_impl) = if let Some(prop_code) = prop_code {
         let serde = generate_ptp_serde_impl(&safe_upper_camel_case_ident(id), &repr_type)
@@ -119,7 +122,30 @@ pub(crate) fn generate(
         #ptp_serde_impl
         #simulation_setting_impl
         #conversion_profile_impl
+        #round_trip_test
     })
+}
+
+/// A test per enum proving that `Display` output parses back to the same
+/// variant through the runtime's real input normalization. This is what keeps
+/// `clean_input_key` and `CleanAlphanumeric::clean` honest about each other.
+fn generate_round_trip_test(type_name: &Ident) -> TokenStream {
+    let module = format_ident!("{}_round_trip_tests", type_name.to_string().to_lowercase());
+    quote! {
+        #[cfg(test)]
+        mod #module {
+            #[test]
+            fn display_output_parses_back_to_the_same_variant() {
+                for variant in <super::#type_name as ::strum::IntoEnumIterator>::iter() {
+                    let text = variant.to_string();
+                    let parsed: super::#type_name = text
+                        .parse()
+                        .expect("Display output of a generated enum must parse back");
+                    assert_eq!(parsed, variant, "{text} parsed to a different variant");
+                }
+            }
+        }
+    }
 }
 
 fn wire_items(resolved: &[Resolved<'_>]) -> Vec<(Ident, Vec<i32>)> {
@@ -191,17 +217,70 @@ fn generate_display_impl(
     })
 }
 
+/// Mirrors `crate::input::CleanAlphanumeric::clean` in the runtime. The parse
+/// keys must be built with the same rule the runtime applies to user input,
+/// or a key can never match. The generated round-trip test catches drift.
+fn clean_input_key(value: &str) -> String {
+    value
+        .trim()
+        .to_lowercase()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+'))
+        .collect()
+}
+
+/// The normalized inputs each variant accepts: its id, its display name (so
+/// `Display` output always parses back), and its aliases. Two variants of one
+/// option may never accept the same normalized input; that would make the
+/// first match arm win silently, as `HDR800+` once did against `HDR800`.
+fn parse_keys<'a>(
+    variants: impl IntoIterator<Item = &'a EnumVariant>,
+) -> anyhow::Result<Vec<Vec<String>>> {
+    let mut owners: BTreeMap<String, &str> = BTreeMap::new();
+    variants
+        .into_iter()
+        .map(|variant| {
+            let mut keys: Vec<String> = Vec::new();
+            for raw in [&variant.id, &variant.name]
+                .into_iter()
+                .chain(&variant.aliases)
+            {
+                let key = clean_input_key(raw);
+                ensure!(
+                    !key.is_empty(),
+                    "enum variant `{}` accepts `{raw}`, which normalizes to nothing",
+                    variant.id
+                );
+                if keys.contains(&key) {
+                    continue;
+                }
+                if let Some(owner) = owners.insert(key.clone(), &variant.id)
+                    && owner != variant.id
+                {
+                    bail!(
+                        "enum variants `{owner}` and `{}` both accept the normalized input `{key}`",
+                        variant.id
+                    );
+                }
+                keys.push(key);
+            }
+            Ok(keys)
+        })
+        .collect()
+}
+
 fn generate_from_str_impl(
     type_name: &Ident,
     resolved: &[Resolved<'_>],
 ) -> anyhow::Result<TokenStream> {
+    let keys = parse_keys(resolved.iter().map(|r| r.variant))?;
     let arms = resolved
         .iter()
-        .map(|r| {
+        .zip(&keys)
+        .map(|(r, keys)| {
             let v = safe_upper_camel_case_ident(&r.variant.id);
-            let aliases = &r.variant.aliases;
             quote! {
-                #(#aliases)|* => return Ok(Self::#v),
+                #(#keys)|* => return Ok(Self::#v),
             }
         })
         .collect::<Vec<_>>();
@@ -456,8 +535,63 @@ mod tests {
     use proc_macro2::{Ident, Span};
 
     use super::{
-        generate_conversion_profile_impl, generate_ptp_serde_impl, generate_simulation_setting_impl,
+        clean_input_key, generate_conversion_profile_impl, generate_ptp_serde_impl,
+        generate_simulation_setting_impl, parse_keys,
     };
+    use crate::ast::EnumVariant;
+
+    fn variant(id: &str, name: &str, aliases: &[&str]) -> EnumVariant {
+        EnumVariant {
+            id: id.to_owned(),
+            name: name.to_owned(),
+            aliases: aliases.iter().map(|alias| (*alias).to_owned()).collect(),
+        }
+    }
+
+    #[test]
+    fn parse_keys_normalize_the_id_the_display_name_and_every_alias() {
+        let variants = [
+            variant("pro_neg_hi", "PRO Neg. Hi", &["proneghi", "PRO Neg High"]),
+            variant("hdr800_plus", "HDR800+", &["800+", "dr800plus"]),
+        ];
+
+        let keys = parse_keys(&variants).expect("distinct variants must resolve");
+
+        assert_eq!(
+            keys[0],
+            ["proneghi", "proneg.hi", "proneghigh"],
+            "the id and the display name are implicit aliases and duplicates collapse"
+        );
+        assert_eq!(keys[1], ["hdr800plus", "hdr800+", "800+", "dr800plus"]);
+        assert_eq!(clean_input_key("  TIFF 8-bit "), "tiff8-bit");
+    }
+
+    #[test]
+    fn parse_keys_reject_two_variants_that_accept_the_same_normalized_input() {
+        let variants = [
+            variant("hdr800", "HDR800", &["800"]),
+            variant("hdr800_plus", "HDR800+", &["800", "800+"]),
+        ];
+
+        let error = parse_keys(&variants).expect_err("a shared key must fail at build time");
+
+        let message = error.to_string();
+        assert!(
+            message.contains("`hdr800`")
+                && message.contains("`hdr800_plus`")
+                && message.contains("`800`"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn parse_keys_reject_an_alias_that_normalizes_to_nothing() {
+        let variants = [variant("off", "Off", &["_"])];
+
+        let error = parse_keys(&variants).expect_err("an empty key would match nothing");
+
+        assert!(error.to_string().contains("normalizes to nothing"));
+    }
 
     #[test]
     fn generated_simulation_enum_uses_firmware_scoped_wire_codec() {

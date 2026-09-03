@@ -3,6 +3,13 @@ use std::fmt::Display;
 use strsim::damerau_levenshtein;
 use strum::IntoEnumIterator;
 
+/// Normalizes user input before it is matched against generated parse keys:
+/// trim, lowercase, and keep only ASCII alphanumerics plus `.`, `-`, and `+`.
+///
+/// The code generator applies the same rule to every enum id, display name,
+/// and alias when it emits `FromStr` (see `clean_input_key` in
+/// `crates/codegen/src/common/options/enum/mod.rs`). Keep the two in sync; the
+/// generated per-enum round-trip tests fail if they drift.
 pub trait CleanAlphanumeric {
     fn clean(&self) -> String;
 }
@@ -13,7 +20,7 @@ impl<T: AsRef<str>> CleanAlphanumeric for T {
             .trim()
             .to_lowercase()
             .chars()
-            .filter(|c| c.is_ascii_alphanumeric() || *c == '.' || *c == '-')
+            .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+'))
             .collect()
     }
 }
