@@ -127,6 +127,14 @@ pub struct Identity {
     pub product: u16,
 }
 
+/// `device list` prints the pair as `0x04cb:0x02fc`; accept that form back.
+fn strip_hex_prefix(value: &str) -> &str {
+    value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+        .unwrap_or(value)
+}
+
 impl FromStr for Identity {
     type Err = anyhow::Error;
 
@@ -136,9 +144,9 @@ impl FromStr for Identity {
         })?;
 
         Ok(Self {
-            vendor: u16::from_str_radix(vendor, 16)
+            vendor: u16::from_str_radix(strip_hex_prefix(vendor), 16)
                 .map_err(|_| anyhow!("Invalid vendor ID: {vendor}"))?,
-            product: u16::from_str_radix(product, 16)
+            product: u16::from_str_radix(strip_hex_prefix(product), 16)
                 .map_err(|_| anyhow!("Invalid product ID: {product}"))?,
         })
     }
@@ -427,5 +435,17 @@ mod tests {
             error.to_string(),
             "Multiple supported cameras found; specify one with --device <BUS>.<ADDRESS>"
         );
+    }
+
+    #[test]
+    fn identity_accepts_the_prefixed_form_that_device_list_prints() {
+        let plain: super::Identity = "04cb:02fc".parse().expect("bare hex must parse");
+        let prefixed: super::Identity = "0x04cb:0x02fc"
+            .parse()
+            .expect("the form `device list` prints must parse");
+
+        assert_eq!((plain.vendor, plain.product), (0x04cb, 0x02fc));
+        assert_eq!((prefixed.vendor, prefixed.product), (0x04cb, 0x02fc));
+        assert!("0x04cb:0xzz".parse::<super::Identity>().is_err());
     }
 }

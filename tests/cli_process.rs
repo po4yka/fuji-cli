@@ -792,6 +792,17 @@ fn backup_recovery_output_rejects_stdout_as_a_usage_error() {
 }
 
 #[test]
+fn backup_export_json_rejects_stdout_as_a_usage_error() {
+    let output = run(&["backup", "export", "-", "--json"]);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--json"));
+    assert!(!stderr.contains("No device"));
+}
+
+#[test]
 fn backup_allow_stdin_rejects_file_input_as_a_usage_error() {
     let output = run(&[
         "backup",

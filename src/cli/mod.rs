@@ -60,6 +60,19 @@ impl Cli {
         {
             return Err(Self::command().error(kind, message));
         }
+        if let Commands::Backup(BackupCmd::Export {
+            output,
+            output_format,
+            ..
+        }) = &parsed.command
+            && output_format.json
+            && output.is_stdout()
+        {
+            return Err(Self::command().error(
+                clap::error::ErrorKind::ArgumentConflict,
+                "--json cannot be combined with output '-': the artifact stream carries no JSON summary",
+            ));
+        }
         Ok(parsed)
     }
 }
