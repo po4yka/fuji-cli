@@ -4,6 +4,30 @@ import "list"
 
 cameras: [string]: #Camera
 
+// PTP datatype code of each option's SimulationSetting wire codec, keyed by
+// option id: PTP strings for string options, otherwise the 16-bit scalar whose
+// signedness follows the smallest wire value (codegen uses the same rule and
+// rejects a static descriptor that disagrees with it).
+_ptp_data_type: {
+	for id, option in options {
+		let _spec = option.spec
+		if _spec.kind == "string" {
+			"\(id)": 0xFFFF
+		}
+		if _spec.kind != "string" {
+			if _spec.encoding.kind == "lookup" {
+				let _min = list.Min(list.FlattenN([for _, v in _spec.encoding.spec.values {v}], 1))
+				if _min < 0 {"\(id)": 0x0003}
+				if _min >= 0 {"\(id)": 0x0004}
+			}
+			if _spec.encoding.kind != "lookup" && _spec.rules != _|_ && _spec.rules.min != _|_ {
+				if _spec.rules.min < 0 {"\(id)": 0x0003}
+				if _spec.rules.min >= 0 {"\(id)": 0x0004}
+			}
+		}
+	}
+}
+
 #Camera: #DefinitionBase & {
 	spec: #Spec
 
@@ -58,6 +82,30 @@ cameras: [string]: #Camera
 				code:       uint16
 				data_type?: uint16
 				writable:   bool
+
+				// A descriptor the runtime may substitute when the camera refuses
+				// `GetDevicePropDesc` with a PTP response code. It exists only to
+				// authorize writes, so it pins the datatype and asserts
+				// writability; the live value must still decode exactly and fall
+				// inside `form`. `evidence` names where the shape comes from.
+				static_descriptor?: #StaticDescriptor
+
+				if static_descriptor != _|_ {
+					data_type: uint16
+					writable:  true
+					if data_type == 0xFFFF {
+						static_descriptor: form: kind: "none"
+					}
+				}
+
+				#StaticDescriptor: {
+					evidence: string & =~".+"
+					form:     #StaticForm
+				}
+
+				#StaticForm: {kind: "none"} |
+					{kind: "enumeration", values: [int, ...int]} |
+					{kind: "range", minimum: int, maximum: int, step: int & >0}
 			}
 
 			_validation: {
@@ -541,16 +589,39 @@ cameras: {
 				{code: 0xD16E, data_type: 0x0004, writable: false},
 				{code: 0xD36B, data_type: 0xFFFF, writable: false},
 			]
+			// The X-T5 on 4.31 refuses GetDevicePropDesc for every property in
+			// USB mode 0x6 (x-t5-device-audit-2026-08-31), so the writable
+			// selector and settings carry static descriptors. The selector shape
+			// comes from the firmware image's own descriptor table; the settings
+			// have no static row there, so their datatype is derived from the
+			// option encoding and their writability is asserted, not yet
+			// device-verified (x-t5-firmware-4.31-static-analysis-2026-09-03).
+			_preflight_simulation_selector: {
+				code:      0xD18C
+				data_type: 0x0004
+				writable:  true
+				static_descriptor: {
+					evidence: "FWUP0030.DAT 4.31 descriptor table: UINT16 get/set enumeration, default 0x0001; slot count from features.simulation.slots and D1A5 = 7 in the 2026-08-31 device audit"
+					form: {kind: "enumeration", values: list.Range(1, features.simulation.slots+1, 1)}
+				}
+			}
+			_preflight_simulation_setting_descriptors: [for setting in features.simulation.settings {
+				code:      options[setting.ref].spec.encoding.prop_code
+				data_type: _ptp_data_type[setting.ref]
+				writable:  true
+				static_descriptor: {
+					evidence: "2026-08-31 device audit: value decodes against the option wire type; FWUP0030.DAT 4.31 lists the code in its tether property table without a static descriptor row; writability not yet device-verified"
+					form: kind: "none"
+				}
+			}]
 			_preflight_simulation_properties: list.Concat([
 				_preflight_common_properties,
-				[{code: 0xD18C, data_type: 0x0004, writable: true}],
-				[for setting in features.simulation.settings {
-					{code: options[setting.ref].spec.encoding.prop_code, writable: true}
-				}],
+				[_preflight_simulation_selector],
+				_preflight_simulation_setting_descriptors,
 			])
 			_preflight_simulation_access_properties: list.Concat([
 				_preflight_common_properties,
-				[{code: 0xD18C, data_type: 0x0004, writable: true}],
+				[_preflight_simulation_selector],
 				[for setting in features.simulation.settings {
 					{code: options[setting.ref].spec.encoding.prop_code, writable: false}
 				}],

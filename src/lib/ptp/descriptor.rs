@@ -135,6 +135,40 @@ impl DevicePropDesc {
         Ok(descriptor)
     }
 
+    /// Builds a writable descriptor from a statically declared shape plus the
+    /// live `GetDevicePropValue` payload, for cameras that refuse
+    /// `GetDevicePropDesc`. The payload must decode exactly as `data_type`
+    /// and the decoded value must satisfy `form`; the factory default is
+    /// unknown, so the live value stands in for it.
+    pub(crate) fn from_static(
+        property_code: u16,
+        data_type: DevicePropDataType,
+        form: DevicePropForm,
+        current_bytes: &[u8],
+    ) -> anyhow::Result<Self> {
+        let mut reader = Cursor::new(current_bytes);
+        let current = read_value(&mut reader, data_type).with_context(|| {
+            format!(
+                "live value of PTP device property 0x{property_code:04x} does not decode as datatype 0x{:04x}",
+                data_type.code()
+            )
+        })?;
+        ensure!(
+            reader.position() == current_bytes.len() as u64,
+            "trailing bytes in the live value of PTP device property 0x{property_code:04x}"
+        );
+        let descriptor = Self {
+            property_code,
+            data_type,
+            writable: true,
+            factory_default: current.clone(),
+            current,
+            form,
+        };
+        descriptor.validate_declared_values()?;
+        Ok(descriptor)
+    }
+
     pub(crate) fn validate_serialized_candidate(&self, candidate: &[u8]) -> anyhow::Result<()> {
         ensure!(
             self.writable,

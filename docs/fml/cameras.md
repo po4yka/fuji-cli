@@ -73,6 +73,43 @@ writable descriptor (`false` permits either because some read paths share a
 property with a write profile). Do not copy a profile to another firmware or
 model without captured traffic and a physical-device run.
 
+### Static descriptors
+
+Some cameras refuse `GetDevicePropDesc` with a PTP response code for every
+property in a mode while still serving `GetDevicePropValue` (the X-T5 on 4.31
+in USB mode `0x6` does; its firmware image confirms the DeviceInfo for that mode
+is assembled at run time, see
+[x-t5-firmware-4.31-static-analysis-2026-09-03](../internals/x-t5-firmware-4.31-static-analysis-2026-09-03.md)).
+A required property may then carry a `static_descriptor` that the runtime
+substitutes for the refused one:
+
+```cue
+{
+    code:      0xD18C
+    data_type: 0x0004
+    writable:  true
+    static_descriptor: {
+        evidence: "FWUP0030.DAT 4.31 descriptor table: UINT16 get/set enumeration ..."
+        form: {kind: "enumeration", values: [1, 2, 3, 4, 5, 6, 7]}
+    }
+}
+```
+
+`form` is `{kind: "none"}`, `{kind: "enumeration", values: [...]}`, or
+`{kind: "range", minimum, maximum, step}`. A static descriptor exists only to
+authorize writes, so CUE forces `data_type` and `writable: true`, and strings
+(`0xFFFF`) may only use `form: none`. Codegen additionally rejects a pinned
+`data_type` that differs from the datatype the option's own wire codec writes.
+At run time the live value must decode exactly as the pinned datatype and fall
+inside `form`; otherwise preflight fails closed. `evidence` is free text that
+names the source of the shape (firmware image, device audit, prior art) and is
+carried into the generated registry for error messages.
+
+A static descriptor does not change a profile's `status`. X-T5 simulation
+profiles carry them so the descriptor refusal no longer blocks the permit, but
+they remain `unverified` until a physical write run resolves the `0xD18C`
+still/movie namespace question.
+
 ## Firmware Capabilities
 
 Feature shape and wire compatibility are separate. `capabilities` layers

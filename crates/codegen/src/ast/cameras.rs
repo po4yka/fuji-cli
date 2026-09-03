@@ -101,6 +101,32 @@ pub struct PreflightProperty {
     pub code: u16,
     pub data_type: Option<u16>,
     pub writable: bool,
+    #[serde(default)]
+    pub static_descriptor: Option<StaticDescriptor>,
+}
+
+/// A descriptor the runtime substitutes for a property whose
+/// `GetDevicePropDesc` the camera refuses. See `#StaticDescriptor` in
+/// `fml/camera.cue` for the constraints CUE already enforces.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StaticDescriptor {
+    pub evidence: String,
+    pub form: StaticForm,
+}
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum StaticForm {
+    None,
+    Enumeration {
+        values: Vec<i64>,
+    },
+    Range {
+        minimum: i64,
+        maximum: i64,
+        step: i64,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -504,6 +530,46 @@ mod tests {
         );
 
         assert!(result.is_ok(), "preflight profile must parse: {result:?}");
+    }
+
+    #[test]
+    fn required_property_accepts_a_static_descriptor() {
+        let property: PreflightProperty = serde_json::from_str(
+            r#"{
+                "code": 53644,
+                "data_type": 4,
+                "writable": true,
+                "static_descriptor": {
+                    "evidence": "firmware table",
+                    "form": { "kind": "enumeration", "values": [1, 2, 3] }
+                }
+            }"#,
+        )
+        .expect("a static descriptor must parse");
+
+        let descriptor = property
+            .static_descriptor
+            .expect("static descriptor must be present");
+        assert_eq!(descriptor.evidence, "firmware table");
+        assert_eq!(
+            descriptor.form,
+            StaticForm::Enumeration {
+                values: vec![1, 2, 3]
+            }
+        );
+
+        let range: StaticForm = serde_json::from_str(
+            r#"{ "kind": "range", "minimum": -40, "maximum": 40, "step": 10 }"#,
+        )
+        .expect("a range form must parse");
+        assert_eq!(
+            range,
+            StaticForm::Range {
+                minimum: -40,
+                maximum: 40,
+                step: 10
+            }
+        );
     }
 
     #[test]

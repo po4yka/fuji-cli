@@ -16,13 +16,16 @@ use crate::{
         cameras::{
             CameraFirmwareCapabilityProfile, CameraPreflightDataType, CameraPreflightOperation,
             CameraPreflightProfile, CameraPreflightProfileStatus, CameraPreflightProperty,
+            CameraPreflightStaticDescriptor, CameraPreflightStaticForm,
         },
         options::CustomSetting,
         renders::RenderBase,
         simulations::SimulationBase,
     },
     policy::{ModelBindingKind, PhysicalUsbIdentity, SerialFingerprint},
-    ptp::{DevicePropDesc, Ptp, codec::PtpString},
+    ptp::{
+        DevicePropDataType, DevicePropDesc, DevicePropForm, DevicePropValue, Ptp, codec::PtpString,
+    },
 };
 
 #[derive(Debug)]
@@ -800,9 +803,14 @@ fn read_and_validate_descriptors(
             }
             Err(error) if camera_refused(&error) => {
                 // The X-T5 on firmware 4.31 in USB mode 0x6 answers GeneralError
-                // to every GetDevicePropDesc while serving GetDevicePropValue.
-                // Fall back to the value's wire shape for read-only requirements;
-                // such a property never enters the permit, so it can't be written.
+                // to every GetDevicePropDesc while serving GetDevicePropValue
+                // (its DeviceInfo for that mode is assembled at run time and the
+                // firmware image carries no descriptor rows for the simulation
+                // settings). Read the value instead. A requirement that the FML
+                // profile equips with a static descriptor becomes a writable
+                // descriptor from that declared shape plus the live value; any
+                // other requirement is only shape-checked and never enters the
+                // permit, so it can't be written.
                 debug!(
                     "Camera refused GetDevicePropDesc for 0x{:04x} ({error:#}); validating the value shape instead",
                     requirement.code
@@ -813,7 +821,16 @@ fn read_and_validate_descriptors(
                         requirement.code
                     )
                 })?;
-                validate_value_shape(*requirement, &value)?;
+                match requirement.static_descriptor {
+                    Some(static_descriptor) => {
+                        descriptors.push(descriptor_from_static(
+                            *requirement,
+                            static_descriptor,
+                            &value,
+                        )?);
+                    }
+                    None => validate_value_shape(*requirement, &value)?,
+                }
             }
             Err(error) => return Err(error),
         }
@@ -856,10 +873,80 @@ fn validate_descriptor(
     Ok(())
 }
 
+/// Builds the writable descriptor an FML `static_descriptor` stands for. The
+/// live `GetDevicePropValue` payload must decode exactly as the pinned scalar
+/// or string datatype and satisfy the declared form; the resulting descriptor
+/// then validates every write candidate like a camera-served one would.
+fn descriptor_from_static(
+    requirement: CameraPreflightProperty,
+    static_descriptor: CameraPreflightStaticDescriptor,
+    value: &[u8],
+) -> anyhow::Result<DevicePropDesc> {
+    let code = requirement.code;
+    let CameraPreflightDataType::Exact(expected) = requirement.data_type else {
+        bail!("static descriptor for PTP property 0x{code:04x} does not pin a datatype");
+    };
+    let data_type = DevicePropDataType::from_code(expected)
+        .with_context(|| format!("static descriptor for PTP property 0x{code:04x}"))?;
+    ensure!(
+        data_type.scalar_len().is_some() || data_type == DevicePropDataType::String,
+        "static descriptor for PTP property 0x{code:04x} must pin a scalar or string datatype, not 0x{expected:04x}"
+    );
+    let form = static_form(code, data_type, static_descriptor.form)?;
+    DevicePropDesc::from_static(code, data_type, form, value).with_context(|| {
+        format!(
+            "live value of PTP property 0x{code:04x} contradicts its static descriptor ({})",
+            static_descriptor.evidence
+        )
+    })
+}
+
+fn static_form(
+    code: u16,
+    data_type: DevicePropDataType,
+    form: CameraPreflightStaticForm,
+) -> anyhow::Result<DevicePropForm> {
+    let narrow = |value: i128| -> anyhow::Result<DevicePropValue> {
+        match data_type {
+            DevicePropDataType::Int8
+            | DevicePropDataType::Int16
+            | DevicePropDataType::Int32
+            | DevicePropDataType::Int64
+            | DevicePropDataType::Int128 => Ok(DevicePropValue::Int(value)),
+            DevicePropDataType::UInt8
+            | DevicePropDataType::UInt16
+            | DevicePropDataType::UInt32
+            | DevicePropDataType::UInt64
+            | DevicePropDataType::UInt128 => u128::try_from(value)
+                .map(DevicePropValue::UInt)
+                .map_err(|_| anyhow::anyhow!("static form value {value} for unsigned PTP property 0x{code:04x} is negative")),
+            _ => bail!("static form values require a scalar datatype for PTP property 0x{code:04x}"),
+        }
+    };
+    Ok(match form {
+        CameraPreflightStaticForm::None => DevicePropForm::None,
+        CameraPreflightStaticForm::Enumeration(values) => DevicePropForm::Enumeration(
+            values
+                .iter()
+                .map(|value| narrow(*value))
+                .collect::<anyhow::Result<Vec<_>>>()?,
+        ),
+        CameraPreflightStaticForm::Range {
+            minimum,
+            maximum,
+            step,
+        } => DevicePropForm::Range {
+            minimum: narrow(minimum)?,
+            maximum: narrow(maximum)?,
+            step: narrow(step)?,
+        },
+    })
+}
+
 /// Descriptor-less evidence for a required property: the raw
 /// `GetDevicePropValue` payload must have the wire shape of the declared
 /// datatype. Writability cannot be proven this way, so writable requirements
-/// fail closed.
+/// without a static descriptor fail closed.
 fn validate_value_shape(requirement: CameraPreflightProperty, value: &[u8]) -> anyhow::Result<()> {
     let code = requirement.code;
     ensure!(
@@ -915,7 +1002,7 @@ mod tests {
         generated::cameras::{
             CameraFirmwareCapabilityProfile, CameraPreflightDataType, CameraPreflightOperation,
             CameraPreflightProfile, CameraPreflightProfileStatus, CameraPreflightProperty,
-            CameraPtpIdentity,
+            CameraPreflightStaticDescriptor, CameraPreflightStaticForm, CameraPtpIdentity,
         },
         policy::{ModelBindingKind, PhysicalUsbIdentity, SerialFingerprint},
         ptp::{CommandCode, DevicePropDataType, DevicePropDesc, DevicePropForm, DevicePropValue},
@@ -923,8 +1010,8 @@ mod tests {
 
     use super::{
         MAX_DISPLAY_TEXT_CHARS, MutationAuthorization, MutationPermit, PreflightFacts,
-        camera_refused, decide_preflight, sanitize_for_display, select_capability_profile,
-        select_profile, validate_device_info, validate_mode_and_battery,
+        camera_refused, decide_preflight, descriptor_from_static, sanitize_for_display,
+        select_capability_profile, select_profile, validate_device_info, validate_mode_and_battery,
         validate_physical_identity, validate_serial_binding, validate_value_shape,
     };
 
@@ -933,7 +1020,110 @@ mod tests {
             code: 0xD16E,
             data_type,
             writable,
+            static_descriptor: None,
         }
+    }
+
+    fn static_requirement(
+        code: u16,
+        data_type: u16,
+        form: CameraPreflightStaticForm,
+    ) -> (CameraPreflightProperty, CameraPreflightStaticDescriptor) {
+        let descriptor = CameraPreflightStaticDescriptor {
+            evidence: "test",
+            form,
+        };
+        (
+            CameraPreflightProperty {
+                code,
+                data_type: CameraPreflightDataType::Exact(data_type),
+                writable: true,
+                static_descriptor: Some(descriptor),
+            },
+            descriptor,
+        )
+    }
+
+    #[test]
+    fn static_descriptor_turns_a_refused_selector_into_a_writable_enumeration() {
+        let (requirement, static_descriptor) = static_requirement(
+            0xD18C,
+            0x0004,
+            CameraPreflightStaticForm::Enumeration(&[1, 2, 3, 4, 5, 6, 7]),
+        );
+
+        let descriptor =
+            descriptor_from_static(requirement, static_descriptor, &7_u16.to_le_bytes())
+                .expect("a live value inside the enumeration builds the descriptor");
+
+        assert!(descriptor.writable);
+        assert_eq!(descriptor.current, DevicePropValue::UInt(7));
+        descriptor
+            .validate_serialized_candidate(&3_u16.to_le_bytes())
+            .expect("an enumerated slot is a valid write candidate");
+        let error = descriptor
+            .validate_serialized_candidate(&8_u16.to_le_bytes())
+            .expect_err("a slot outside the static enumeration must be rejected");
+        assert!(error.to_string().contains("enumeration"), "{error}");
+    }
+
+    #[test]
+    fn static_descriptor_rejects_a_live_value_outside_its_form() {
+        let (requirement, static_descriptor) = static_requirement(
+            0xD18C,
+            0x0004,
+            CameraPreflightStaticForm::Enumeration(&[1, 2, 3]),
+        );
+
+        let error = descriptor_from_static(requirement, static_descriptor, &9_u16.to_le_bytes())
+            .expect_err("a live value the declaration does not allow proves the pin wrong");
+
+        assert!(error.to_string().contains("contradicts"), "{error:#}");
+    }
+
+    #[test]
+    fn static_descriptor_requires_an_exactly_fitting_live_value() {
+        let (requirement, static_descriptor) =
+            static_requirement(0xD19F, 0x0003, CameraPreflightStaticForm::None);
+
+        descriptor_from_static(requirement, static_descriptor, &(-40_i16).to_le_bytes())
+            .expect("a two-byte payload is a well-formed int16");
+        let error = descriptor_from_static(requirement, static_descriptor, &[0, 0, 0])
+            .expect_err("three bytes are not an int16");
+
+        assert!(format!("{error:#}").contains("trailing"), "{error:#}");
+    }
+
+    #[test]
+    fn static_descriptor_accepts_a_ptp_string_without_form() {
+        let (requirement, static_descriptor) =
+            static_requirement(0xD18D, 0xFFFF, CameraPreflightStaticForm::None);
+        let encoded =
+            crate::ptp::codec::encode(&crate::ptp::codec::PtpString::from("STD")).unwrap();
+
+        let descriptor = descriptor_from_static(requirement, static_descriptor, &encoded)
+            .expect("a PTP string live value must pass");
+
+        assert_eq!(descriptor.data_type, DevicePropDataType::String);
+        assert!(descriptor.validate_serialized_candidate(&encoded).is_ok());
+    }
+
+    #[test]
+    fn static_descriptor_rejects_negative_values_for_unsigned_types_and_arrays() {
+        let (requirement, static_descriptor) = static_requirement(
+            0xD18C,
+            0x0004,
+            CameraPreflightStaticForm::Enumeration(&[-1, 1]),
+        );
+        let negative = descriptor_from_static(requirement, static_descriptor, &1_u16.to_le_bytes())
+            .expect_err("a negative enumeration value cannot describe a UINT16");
+        assert!(negative.to_string().contains("negative"), "{negative:#}");
+
+        let (array, static_array) =
+            static_requirement(0xD185, 0x4002, CameraPreflightStaticForm::None);
+        let error = descriptor_from_static(array, static_array, &[1, 0, 0, 0, 6])
+            .expect_err("array datatypes are not eligible for static descriptors");
+        assert!(error.to_string().contains("scalar or string"), "{error}");
     }
 
     #[test]
@@ -1026,6 +1216,7 @@ mod tests {
             code: 0xD16E,
             data_type: CameraPreflightDataType::Any,
             writable: false,
+            static_descriptor: None,
         }],
     };
 

@@ -6,7 +6,7 @@ use quote::quote;
 use crate::{
     ast::{
         Camera, PreflightOperation, PreflightStatus, RawConversionCameraState,
-        RawConversionEvidenceStatus, RawConversionLayout,
+        RawConversionEvidenceStatus, RawConversionLayout, StaticForm,
     },
     schema::capabilities::resolve_firmware_capabilities,
     util::ident::{safe_upper_camel_case_ident, safe_uppercase_ident},
@@ -113,12 +113,50 @@ pub fn generate(cameras: &BTreeMap<String, Camera>) -> anyhow::Result<TokenStrea
                     },
                 );
                 let writable = property.writable;
+                let static_descriptor = property.static_descriptor.as_ref().map_or_else(
+                    || quote! { None },
+                    |descriptor| {
+                        let evidence = &descriptor.evidence;
+                        let form = match &descriptor.form {
+                            StaticForm::None => quote! { CameraPreflightStaticForm::None },
+                            StaticForm::Enumeration { values } => {
+                                let values = values
+                                    .iter()
+                                    .map(|value| Literal::i128_suffixed(i128::from(*value)));
+                                quote! { CameraPreflightStaticForm::Enumeration(&[#(#values),*]) }
+                            }
+                            StaticForm::Range {
+                                minimum,
+                                maximum,
+                                step,
+                            } => {
+                                let minimum = Literal::i128_suffixed(i128::from(*minimum));
+                                let maximum = Literal::i128_suffixed(i128::from(*maximum));
+                                let step = Literal::i128_suffixed(i128::from(*step));
+                                quote! {
+                                    CameraPreflightStaticForm::Range {
+                                        minimum: #minimum,
+                                        maximum: #maximum,
+                                        step: #step,
+                                    }
+                                }
+                            }
+                        };
+                        quote! {
+                            Some(CameraPreflightStaticDescriptor {
+                                evidence: #evidence,
+                                form: #form,
+                            })
+                        }
+                    },
+                );
 
                 quote! {
                     CameraPreflightProperty {
                         code: #code,
                         data_type: #data_type,
                         writable: #writable,
+                        static_descriptor: #static_descriptor,
                     }
                 }
             });
@@ -336,11 +374,31 @@ pub fn generate(cameras: &BTreeMap<String, Camera>) -> anyhow::Result<TokenStrea
             Exact(u16),
         }
 
+        /// Value constraint of a statically declared property descriptor.
+        /// Values are widened to `i128` so one representation covers every
+        /// PTP scalar datatype; the runtime narrows them by the pinned type.
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        pub enum CameraPreflightStaticForm {
+            None,
+            Enumeration(&'static [i128]),
+            Range { minimum: i128, maximum: i128, step: i128 },
+        }
+
+        /// A descriptor the runtime may substitute when the camera refuses
+        /// `GetDevicePropDesc`. It always asserts writability and requires the
+        /// owning property to pin `data_type`.
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        pub struct CameraPreflightStaticDescriptor {
+            pub evidence: &'static str,
+            pub form: CameraPreflightStaticForm,
+        }
+
         #[derive(Clone, Copy, Debug, Eq, PartialEq)]
         pub struct CameraPreflightProperty {
             pub code: u16,
             pub data_type: CameraPreflightDataType,
             pub writable: bool,
+            pub static_descriptor: Option<CameraPreflightStaticDescriptor>,
         }
 
         #[derive(Clone, Copy, Debug, Eq, PartialEq)]

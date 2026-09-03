@@ -15,8 +15,10 @@ descriptors.
 
 The X-T5 on firmware `4.31` returns `GeneralError` for every
 `GetDevicePropDesc`. For read-only USB mode and battery requirements, preflight
-therefore validates the property values by their wire shape. Writable
-requirements still fail closed when their descriptors cannot be proven.
+therefore validates the property values by their wire shape. A writable
+requirement passes only when its FML profile pins a static descriptor for that
+exact firmware (datatype, allowed values or range, and the evidence behind
+them) and the live value matches that declaration; otherwise it fails closed.
 
 Unknown firmware, unverified matrix entries, incomplete descriptors, and
 unsupported values fail before the intended mutation. Normal production

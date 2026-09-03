@@ -175,14 +175,27 @@ may be written at all: a descriptor the camera reports as writable never
 widens the permit beyond what the profile asked for.
 
 A physical X-T5 on firmware 4.31 in USB mode 0x6 answers `GeneralError` to
-every `GetDevicePropDesc` while serving `GetDevicePropValue`. When the camera
-refuses a descriptor with a PTP response code, preflight reads the value instead
-and checks only its wire shape against the declared datatype (scalar width or
-PTP string framing). That evidence is enough for read-only requirements such as
-the USB mode and battery properties, but it never enters the mutation permit:
-a property validated this way cannot be written, and a requirement declared
-`writable` or array-typed fails closed. Transport and decoding failures are not
-treated as a refusal.
+every `GetDevicePropDesc` while serving `GetDevicePropValue`; the firmware
+image shows why: the DeviceInfo for that mode is assembled at run time and the
+static descriptor table has no rows for the simulation settings (see the
+[firmware analysis](x-t5-firmware-4.31-static-analysis-2026-09-03.md)). When
+the camera refuses a descriptor with a PTP response code, preflight reads the
+value instead. Two outcomes follow:
+
+- A requirement without a `static_descriptor` is checked only for wire shape
+  against the declared datatype (scalar width or PTP string framing). That is
+  enough for read-only requirements such as the USB mode and battery
+  properties, but it never enters the mutation permit: such a property cannot
+  be written, and a requirement declared `writable` or array-typed fails closed.
+- A requirement whose FML profile declares a `static_descriptor` yields a
+  writable descriptor built from the pinned datatype, the declared form, and the
+  live value. The live value must decode exactly and satisfy the form, or
+  preflight fails with the declaration's `evidence` in the error. The permit
+  then validates every write candidate against that descriptor exactly as it
+  would against a camera-served one. Static descriptors are scalar or string
+  only, and codegen rejects one whose datatype disagrees with the option codec.
+
+Transport and decoding failures are not treated as a refusal.
 
 Success returns `ValidatedCameraSession<Operation>`. Only that typestate exposes
 the relevant mutation. It privately owns a non-cloneable mutation permit bound
