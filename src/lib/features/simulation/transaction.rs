@@ -682,6 +682,12 @@ where
     let mut journal = Vec::new();
     for change in changes {
         if let Err(error) = candidate.push_change(change, io) {
+            // `property_confirmed` means the framed PTP response accepted the
+            // write and only the readback failed (the generated
+            // `push_change` reports that through `confirmed`), or the
+            // selector drifted after a confirmed write. A transport-ambiguous
+            // write is reported unconfirmed and poisons the session instead;
+            // `recover_original` refuses any rollback on a poisoned session.
             if error.property_confirmed {
                 journal.push(change);
             }
