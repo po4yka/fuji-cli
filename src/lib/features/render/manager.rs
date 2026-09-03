@@ -1142,6 +1142,41 @@ mod tests {
     }
 
     #[test]
+    fn foreign_object_formats_in_the_delta_are_skipped_not_fatal() {
+        let mut io = FakeRenderObjectIo {
+            object_infos: VecDeque::from([
+                Ok(crate::ptp::ObjectInfo {
+                    // An association (0x3001) the camera listed alongside the render.
+                    object_format: crate::ptp::ObjectFormat::Other(0x3001),
+                    compressed_size: 0,
+                    ..Default::default()
+                }),
+                Ok(crate::ptp::ObjectInfo {
+                    object_format: crate::ptp::ObjectFormat::ExifJpeg,
+                    compressed_size: 6,
+                    ..Default::default()
+                }),
+            ]),
+            fetch_result: Some(Ok(vec![0xff, 0xd8, 0xff, 0xda, 0xff, 0xd9])),
+            delete_result: Some(Ok(())),
+            deleted: Vec::new(),
+        };
+
+        let error = fetch_unique_rendered_object(&mut io, &[41, 42])
+            .expect_err("the six-byte fixture is structurally invalid, so the fetch still fails");
+
+        assert!(
+            io.fetch_result.is_none(),
+            "the JPEG candidate must be reached and fetched despite the foreign object"
+        );
+        assert!(
+            error.to_string().contains("JPEG") && !error.to_string().contains("0x3001"),
+            "the failure must come from JPEG validation, not from the association: {error}"
+        );
+        assert!(io.deleted.is_empty());
+    }
+
+    #[test]
     fn retains_camera_object_when_fetched_jpeg_is_structurally_invalid() {
         let mut io = FakeRenderObjectIo {
             object_infos: VecDeque::from([Ok(crate::ptp::ObjectInfo {

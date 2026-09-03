@@ -1,5 +1,4 @@
 use binrw::{BinRead, BinWrite};
-use num_enum::{IntoPrimitive, TryFromPrimitive};
 
 #[derive(Debug, BinRead, BinWrite)]
 #[brw(little)]
@@ -163,6 +162,21 @@ mod tests {
     }
 
     #[test]
+    fn object_info_with_an_unlisted_format_decodes_as_other_and_re_encodes_identically() {
+        let mut bytes =
+            encode(&ObjectInfo::default()).expect("default ObjectInfo encoding must succeed");
+        bytes[4..6].copy_from_slice(&0x3001_u16.to_le_bytes());
+
+        let decoded = decode_exact::<ObjectInfo>(&bytes)
+            .expect("an association object must not fail the ObjectInfo decode");
+
+        assert_eq!(decoded.object_format, ObjectFormat::Other(0x3001));
+        assert_ne!(decoded.object_format, ObjectFormat::ExifJpeg);
+        let re_encoded = encode(&decoded).expect("re-encoding must succeed");
+        assert_eq!(re_encoded, bytes);
+    }
+
+    #[test]
     fn object_info_accepts_standard_exif_jpeg_format() {
         let mut bytes =
             encode(&ObjectInfo::default()).expect("default ObjectInfo encoding must succeed");
@@ -175,17 +189,67 @@ mod tests {
     }
 }
 
-#[repr(u16)]
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, IntoPrimitive, TryFromPrimitive, Default, BinRead, BinWrite,
-)]
-#[brw(repr(u16))]
+/// PTP object format code. The camera may list objects in formats this crate
+/// never handles (associations, movies, vendor-private codes), so decoding
+/// is total: an unlisted code becomes [`ObjectFormat::Other`] and is simply
+/// not a candidate, instead of failing the whole `ObjectInfo` decode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ObjectFormat {
     #[default]
-    None = 0x0,
-    ExifJpeg = 0x3801,
-    FujiBackup = 0x5000,
-    FujiRAF = 0xf802,
+    None,
+    ExifJpeg,
+    FujiBackup,
+    FujiRAF,
+    Other(u16),
+}
+
+impl From<u16> for ObjectFormat {
+    fn from(code: u16) -> Self {
+        match code {
+            0x0000 => Self::None,
+            0x3801 => Self::ExifJpeg,
+            0x5000 => Self::FujiBackup,
+            0xf802 => Self::FujiRAF,
+            other => Self::Other(other),
+        }
+    }
+}
+
+impl From<ObjectFormat> for u16 {
+    fn from(format: ObjectFormat) -> Self {
+        match format {
+            ObjectFormat::None => 0x0000,
+            ObjectFormat::ExifJpeg => 0x3801,
+            ObjectFormat::FujiBackup => 0x5000,
+            ObjectFormat::FujiRAF => 0xf802,
+            ObjectFormat::Other(code) => code,
+        }
+    }
+}
+
+impl BinRead for ObjectFormat {
+    type Args<'a> = ();
+
+    fn read_options<R: std::io::Read + std::io::Seek>(
+        reader: &mut R,
+        endian: binrw::Endian,
+        (): Self::Args<'_>,
+    ) -> binrw::BinResult<Self> {
+        u16::read_options(reader, endian, ()).map(Self::from)
+    }
+}
+
+impl BinWrite for ObjectFormat {
+    type Args<'a> = ();
+
+    fn write_options<W: std::io::Write + std::io::Seek>(
+        &self,
+        writer: &mut W,
+        endian: binrw::Endian,
+        (): Self::Args<'_>,
+    ) -> binrw::BinResult<()> {
+        u16::from(*self).write_options(writer, endian, ())
+    }
 }
 
 #[derive(Debug, Clone, Default, BinRead, BinWrite)]
