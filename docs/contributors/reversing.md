@@ -28,6 +28,13 @@ evidence before it can be merged. If unconstrained protocol experimentation is
 needed, keep it in `fujicli-dev` rather than weakening the consumer library
 boundary.
 
+Firmware update files are a second, camera-free evidence source. The X-T5 4.31
+image has been decoded (container, compression, static PTP lists and property
+descriptors); see
+[x-t5-firmware-4.31-static-analysis-2026-09-03](../internals/x-t5-firmware-4.31-static-analysis-2026-09-03.md).
+Firmware-derived facts are vendor evidence, not physical-device proof, and do
+not by themselves change `docs/users/support.md`.
+
 The current discovery surface is deliberately limited:
 
 | Command | PTP operations | Classification |
