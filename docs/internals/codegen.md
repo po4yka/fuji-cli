@@ -55,9 +55,16 @@ serde, PTP serde, `SimulationSetting`, and `ConversionProfileField`.
 **Integer-scaled**: newtype `pub struct Name(i16/u16)`. Carries inherent consts
 `MIN/MAX/STEP/SCALE` (logical) and `RAW_MIN/RAW_MAX/RAW_STEP` (raw).
 `TryFrom<i32>` validates range + step, then multiplies by `SCALE` before
-storing. `From<Self> for i32` divides back.
+storing. `From<Self> for i32` divides back. Every wire read (`BinRead` and
+the `ConversionProfileField` slot codec) goes through a checked `from_raw`
+that requires the camera word to lie in `RAW_MIN..=RAW_MAX` and on the raw
+step, so a word the option cannot represent is rejected at the boundary
+instead of truncating to a nearby logical value or surfacing out of range.
+The generator refuses a non-positive raw step, which would otherwise divide
+by zero in those checks.
 
-**Float-scaled**: newtype `pub struct Name(i16)`. Same shape as integer-scaled
+**Float-scaled**: newtype `pub struct Name(i16/u16)`, using the same resolved
+repr as integer-scaled. Same shape as integer-scaled, including `from_raw`,
 but with `f32` logical bounds. Step alignment uses `% STEP != 0.0` - _this is
 the known sharp edge_; for non-power-of- two steps consider using `lookup`
 encoding instead.

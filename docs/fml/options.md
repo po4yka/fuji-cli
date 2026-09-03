@@ -164,7 +164,7 @@ For every option, codegen emits a self-contained module of impls. Roughly:
 | `Serialize / Deserialize`                   | Yes                | JSON-friendly.                        |
 | `TryFrom<i32>` / `TryFrom<f32>`             | Numeric            | Range + step check.                   |
 | `From<Self> for i32` / `From<Self> for f32` | Numeric            | Lossless reverse.                     |
-| `binrw::BinRead, binrw::BinWrite`           | Yes                | PTP wire codec.                       |
+| `binrw::BinRead, binrw::BinWrite`           | Yes                | PTP wire codec; reads reject words outside the raw range or off the raw step. |
 | `SimulationSetting` (carries `prop_code()`) | If `prop_code` set | Used by `try_pull` / `try_push`.      |
 | `ConversionProfileField`                    | Yes                | 32-bit lifted codec for render slots. |
 

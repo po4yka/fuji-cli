@@ -1,8 +1,11 @@
-use anyhow::{Context, bail};
+use anyhow::{Context, bail, ensure};
 use proc_macro2::{Ident, TokenStream};
 use quote::quote;
 
-use super::super::common::{resolve_numeric_repr_signed, resolve_repr_type, resolve_repr_type_32};
+use super::super::{
+    common::{resolve_numeric_repr_signed, resolve_repr_type, resolve_repr_type_32},
+    integer::scaled::{generate_bin_read_impl, generate_from_raw_impl},
+};
 use crate::{
     ast::{NumericEncoding, NumericRules},
     util::ident::safe_upper_camel_case_ident,
@@ -60,10 +63,12 @@ pub(crate) fn generate(
 
     let type_name = safe_upper_camel_case_ident(id);
 
-    let struct_def = generate_struct_def(&type_name)
+    let struct_def = generate_struct_def(&type_name, &repr_type)
         .with_context(|| format!("generating struct definition for float option `{id}`"))?;
     let inherent_impl = generate_inherent_impl(&type_name, signed, &bounds)
         .with_context(|| format!("generating inherent impl for float option `{id}`"))?;
+    let from_raw_impl = generate_from_raw_impl(&type_name, &repr_type);
+    let bin_read_impl = generate_bin_read_impl(&type_name, &repr_type);
     let try_from_impl = generate_try_from_impl(&type_name)
         .with_context(|| format!("generating TryFrom<f32> impl for float option `{id}`"))?;
     let from_impl = generate_from_impl(&type_name).with_context(|| {
@@ -88,6 +93,8 @@ pub(crate) fn generate(
     Ok(quote! {
         #struct_def
         #inherent_impl
+        #from_raw_impl
+        #bin_read_impl
         #try_from_impl
         #from_impl
         #display_impl
@@ -98,7 +105,7 @@ pub(crate) fn generate(
     })
 }
 
-fn generate_struct_def(type_name: &Ident) -> anyhow::Result<TokenStream> {
+fn generate_struct_def(type_name: &Ident, repr_type: &Ident) -> anyhow::Result<TokenStream> {
     Ok(quote! {
         #[derive(
             Debug,
@@ -106,11 +113,10 @@ fn generate_struct_def(type_name: &Ident) -> anyhow::Result<TokenStream> {
             Copy,
             PartialEq,
             Eq,
-            ::binrw::BinRead,
             ::binrw::BinWrite,
         )]
-        #[brw(little)]
-        pub struct #type_name(i16);
+        #[bw(little)]
+        pub struct #type_name(#repr_type);
     })
 }
 
@@ -133,6 +139,10 @@ fn generate_inherent_impl(
         pub const SCALE: i32 = #scale;
     };
 
+    ensure!(
+        (step * scale as f32) as i32 > 0,
+        "float option `{type_name}` needs a positive raw step, got step {step} and scale {scale}"
+    );
     let raw = if signed {
         let raw_min: i16 = ((min * scale as f32) as i32).try_into()?;
         let raw_max: i16 = ((max * scale as f32) as i32).try_into()?;
@@ -292,7 +302,10 @@ fn generate_conversion_profile_impl(
                         )),
                     }
                 })?;
-                Ok(Self(raw))
+                Self::from_raw(raw).map_err(|error| ::binrw::Error::Custom {
+                    pos: position,
+                    err: Box::new(error),
+                })
             }
         }
     })
@@ -307,17 +320,35 @@ mod tests {
     #[test]
     fn generated_scaled_float_uses_binrw_codec_derives() {
         let type_name = Ident::new("GrainSize", Span::call_site());
+        let repr_type = Ident::new("u16", Span::call_site());
 
-        let generated = generate_struct_def(&type_name)
+        let generated = generate_struct_def(&type_name, &repr_type)
             .expect("scaled float struct generation must succeed")
             .to_string();
 
         assert!(
-            generated.contains("binrw :: BinRead")
-                && generated.contains("binrw :: BinWrite")
+            generated.contains("binrw :: BinWrite")
+                && !generated.contains("binrw :: BinRead")
+                && generated.contains("(u16)")
                 && !generated.contains("ptp_macro :: PtpSerialize")
                 && !generated.contains("ptp_macro :: PtpDeserialize"),
-            "generated scaled float must use only binrw codec derives: {generated}",
+            "generated scaled float must derive only the write codec and use the resolved repr: {generated}",
+        );
+    }
+
+    #[test]
+    fn generated_scaled_float_conversion_profile_reads_through_from_raw() {
+        let type_name = Ident::new("GrainSize", Span::call_site());
+        let repr_type = Ident::new("i16", Span::call_site());
+        let repr_type_32 = Ident::new("i32", Span::call_site());
+
+        let generated = generate_conversion_profile_impl(&type_name, &repr_type, &repr_type_32)
+            .expect("scaled float conversion profile generation must succeed")
+            .to_string();
+
+        assert!(
+            generated.contains("Self :: from_raw (raw)"),
+            "the conversion-profile read must use the checked constructor: {generated}"
         );
     }
 

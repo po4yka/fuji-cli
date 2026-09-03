@@ -271,3 +271,28 @@ fn x_t5_render_profile_re_encodes_gated_off_words_verbatim() {
         "tail_0 has no live word"
     );
 }
+
+#[test]
+fn scaled_options_reject_camera_words_outside_their_declared_range_or_step() {
+    use crate::{
+        generated::options::{Color, HighlightTone},
+        ptp::codec::decode_exact,
+    };
+
+    // Color: logical -4..=4 at scale 10, so raw -40..=40 in steps of 10.
+    let color = decode_exact::<Color>(&40_i16.to_le_bytes()).expect("raw 40 is the maximum");
+    assert_eq!(i32::from(color), 4);
+    let error = decode_exact::<Color>(&35_i16.to_le_bytes())
+        .expect_err("raw 35 is off the scale step and must not truncate to 3");
+    assert!(error.to_string().contains("raw step"), "{error}");
+    let error = decode_exact::<Color>(&100_i16.to_le_bytes())
+        .expect_err("raw 100 is outside the declared range and must not surface as 10");
+    assert!(error.to_string().contains("raw range"), "{error}");
+
+    // The float-scaled family shares the same checked constructor.
+    decode_exact::<HighlightTone>(&HighlightTone::RAW_MAX.to_le_bytes())
+        .expect("the raw maximum is a valid camera word");
+    let error = decode_exact::<HighlightTone>(&(HighlightTone::RAW_MAX + 1).to_le_bytes())
+        .expect_err("one past the raw maximum must be rejected at the wire boundary");
+    assert!(error.to_string().contains("raw range"), "{error}");
+}

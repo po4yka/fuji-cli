@@ -1,4 +1,4 @@
-use anyhow::{Context, bail};
+use anyhow::{Context, bail, ensure};
 use proc_macro2::{Ident, TokenStream};
 use quote::quote;
 
@@ -62,6 +62,8 @@ pub(crate) fn generate(
         .with_context(|| format!("generating struct definition for integer option `{id}`"))?;
     let inherent_impl = generate_inherent_impl(&type_name, signed, &bounds)
         .with_context(|| format!("generating inherent impl for integer option `{id}`"))?;
+    let from_raw_impl = generate_from_raw_impl(&type_name, &repr_type);
+    let bin_read_impl = generate_bin_read_impl(&type_name, &repr_type);
     let try_from_impl = generate_try_from_impl(&type_name, bounds.step)
         .with_context(|| format!("generating TryFrom<i32> impl for integer option `{id}`"))?;
     let to_impl = generate_to_impl(&type_name).with_context(|| {
@@ -88,6 +90,8 @@ pub(crate) fn generate(
     Ok(quote! {
         #struct_def
         #inherent_impl
+        #from_raw_impl
+        #bin_read_impl
         #try_from_impl
         #to_impl
         #display_impl
@@ -106,12 +110,65 @@ fn generate_struct_def(type_name: &Ident, repr_type: &Ident) -> anyhow::Result<T
             Copy,
             PartialEq,
             Eq,
-            ::binrw::BinRead,
             ::binrw::BinWrite,
         )]
-        #[brw(little)]
+        #[bw(little)]
         pub struct #type_name(#repr_type);
     })
+}
+
+/// The checked constructor every wire read goes through: a camera word
+/// outside the declared raw range, or off the raw step, is rejected at the
+/// boundary instead of surfacing later as a truncated or out-of-range
+/// logical value that the option's own `TryFrom` would refuse.
+pub(crate) fn generate_from_raw_impl(type_name: &Ident, repr_type: &Ident) -> TokenStream {
+    quote! {
+        impl #type_name {
+            pub(crate) fn from_raw(raw: #repr_type) -> ::std::io::Result<Self> {
+                let invalid = |reason: String| {
+                    ::std::io::Error::new(
+                        ::std::io::ErrorKind::InvalidData,
+                        format!("{} raw value {raw} {reason}", stringify!(#type_name)),
+                    )
+                };
+                if !(Self::RAW_MIN..=Self::RAW_MAX).contains(&raw) {
+                    return Err(invalid(format!(
+                        "is outside the raw range [{}, {}]", Self::RAW_MIN, Self::RAW_MAX,
+                    )));
+                }
+                let offset = i32::from(raw) - i32::from(Self::RAW_MIN);
+                if offset % i32::from(Self::RAW_STEP) != 0 {
+                    return Err(invalid(format!(
+                        "is not aligned to the raw step {}", Self::RAW_STEP,
+                    )));
+                }
+                Ok(Self(raw))
+            }
+        }
+    }
+}
+
+pub(crate) fn generate_bin_read_impl(type_name: &Ident, repr_type: &Ident) -> TokenStream {
+    quote! {
+        impl ::binrw::BinRead for #type_name {
+            type Args<'a> = ();
+
+            fn read_options<R: ::std::io::Read + ::std::io::Seek>(
+                reader: &mut R,
+                _endian: ::binrw::Endian,
+                (): Self::Args<'_>,
+            ) -> ::binrw::BinResult<Self> {
+                let position = ::std::io::Seek::stream_position(reader)?;
+                let raw = <#repr_type as ::binrw::BinRead>::read_options(
+                    reader, ::binrw::Endian::Little, (),
+                )?;
+                Self::from_raw(raw).map_err(|error| ::binrw::Error::Custom {
+                    pos: position,
+                    err: Box::new(error),
+                })
+            }
+        }
+    }
 }
 
 fn generate_inherent_impl(
@@ -133,6 +190,10 @@ fn generate_inherent_impl(
         pub const SCALE: i32 = #scale;
     };
 
+    ensure!(
+        step * scale > 0,
+        "integer option `{type_name}` needs a positive step and scale, got step {step} and scale {scale}"
+    );
     let raw = if signed {
         let raw_min: i16 = (min * scale).try_into()?;
         let raw_max: i16 = (max * scale).try_into()?;
@@ -300,7 +361,10 @@ fn generate_conversion_profile_impl(
                         )),
                     }
                 })?;
-                Ok(Self(raw))
+                Self::from_raw(raw).map_err(|error| ::binrw::Error::Custom {
+                    pos: position,
+                    err: Box::new(error),
+                })
             }
         }
     })
@@ -312,7 +376,10 @@ mod tests {
 
     use crate::ast::{Codegen, FujiOption, NumericEncoding, OptionSpec};
 
-    use super::{generate_conversion_profile_impl, generate_struct_def};
+    use super::{
+        Bounds, generate_bin_read_impl, generate_conversion_profile_impl, generate_from_raw_impl,
+        generate_inherent_impl, generate_struct_def,
+    };
 
     #[test]
     fn generated_scaled_integer_uses_binrw_codec_derives() {
@@ -331,12 +398,58 @@ mod tests {
         let generated = generate_struct_def(&type_name, &repr_type)
             .expect("scaled integer struct generation must succeed")
             .to_string();
+        let bin_read = generate_bin_read_impl(&type_name, &repr_type).to_string();
 
         assert!(
-            generated.contains("binrw :: BinRead") && generated.contains("binrw :: BinWrite"),
-            "generated scaled integer `{}` must derive binrw codecs: {generated}",
+            generated.contains("binrw :: BinWrite") && !generated.contains("binrw :: BinRead"),
+            "generated scaled integer `{}` must derive only the write codec: {generated}",
             option.id,
         );
+        assert!(
+            bin_read.contains("impl :: binrw :: BinRead") && bin_read.contains("from_raw"),
+            "the read codec must go through the checked constructor: {bin_read}"
+        );
+    }
+
+    #[test]
+    fn generated_scaled_integer_checks_raw_range_and_step_on_read() {
+        let type_name = Ident::new("Color", Span::call_site());
+        let repr_type = Ident::new("i16", Span::call_site());
+
+        let from_raw = generate_from_raw_impl(&type_name, &repr_type).to_string();
+        let conversion = generate_conversion_profile_impl(
+            &type_name,
+            &repr_type,
+            &Ident::new("i32", Span::call_site()),
+        )
+        .expect("conversion profile generation must succeed")
+        .to_string();
+
+        assert!(
+            from_raw.contains("RAW_MIN ..= Self :: RAW_MAX")
+                && from_raw.contains("% i32 :: from (Self :: RAW_STEP)"),
+            "{from_raw}"
+        );
+        assert!(
+            conversion.contains("Self :: from_raw (raw)"),
+            "the conversion-profile read must use the checked constructor: {conversion}"
+        );
+    }
+
+    #[test]
+    fn zero_step_is_rejected_at_generation_time() {
+        let type_name = Ident::new("Color", Span::call_site());
+        let bounds = Bounds {
+            min: -4,
+            max: 4,
+            step: 0,
+            scale: 10,
+        };
+
+        let error = generate_inherent_impl(&type_name, true, &bounds)
+            .expect_err("a zero step would divide by zero in every generated check");
+
+        assert!(error.to_string().contains("positive step"), "{error}");
     }
 
     #[test]
