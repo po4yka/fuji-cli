@@ -27,6 +27,9 @@ command is supported. Check the [camera support matrix](../support.md).
 `device info` claims the interface and opens a PTP session. A permission or
 `LIBUSB_ERROR_ACCESS` result points to host access policy. A busy or
 `LIBUSB_ERROR_BUSY` result normally means another PTP client owns the interface.
+`fujicli` never detaches a kernel driver from the interface: the still-image
+class normally has none bound, and a busy interface on Linux means another
+userspace PTP client, which detaching would not resolve.
 
 Close gphoto2, digiKam, Shotwell, Darktable, photo importers, and other camera
 applications. Do not run simultaneous PTP clients during backup restore,

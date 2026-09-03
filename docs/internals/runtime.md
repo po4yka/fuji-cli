@@ -72,6 +72,11 @@ negotiated speed, endpoint packet sizes, and initial/ceiling sizes. One trace
 summary records the effective sizes and duration for each logical transaction;
 payload bytes and camera identifiers are never logged.
 
+Claiming is deliberately plain: `claim_interface` followed by the alternate
+setting, with no `set_auto_detach_kernel_driver`. The still-image class has no
+kernel driver bound in practice, and the Linux conflicts that do occur come
+from userspace clients holding the interface, which a detach would not fix.
+
 ## Interrupt Latch
 
 A bulk transfer abandoned mid-transaction wedges the camera's USB pipe; the
