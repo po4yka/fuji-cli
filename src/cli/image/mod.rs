@@ -50,7 +50,11 @@ fn save_rendered_object<Output: RenderOutput>(
         return finish_render_cleanup(handle, profile_restore_error, Ok(()));
     }
 
-    finish_render_cleanup(handle, profile_restore_error, cleanup(handle))
+    // DeleteObject and its verifying read are a camera write: hold the
+    // interrupt latch across both so a Ctrl-C cannot leave the deletion
+    // unverified, and report unknown state if one arrived meanwhile.
+    let cleanup = interrupt::critical_camera_write("rendered object cleanup", || cleanup(handle));
+    finish_render_cleanup(handle, profile_restore_error, cleanup)
 }
 
 #[derive(Subcommand, Debug)]

@@ -384,7 +384,13 @@ Local output is opened before camera mutation. A path output is written,
 synced, and atomically committed before `DeleteObject`; stdout and explicit
 recovery retain the camera object by default. Recovery fetch and recovery
 cleanup use separate least-privilege preflight profiles, so fetching retained
-bytes does not depend on writable conversion-profile properties.
+bytes does not depend on writable conversion-profile properties. Because the
+cleanup session is not the one that fetched the object, cleanup re-reads
+`GetObjectInfo` and refuses any handle that is not an EXIF/JPEG before it
+sends `DeleteObject`, then proves the deletion through `GetObjectHandles`.
+The CLI runs that whole cleanup inside the interrupt critical region, so a
+Ctrl-C cannot separate the deletion from its verification and is reported as
+an unknown camera state if it arrives meanwhile.
 
 Render-object polling has a five-minute absolute deadline. Each
 `GetObjectHandles` exchange uses that same deadline instead of starting a fresh

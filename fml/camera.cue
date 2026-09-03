@@ -605,7 +605,10 @@ cameras: {
 					firmware:                "4.31"
 					minimum_battery_percent: 100
 					allowed_usb_modes: [0x6]
-					required_operations: [0x1001, 0x100B, 0x1014, 0x1015]
+					// Cleanup re-reads GetObjectInfo (0x1008) before DeleteObject and
+					// proves the deletion through GetObjectHandles (0x1007); both are
+					// advertised in USB mode 0x6 (x-t5-device-audit-2026-08-31).
+					required_operations: [0x1001, 0x1007, 0x1008, 0x100B, 0x1014, 0x1015]
 					required_properties: _preflight_common_properties
 				},
 			]

@@ -600,6 +600,14 @@ fn delete_object_verified<I: RenderIo + RenderObjectIo + ?Sized>(
     io: &mut I,
     handle: u32,
 ) -> anyhow::Result<StateChangeAudit> {
+    // The handle may come from a different session than the one that fetched
+    // it (`image recover` cleans up under its own preflight), so re-confirm
+    // that it still names a rendered JPEG before sending DeleteObject.
+    let object_info = io.object_info(handle)?;
+    anyhow::ensure!(
+        object_info.object_format == ObjectFormat::ExifJpeg,
+        "refusing to delete object handle {handle}: it is not an EXIF/JPEG rendered object"
+    );
     io.delete_object(handle)?;
     let deadline = Instant::now()
         .checked_add(RENDER_TIMEOUT)
@@ -919,11 +927,18 @@ mod tests {
     struct FakeCleanupIo {
         deleted: Vec<u32>,
         handle_readbacks: usize,
+        object_format: Option<crate::ptp::ObjectFormat>,
     }
 
     impl RenderObjectIo for FakeCleanupIo {
         fn object_info(&mut self, _handle: u32) -> anyhow::Result<crate::ptp::ObjectInfo> {
-            unreachable!("cleanup verification does not inspect ObjectInfo")
+            Ok(crate::ptp::ObjectInfo {
+                object_format: self
+                    .object_format
+                    .unwrap_or(crate::ptp::ObjectFormat::ExifJpeg),
+                compressed_size: 6,
+                ..Default::default()
+            })
         }
 
         fn fetch_object(&mut self, _handle: u32) -> anyhow::Result<Vec<u8>> {
@@ -1024,6 +1039,24 @@ mod tests {
 
         assert!(error.to_string().contains("simulated fetch failure"));
         assert!(io.deleted.is_empty());
+    }
+
+    #[test]
+    fn cleanup_refuses_to_delete_a_handle_that_is_not_a_rendered_jpeg() {
+        let mut io = FakeCleanupIo {
+            object_format: Some(crate::ptp::ObjectFormat::FujiRAF),
+            ..Default::default()
+        };
+
+        let error = delete_object_verified(&mut io, 42)
+            .expect_err("a non-JPEG handle must never reach DeleteObject");
+
+        assert!(error.to_string().contains("not an EXIF/JPEG"), "{error}");
+        assert!(
+            io.deleted.is_empty(),
+            "DeleteObject must not have been sent"
+        );
+        assert_eq!(io.handle_readbacks, 0);
     }
 
     #[test]
