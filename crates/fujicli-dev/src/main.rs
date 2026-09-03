@@ -17,6 +17,7 @@ mod output;
 #[cfg(feature = "dangerous-reverse-engineering")]
 mod probe;
 mod reverse;
+mod strings;
 mod surface;
 mod usb;
 

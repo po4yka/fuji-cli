@@ -16,7 +16,11 @@ use clap::Subcommand;
 use fujicli::features::backup::sha256_hex;
 use serde_json::json;
 
-use crate::surface::{Category, PtpSurface, SurfaceDiff, format_codes};
+use crate::{
+    output::NewOutput,
+    strings::{Identifiers, scan_ui_strings, script_counts},
+    surface::{Category, PtpSurface, SurfaceDiff, format_codes},
+};
 
 /// Header field sizes by container type, from the `FujiHack` wiki and its
 /// patcher. Type 6 covers every X-Processor 4 and 5 body this project knows.
@@ -54,6 +58,16 @@ pub enum FirmwareCommand {
         input: PathBuf,
         /// Directory to create; an existing path is never overwritten
         output: PathBuf,
+    },
+    /// Dump the naming evidence an image carries: the debug identifier table
+    /// and the localized UI text
+    ///
+    /// The output is vendor text and a raw dump that needs review: read it
+    /// when naming FML values, never commit or ship it.
+    Strings {
+        input: PathBuf,
+        /// JSON artifact to write; an existing path is never overwritten
+        output: NewOutput,
     },
     /// Compare the PTP surface two firmware containers declare
     Diff {
@@ -405,6 +419,62 @@ fn inspect(input: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Dumps every identifier and every UI string the image holds. Both are
+/// evidence for naming FML values by hand: the image never binds a name to a
+/// PTP wire value, so nothing here can be imported automatically.
+fn strings(input: &Path, output: &NewOutput) -> anyhow::Result<()> {
+    let firmware = read(input)?;
+    let mut identifiers = Identifiers::default();
+    let mut ui_strings = Vec::new();
+    for buffer in std::iter::once(&firmware.image).chain(&firmware.sections) {
+        identifiers.scan(buffer);
+        ui_strings.extend(scan_ui_strings(buffer));
+    }
+
+    println!(
+        "Identifiers: {} in {} families",
+        identifiers.total(),
+        identifiers.families().count()
+    );
+    let vocabulary = identifiers.value_vocabulary();
+    println!(
+        "Value vocabulary: {} option name(s) from MSG_VALS_*",
+        vocabulary.len()
+    );
+    println!(
+        "UI strings: {} (raw dump, review before use)",
+        ui_strings.len()
+    );
+    for (script, count) in script_counts(&ui_strings) {
+        println!("  {}: {count}", script.name());
+    }
+
+    let artifact = json!({
+        "schema_version": 1,
+        "input_sha256": firmware.report.input_sha256,
+        "firmware_version": firmware.report.header.version,
+        "identifier_families": identifiers
+            .families()
+            .map(|(family, members)| (family.to_owned(), json!(members)))
+            .collect::<serde_json::Map<String, serde_json::Value>>(),
+        "value_vocabulary": vocabulary
+            .into_iter()
+            .map(|(option, values)| (option, json!(values)))
+            .collect::<serde_json::Map<String, serde_json::Value>>(),
+        "ui_strings": ui_strings
+            .iter()
+            .map(|string| json!({
+                "offset": string.offset,
+                "script": string.script.name(),
+                "text": string.text,
+            }))
+            .collect::<Vec<_>>(),
+    });
+    let mut json = serde_json::to_vec_pretty(&artifact)?;
+    json.push(b'\n');
+    output.write_all(&json)
+}
+
 /// Regression check between two releases: what the newer container adds to or
 /// removes from the PTP surface the older one declares. A change here is what
 /// invalidates an FML declaration derived from the older image.
@@ -470,6 +540,7 @@ pub fn handle(command: &FirmwareCommand) -> anyhow::Result<()> {
     match command {
         FirmwareCommand::Inspect { input } => inspect(input),
         FirmwareCommand::Unpack { input, output } => unpack(input, output),
+        FirmwareCommand::Strings { input, output } => strings(input, output),
         FirmwareCommand::Diff { before, after } => diff(before, after),
     }
 }

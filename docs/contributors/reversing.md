@@ -185,6 +185,43 @@ so a wrong reading of the layout cannot pass silently. See the
 [X-T5 firmware analysis](../internals/x-t5-firmware-4.31-static-analysis-2026-09-03.md)
 for the container layout and for what the decompressed sections contain.
 
+### Naming evidence
+
+```sh
+cargo run --locked -p fujicli-dev --features reverse-tools -- \
+  firmware strings FWUP0030.DAT names.json
+```
+
+Dumps the two things in an image that help name values: the debug identifier
+table and the localized UI text. On the X-T5 4.31 image that is about 39,000
+identifiers in 1,500 families and about 137,000 UI strings across every
+language the camera ships.
+
+The useful part of the identifier table is `MSG_VALS_<OPTION>_<VALUE>`, which
+the artifact also presents split apart under `value_vocabulary`: 176 option
+names with their value names, in the camera's own vocabulary. For example
+`GRAIN` has `OFF`, `LARGE`, `SMALL`, `HI`, `LOW`, and `CLARITY` has `MINUS5`
+through `PLUS5` plus `AUTO`. That is the naming source for FML variant ids and
+display names.
+
+Two limits decide how this may be used:
+
+- **The image never binds a name to a PTP wire value.** The identifiers and the
+  UI text are separate from the value tables, and no evidence in the image
+  connects them. A name still has to be tied to a value by a device capture or
+  vendor documentation, then written into `fml/` by hand. Nothing here can be
+  imported automatically, and a generated name would be an invented camera
+  fact.
+- **The UI text is Fujifilm's copyrighted content.** Extract it locally while
+  reversing. Do not commit it, and do not compile it into a binary. `fujicli`
+  display names come from `fml/`, which is this project's own text.
+
+The string dump is deliberately a dump. A run counts as text when it is
+NUL-terminated, anchored after a NUL, at least three characters long, and not
+one character repeated; parts of the image still decode as text by accident,
+most often in the dense CJK and Hangul ranges. Read it, do not trust it
+wholesale.
+
 ### Surface regression between releases
 
 ```sh
