@@ -172,14 +172,19 @@ simulation into the render base.
   `[i16 n_props][hex profile_code
   ExactString][camera header_padding][i32 * n_props]` in
   declaration order. For ref-fields, uses `ConversionProfileField`. For inline
-  fields, writes a raw `i32` (defaulting to 0 if unset).
+  fields, writes a raw `i32`. A field left `None` re-emits the raw word the
+  last decode recorded for it in the profile's hidden `wire_words` map, and
+  only a profile that was never decoded falls back to 0.
 - `binrw::BinRead` - reads the same header, then `i32` fields in declaration
-  order. Each field is converted to its typed form _in topological convert
-  order_ (so gated fields evaluate their gates against already-converted
-  fields). Inverses run last to lift wire-level multi-field encodings back to
-  user-facing ones. The runtime's `decode_exact` boundary requires full buffer
-  consumption so trailing or newly-added wire fields cannot be silently
-  discarded.
+  order, and records every raw word in `wire_words` before conversion. Each
+  field is converted to its typed form _in topological convert order_ (so
+  gated fields evaluate their gates against already-converted fields); a field
+  whose presence gate is closed stays `None` but keeps its recorded word, so a
+  decode followed by an encode reproduces the camera's bytes instead of
+  zeroing, for example, the monochromatic words of a colour profile. Inverses
+  run last to lift wire-level multi-field encodings back to user-facing ones.
+  The runtime's `decode_exact` boundary requires full buffer consumption so
+  trailing or newly-added wire fields cannot be silently discarded.
 - `CameraRenderManager` - orchestrates the in-camera render pipeline: send_image
   -> get current profile -> try_update_from(partial) -> set profile ->
   render_image.

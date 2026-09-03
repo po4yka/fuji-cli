@@ -150,8 +150,39 @@ fn generate_struct_def(
         #[serde(default, rename_all = "camelCase")]
         pub struct #struct_ident {
             #( #field_defs )*
+            /// Raw wire words from the last decode, keyed by field id. A field
+            /// whose presence gate was closed stays `None` logically, but its
+            /// word is re-emitted verbatim on encode instead of a zero the
+            /// camera never reported.
+            #[serde(skip)]
+            pub(crate) wire_words: ::std::collections::BTreeMap<&'static str, i32>,
         }
     }
+}
+
+/// Expression for the word to write when the logical field is `None`: the
+/// word decoded from the camera for this field, or zero if there was none.
+fn wire_word_fallback(field_id: &str) -> TokenStream {
+    quote! { self.wire_words.get(#field_id).copied().unwrap_or(0) }
+}
+
+/// Statements that store every raw word a decode read into `#profile`, so a
+/// later encode can re-emit words for fields the presence gates left `None`.
+fn wire_word_records(
+    settings: &BTreeMap<&str, SettingInfo<'_>>,
+    fields: &[Field],
+    profile: &TokenStream,
+) -> Vec<TokenStream> {
+    fields
+        .iter()
+        .filter(|field| !field.skip_read())
+        .map(|field| {
+            let info = settings.get(field.id()).expect("settings indexed");
+            let field_id = field.id();
+            let raw_ident = raw_local_ident(&info.field_ident());
+            quote! { #profile.wire_words.insert(#field_id, #raw_ident); }
+        })
+        .collect()
 }
 
 fn generate_inherent_impl(
@@ -224,6 +255,7 @@ fn generate_try_update_from(
             let original = self.clone();
             let mut partial_profile: #struct_ident = #struct_ident {
                 #( #init_fields )*
+                wire_words: ::std::collections::BTreeMap::new(),
             };
             partial_profile.apply_transformations();
 
@@ -293,6 +325,7 @@ fn generate_write_one(settings: &BTreeMap<&str, SettingInfo<'_>>, field: &Field)
     let info = settings.get(field.id()).expect("settings indexed");
     let ident = info.field_ident();
     let type_path = info.type_path();
+    let fallback = wire_word_fallback(field.id());
     if info.option.is_some() {
         quote! {
             match self.#ident.as_ref() {
@@ -302,14 +335,14 @@ fn generate_write_one(settings: &BTreeMap<&str, SettingInfo<'_>>, field: &Field)
                 }
                 None => {
                     <i32 as ::binrw::BinWrite>::write_options(
-                        &0i32, writer, endian, (),
+                        &#fallback, writer, endian, (),
                     )?;
                 }
             }
         }
     } else {
         quote! {
-            let value: i32 = self.#ident.unwrap_or(0);
+            let value: i32 = self.#ident.unwrap_or_else(|| #fallback);
             <i32 as ::binrw::BinWrite>::write_options(&value, writer, endian, ())?;
         }
     }
@@ -325,6 +358,7 @@ fn generate_write_one_for_firmware(
     let info = settings.get(field.id()).expect("settings indexed");
     let ident = info.field_ident();
     let type_path = info.type_path();
+    let fallback = wire_word_fallback(field.id());
     if let Some(option) = info.option {
         let option_id = &option.id;
         quote! {
@@ -341,14 +375,14 @@ fn generate_write_one_for_firmware(
                 }
                 None => {
                     <i32 as ::binrw::BinWrite>::write_options(
-                        &0i32, &mut writer, endian, (),
+                        &#fallback, &mut writer, endian, (),
                     )?;
                 }
             }
         }
     } else {
         quote! {
-            let value: i32 = self.#ident.unwrap_or(0);
+            let value: i32 = self.#ident.unwrap_or_else(|| #fallback);
             <i32 as ::binrw::BinWrite>::write_options(&value, &mut writer, endian, ())?;
         }
     }
@@ -379,6 +413,7 @@ fn generate_firmware_profile_codec_impl(
                 )?;
             }
         });
+    let wire_word_records = wire_word_records(settings, fields, &quote! { camera_profile });
     let conversions = convert_order
         .iter()
         .map(|id| {
@@ -449,6 +484,7 @@ fn generate_firmware_profile_codec_impl(
                 #(#raw_reads)*
 
                 let mut camera_profile = Self::default();
+                #(#wire_word_records)*
                 #(#conversions)*
                 #inverses
 
@@ -501,6 +537,7 @@ fn generate_ptp_deserialize_impl(
         .collect::<anyhow::Result<Vec<_>>>()?;
 
     let inverses = generate_inverses(settings, transformations, &quote! { profile })?;
+    let wire_word_records = wire_word_records(settings, fields, &quote! { profile });
 
     Ok(quote! {
         impl ::binrw::BinRead for #struct_ident {
@@ -561,6 +598,7 @@ fn generate_ptp_deserialize_impl(
                 #( #raw_reads )*
 
                 let mut profile = Self::default();
+                #( #wire_word_records )*
                 #( #conversions )*
 
                 #inverses
@@ -767,6 +805,49 @@ mod tests {
     };
 
     use super::{generate, generate_ptp_deserialize_impl, generate_ptp_serialize_impl};
+
+    #[test]
+    fn generated_render_codec_keeps_wire_words_for_fields_left_none() {
+        let camera = serde_json::from_str::<Camera>(
+            r#"{
+                "id": "fixture",
+                "spec": {
+                    "name": "Fixture",
+                    "generation": "fixture",
+                    "usb": { "vendor_id": 1227, "product_id": 1, "chunk_size_ceiling": 1024 },
+                    "features": {
+                        "render": {
+                            "profile_code": 1,
+                            "header_padding": 0,
+                            "fields": [{ "id": "head_0" }]
+                        }
+                    }
+                }
+            }"#,
+        )
+        .expect("render fixture must parse");
+        let generated = generate(
+            &BTreeMap::new(),
+            &BTreeMap::from([(camera.id.clone(), camera)]),
+        )
+        .expect("render fixture must generate")
+        .to_string();
+
+        assert_eq!(
+            generated.matches("wire_words . insert").count(),
+            2,
+            "both decoders must record every raw word: {generated}"
+        );
+        assert_eq!(
+            generated.matches("wire_words . get").count(),
+            2,
+            "both encoders must fall back to the recorded word: {generated}"
+        );
+        assert!(
+            !generated.contains("0i32"),
+            "no encoder may write a literal zero for a field left None: {generated}"
+        );
+    }
 
     #[test]
     fn generated_render_restores_and_verifies_the_conversion_profile() {
