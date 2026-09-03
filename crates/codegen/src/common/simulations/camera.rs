@@ -56,6 +56,17 @@ fn generate_one(
     };
 
     let settings = build_settings(options, &simulation.settings)?;
+    if let Some(custom_setting) = options.get("custom_setting")
+        && let crate::ast::OptionSpec::Enum { rules, .. } = &custom_setting.spec
+    {
+        anyhow::ensure!(
+            usize::try_from(simulation.slots)? <= rules.variants.len(),
+            "camera `{}` declares {} simulation slots, but `custom_setting` has only {} variants to address them",
+            camera.id,
+            simulation.slots,
+            rules.variants.len(),
+        );
+    }
 
     let aliases: Vec<NormalizedTransformation> = simulation
         .transformations
@@ -971,6 +982,52 @@ mod tests {
             ) && generated.contains("setting : \"film_simulation\"")
                 && generated.contains("execute_simulation_transaction (& mut io , & original , & candidate"),
             "the generated adapter must diff the full candidate and preserve the schema property order:\n{generated}",
+        );
+    }
+
+    #[test]
+    fn slots_beyond_the_custom_setting_variants_are_rejected() {
+        let (mut options, mut cameras) = fixture();
+        let custom_setting: BTreeMap<String, FujiOption> = parse(
+            r#"{
+                "custom_setting": {
+                    "id": "custom_setting",
+                    "spec": {
+                        "name": "Custom Setting Slot",
+                        "kind": "enum",
+                        "rules": {
+                            "variants": [
+                                { "id": "c1", "name": "C1", "aliases": ["c1"] },
+                                { "id": "c2", "name": "C2", "aliases": ["c2"] }
+                            ]
+                        },
+                        "encoding": {
+                            "prop_code": 53644, "kind": "lookup",
+                            "spec": { "values": { "c1": 1, "c2": 2 } }
+                        }
+                    }
+                }
+            }"#,
+        );
+        options.extend(custom_setting);
+        cameras
+            .get_mut("demo")
+            .expect("fixture camera")
+            .spec
+            .features
+            .as_mut()
+            .expect("fixture features")
+            .simulation
+            .as_mut()
+            .expect("fixture simulation")
+            .slots = 3;
+
+        let error = generate(&options, &cameras)
+            .expect_err("three slots cannot be addressed by two custom_setting variants");
+
+        assert!(
+            format!("{error:#}").contains("simulation slots"),
+            "{error:#}"
         );
     }
 }
