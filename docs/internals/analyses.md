@@ -363,4 +363,8 @@ for each field in read order:
 
 The read path doesn't `solve`. If the camera returned an inconsistent state,
 that's diagnostic information for a downstream write attempt - not something we
-silently rewrite.
+silently rewrite. The alias inverses that run after conversion follow the same
+rule: an inverse lifts a wire-level encoding into its logical form only when
+the lifted field is absent or already agrees with the trigger value. If the
+camera reports the wire flag together with a contradicting logical value, both
+stay exactly as decoded.

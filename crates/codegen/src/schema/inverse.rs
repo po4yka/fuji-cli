@@ -6,7 +6,9 @@ use quote::quote;
 
 use crate::{
     ast::{Assignment, AssignmentEffect, PredAll, Predicate, Scope, Transformation},
-    schema::grammar::{Scopes, SettingInfo, generate_assignment, generate_predicate},
+    schema::grammar::{
+        Scopes, SettingInfo, generate_assignment, generate_predicate, generate_value_expr,
+    },
 };
 
 impl Transformation {
@@ -123,6 +125,15 @@ fn generate_one_inverse(
         effect: AssignmentEffect::Set(when_leaf.equals.clone()),
     };
     let when_apply = generate_assignment(settings, &when_assignment, accessor)?;
+    // The read path never rewrites a state the camera reported: lift the
+    // wire encoding only when the logical field is absent or already agrees.
+    // A wire flag that contradicts the decoded value stays exactly as read,
+    // as diagnostic input for a later write.
+    let when_info = settings
+        .get(when_leaf.r#ref.as_str())
+        .expect("ctx validated field");
+    let when_ident = when_info.field_ident();
+    let when_target = generate_value_expr(when_info, &when_leaf.equals)?;
 
     let mut clears = TokenStream::new();
     for a in &t.apply {
@@ -135,7 +146,9 @@ fn generate_one_inverse(
     }
 
     Ok(quote! {
-        if #condition {
+        if #condition
+            && #accessor.#when_ident.as_ref().is_none_or(|current| *current == #when_target)
+        {
             #when_apply
             #clears
         }
@@ -273,5 +286,31 @@ mod tests {
         };
         let all = vec![t];
         assert!(!all[0].is_invertible(&all));
+    }
+
+    #[test]
+    fn inverse_lifts_only_when_the_lifted_field_is_absent_or_agrees() {
+        let mut settings = std::collections::BTreeMap::new();
+        for id in ["wb", "flag"] {
+            settings.insert(
+                id,
+                super::SettingInfo {
+                    id,
+                    kind: crate::ast::SpecKind::Integer,
+                    option: None,
+                },
+            );
+        }
+        let alias = alias_t("wb", json!(1), vec![("flag", json!(7))]);
+
+        let generated = super::generate_inverses(&settings, &[alias], &quote::quote! { profile })
+            .expect("a single alias is invertible")
+            .to_string();
+
+        assert!(
+            generated
+                .contains("profile . wb . as_ref () . is_none_or (| current | * current == 1i32)"),
+            "the inverse must not overwrite a decoded value that contradicts the wire flag: {generated}"
+        );
     }
 }
