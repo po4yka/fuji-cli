@@ -17,7 +17,10 @@ reconnected, so the first Ctrl-C during any PTP transaction is latched until
 that transaction returns.
 
 Outside a camera write, the command then stops before the next transaction,
-closes the session normally, and exits `130`.
+closes the session normally, and exits `130`. `simulation list`, `get`, and
+`export` switch the camera's custom-setting slot while they read; an interrupt
+during them is held until the original slot is restored and verified, and the
+command then exits `130`.
 
 During a camera write, the whole write runs to completion. The command then
 exits `3` and prints do-not-retry guidance.

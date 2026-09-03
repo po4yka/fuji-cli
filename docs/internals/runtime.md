@@ -94,6 +94,16 @@ transport or in the signal handler between transactions, is reported as an
 unknown camera state (exit status 3), so the verification window after a
 restore cannot be mistaken for a clean interruption.
 
+The temporary-selector scope (`with_temporary_simulation_selector`) is itself
+a critical region. `simulation list`, `get`, and `export` write the `0xD18C`
+slot selector before every property read, so the scope holds a
+`CriticalRegionGuard` from the selector snapshot through the restore and its
+verification, then honours any recorded interrupt. Regions nest through a
+depth counter. Selector writes under a `SimulationAccess` permit do not set
+`camera_write_sent`: the scope restores and verifies them, so an interrupt
+honoured after it exits 130, not 3. A forced quit inside the scope still
+reports the unknown-state exit status, because the restore did not run.
+
 ## Top-Level Dispatch
 
 [`src/lib/mod.rs`](../../src/lib/mod.rs) wraps the trait dispatch:

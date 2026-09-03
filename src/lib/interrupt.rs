@@ -11,7 +11,7 @@
 
 use std::{
     fmt,
-    sync::atomic::{AtomicBool, AtomicU8, Ordering},
+    sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
 };
 
 /// Exit status for an interrupt honoured outside a camera write.
@@ -48,7 +48,9 @@ impl std::error::Error for Interrupted {}
 
 pub struct InterruptLatch {
     transaction_in_flight: AtomicBool,
-    critical_region: AtomicBool,
+    /// Depth of nested critical regions; regions nest, so a counter rather
+    /// than a flag, or an inner region's drop would end the outer one.
+    critical_region_depth: AtomicUsize,
     camera_write_sent: AtomicBool,
     interrupts_seen: AtomicU8,
 }
@@ -71,7 +73,7 @@ impl InterruptLatch {
     pub const fn new() -> Self {
         Self {
             transaction_in_flight: AtomicBool::new(false),
-            critical_region: AtomicBool::new(false),
+            critical_region_depth: AtomicUsize::new(0),
             camera_write_sent: AtomicBool::new(false),
             interrupts_seen: AtomicU8::new(0),
         }
@@ -95,7 +97,7 @@ impl InterruptLatch {
     }
 
     pub fn enter_critical_region(&self) -> CriticalRegionGuard<'_> {
-        self.critical_region.store(true, Ordering::SeqCst);
+        self.critical_region_depth.fetch_add(1, Ordering::SeqCst);
         CriticalRegionGuard { latch: self }
     }
 
@@ -105,7 +107,7 @@ impl InterruptLatch {
     }
 
     pub fn critical_region_active(&self) -> bool {
-        self.critical_region.load(Ordering::SeqCst)
+        self.critical_region_depth.load(Ordering::SeqCst) > 0
     }
 
     /// Records one interrupt and returns how many were already pending.
@@ -156,7 +158,9 @@ impl Drop for TransactionGuard<'_> {
 
 impl Drop for CriticalRegionGuard<'_> {
     fn drop(&mut self) {
-        self.latch.critical_region.store(false, Ordering::SeqCst);
+        self.latch
+            .critical_region_depth
+            .fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -221,6 +225,20 @@ mod tests {
         assert!(marker.after_camera_write);
         assert!(marker.to_string().contains("DO NOT RETRY"));
         assert!(latch.camera_write_sent(), "the flag is sticky");
+    }
+
+    #[test]
+    fn nested_critical_regions_end_only_when_the_outermost_drops() {
+        let latch = InterruptLatch::new();
+        let outer = latch.enter_critical_region();
+        let inner = latch.enter_critical_region();
+        drop(inner);
+        assert!(
+            latch.critical_region_active(),
+            "dropping the inner region must not end the outer one"
+        );
+        drop(outer);
+        assert!(!latch.critical_region_active());
     }
 
     #[test]

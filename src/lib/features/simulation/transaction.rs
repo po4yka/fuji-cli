@@ -352,15 +352,37 @@ impl SimulationSelectorIo for AuthorizedSimulationIo<'_> {
     }
 }
 
+use crate::interrupt::{INTERRUPTS, InterruptLatch};
+
 pub(crate) fn with_temporary_simulation_selector<T>(
     io: &mut AuthorizedSimulationIo<'_>,
     property_code: u16,
     operation: impl FnOnce(&mut AuthorizedSimulationIo<'_>) -> anyhow::Result<T>,
 ) -> anyhow::Result<T> {
-    with_temporary_simulation_selector_io(io, property_code, operation)
+    with_temporary_simulation_selector_io(&INTERRUPTS, io, property_code, operation)
 }
 
+/// Runs `operation` with the slot selector temporarily switched, then
+/// restores and verifies the original selector. The whole scope is one
+/// interrupt critical region: a Ctrl-C anywhere inside it, including between
+/// PTP transactions, is recorded rather than acted on, so the restore always
+/// runs. The recorded interrupt is honoured once the selector is back.
 fn with_temporary_simulation_selector_io<IO, T>(
+    interrupts: &InterruptLatch,
+    io: &mut IO,
+    property_code: u16,
+    operation: impl FnOnce(&mut IO) -> anyhow::Result<T>,
+) -> anyhow::Result<T>
+where
+    IO: SimulationSelectorIo,
+{
+    let region = interrupts.enter_critical_region();
+    let result = restore_selector_after(io, property_code, operation);
+    drop(region);
+    interrupts.after_transaction(result)
+}
+
+fn restore_selector_after<IO, T>(
     io: &mut IO,
     property_code: u16,
     operation: impl FnOnce(&mut IO) -> anyhow::Result<T>,
@@ -1478,6 +1500,56 @@ mod tests {
     }
 
     #[test]
+    fn interrupt_inside_the_temporary_selector_scope_restores_before_it_is_honoured() {
+        use crate::interrupt::{InterruptLatch, Interrupted};
+
+        let profile = TestProfile {
+            first: Some(1),
+            second: Some(2),
+            third: Some(5),
+        };
+        let latch = InterruptLatch::new();
+        let mut io = FakeSimulationPropertyIo::with_profile(&profile);
+        let original = codec::encode(&9_u16).expect("test selector");
+        io.properties.insert(0xd000, original.clone());
+
+        let error = with_temporary_simulation_selector_io::<_, ()>(&latch, &mut io, 0xd000, |io| {
+            assert!(
+                latch.is_deferring(),
+                "the whole scope must defer interrupts, not only each transaction"
+            );
+            let mut selected = SelectedSimulationIo::new(io, TestSelector(3));
+            let _: u16 = selected.get_prop(0xd001)?;
+            // A Ctrl-C lands between two PTP transactions of the scope.
+            latch.record_interrupt();
+            let mut selected = SelectedSimulationIo::new(io, TestSelector(4));
+            let _: u16 = selected.get_prop(0xd001)?;
+            Ok(())
+        })
+        .expect_err("the recorded interrupt must be honoured after the scope");
+
+        assert!(!latch.is_deferring());
+        assert_eq!(
+            latch.take_interrupts(),
+            0,
+            "the scope drained the interrupt"
+        );
+        let marker = error
+            .downcast_ref::<Interrupted>()
+            .expect("the outermost error must be the interrupt marker");
+        assert!(
+            !marker.after_camera_write,
+            "a restored selector is not an unknown camera state"
+        );
+        assert_eq!(
+            io.properties.get(&0xd000),
+            Some(&original),
+            "the original selector must be restored before the interrupt is honoured"
+        );
+        assert_eq!(io.writes.last(), Some(&0xd000));
+    }
+
+    #[test]
     fn temporary_selector_restores_once_after_failure_in_each_batch_slot() {
         let profile = TestProfile {
             first: Some(1),
@@ -1490,16 +1562,21 @@ mod tests {
             io.properties
                 .insert(0xd000, codec::encode(&9_u16).expect("test selector"));
 
-            let error = with_temporary_simulation_selector_io::<_, ()>(&mut io, 0xd000, |io| {
-                for slot in 1..=7 {
-                    let mut selected = SelectedSimulationIo::new(io, TestSelector(slot));
-                    let _: u16 = selected.get_prop(0xd001)?;
-                    if slot == failed_slot {
-                        anyhow::bail!("injected failure after C{slot}");
+            let error = with_temporary_simulation_selector_io::<_, ()>(
+                &crate::interrupt::InterruptLatch::new(),
+                &mut io,
+                0xd000,
+                |io| {
+                    for slot in 1..=7 {
+                        let mut selected = SelectedSimulationIo::new(io, TestSelector(slot));
+                        let _: u16 = selected.get_prop(0xd001)?;
+                        if slot == failed_slot {
+                            anyhow::bail!("injected failure after C{slot}");
+                        }
                     }
-                }
-                Ok(())
-            })
+                    Ok(())
+                },
+            )
             .expect_err("the injected slot read must fail");
             let error = error
                 .downcast_ref::<TemporarySimulationSelectorError>()
@@ -1538,12 +1615,17 @@ mod tests {
         io.properties
             .insert(0xd000, codec::encode(&9_u16).expect("test selector"));
 
-        let error = with_temporary_simulation_selector_io::<_, ()>(&mut io, 0xd000, |io| {
-            io.faults.push_back(Fault::ReturnRead(0xd000, 2));
-            let mut selected = SelectedSimulationIo::new(io, TestSelector(1));
-            let _: u16 = selected.get_prop(0xd001)?;
-            Ok(())
-        })
+        let error = with_temporary_simulation_selector_io::<_, ()>(
+            &crate::interrupt::InterruptLatch::new(),
+            &mut io,
+            0xd000,
+            |io| {
+                io.faults.push_back(Fault::ReturnRead(0xd000, 2));
+                let mut selected = SelectedSimulationIo::new(io, TestSelector(1));
+                let _: u16 = selected.get_prop(0xd001)?;
+                Ok(())
+            },
+        )
         .expect_err("selector mismatch must fail before the profile read");
         let error = error
             .downcast_ref::<TemporarySimulationSelectorError>()
@@ -1579,10 +1661,15 @@ mod tests {
         io.properties
             .insert(0xd000, codec::encode(&9_u16).expect("test selector"));
 
-        let error = with_temporary_simulation_selector_io(&mut io, 0xd000, |io| {
-            io.faults.push_back(Fault::ReturnRead(0xd000, 7));
-            Ok(())
-        })
+        let error = with_temporary_simulation_selector_io(
+            &crate::interrupt::InterruptLatch::new(),
+            &mut io,
+            0xd000,
+            |io| {
+                io.faults.push_back(Fault::ReturnRead(0xd000, 7));
+                Ok(())
+            },
+        )
         .expect_err("restore readback mismatch must fail");
         let error = error
             .downcast_ref::<TemporarySimulationSelectorError>()
@@ -1604,10 +1691,15 @@ mod tests {
         io.properties
             .insert(0xd000, codec::encode(&9_u16).expect("test selector"));
 
-        let error = with_temporary_simulation_selector_io::<_, ()>(&mut io, 0xd000, |io| {
-            io.faults.push_back(Fault::RejectWrite(0xd000));
-            anyhow::bail!("profile read failed");
-        })
+        let error = with_temporary_simulation_selector_io::<_, ()>(
+            &crate::interrupt::InterruptLatch::new(),
+            &mut io,
+            0xd000,
+            |io| {
+                io.faults.push_back(Fault::RejectWrite(0xd000));
+                anyhow::bail!("profile read failed");
+            },
+        )
         .expect_err("operation and restore must fail");
         let error = error
             .downcast_ref::<TemporarySimulationSelectorError>()
@@ -1637,11 +1729,16 @@ mod tests {
         io.properties
             .insert(0xd000, codec::encode(&9_u16).expect("test selector"));
 
-        let error = with_temporary_simulation_selector_io::<_, ()>(&mut io, 0xd000, |io| {
-            let mut selected = SelectedSimulationIo::new(io, TestSelector(1));
-            let _: u16 = selected.get_prop(0xd001)?;
-            Ok(())
-        })
+        let error = with_temporary_simulation_selector_io::<_, ()>(
+            &crate::interrupt::InterruptLatch::new(),
+            &mut io,
+            0xd000,
+            |io| {
+                let mut selected = SelectedSimulationIo::new(io, TestSelector(1));
+                let _: u16 = selected.get_prop(0xd001)?;
+                Ok(())
+            },
+        )
         .expect_err("poisoned profile read must fail");
         let error = error
             .downcast_ref::<TemporarySimulationSelectorError>()

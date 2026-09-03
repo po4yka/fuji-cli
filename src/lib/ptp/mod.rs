@@ -507,7 +507,15 @@ impl Ptp {
             "PTP command {code:?} is not a state-changing command"
         );
         self.validate_mutation_permit(permit, code, params, data)?;
-        INTERRUPTS.mark_camera_write_sent();
+        // A SimulationAccess permit only ever writes the slot selector, and
+        // the temporary-selector scope restores and verifies it inside a
+        // critical region, so that write does not leave the camera state
+        // unknown once the scope completes.
+        if permit.operation()
+            != crate::generated::cameras::CameraPreflightOperation::SimulationAccess
+        {
+            INTERRUPTS.mark_camera_write_sent();
+        }
         self.send_unchecked_for_operation(operation, code, params, data)
     }
 
