@@ -88,6 +88,12 @@ count afterwards and reports the unknown-state outcome. Session-control
 commands never convert a recorded interrupt: they complete regardless, and
 `Drop` should not log a spurious close failure.
 
+`send_mutating` also sets a sticky `camera_write_sent` flag on the latch
+before dispatching. Every interrupt honoured after that point, in the
+transport or in the signal handler between transactions, is reported as an
+unknown camera state (exit status 3), so the verification window after a
+restore cannot be mistaken for a clean interruption.
+
 ## Top-Level Dispatch
 
 [`src/lib/mod.rs`](../../src/lib/mod.rs) wraps the trait dispatch:

@@ -507,6 +507,7 @@ impl Ptp {
             "PTP command {code:?} is not a state-changing command"
         );
         self.validate_mutation_permit(permit, code, params, data)?;
+        INTERRUPTS.mark_camera_write_sent();
         self.send_unchecked_for_operation(operation, code, params, data)
     }
 
@@ -745,6 +746,7 @@ impl Ptp {
             "probe write expected a state-changing SetDevicePropValue"
         );
         debug!("PROBE (unverified, unpermitted) SetDevicePropValue 0x{prop:04x}");
+        INTERRUPTS.mark_camera_write_sent();
         self.send_unchecked_for_operation(
             PtpOperation::Standard,
             CommandCode::SetDevicePropValue,

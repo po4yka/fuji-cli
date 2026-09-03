@@ -23,14 +23,24 @@ pub static INTERRUPTS: InterruptLatch = InterruptLatch::new();
 /// Marker attached to an error chain when a recorded interrupt was honoured
 /// after the in-flight PTP transaction completed.
 #[derive(Debug)]
-pub struct Interrupted;
+pub struct Interrupted {
+    /// A state-changing command was already sent earlier in this process, so
+    /// the interrupt leaves the camera state unknown and must map to the
+    /// unknown-state exit status rather than a plain interruption.
+    pub after_camera_write: bool,
+}
 
 impl fmt::Display for Interrupted {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "interrupted by Ctrl-C; stopped after the in-flight PTP transaction completed"
-        )
+        f.write_str(
+            "interrupted by Ctrl-C; stopped after the in-flight PTP transaction completed",
+        )?;
+        if self.after_camera_write {
+            f.write_str(
+                "; a camera write was already sent, so camera state is unknown. DO NOT RETRY AUTOMATICALLY",
+            )?;
+        }
+        Ok(())
     }
 }
 
@@ -39,6 +49,7 @@ impl std::error::Error for Interrupted {}
 pub struct InterruptLatch {
     transaction_in_flight: AtomicBool,
     critical_region: AtomicBool,
+    camera_write_sent: AtomicBool,
     interrupts_seen: AtomicU8,
 }
 
@@ -61,8 +72,21 @@ impl InterruptLatch {
         Self {
             transaction_in_flight: AtomicBool::new(false),
             critical_region: AtomicBool::new(false),
+            camera_write_sent: AtomicBool::new(false),
             interrupts_seen: AtomicU8::new(0),
         }
+    }
+
+    /// Records that a state-changing command is being sent. The flag is
+    /// sticky for the rest of the process: every later interrupt, including
+    /// one during the verification that follows a restore, must be reported
+    /// as an unknown camera state rather than a plain interruption.
+    pub fn mark_camera_write_sent(&self) {
+        self.camera_write_sent.store(true, Ordering::SeqCst);
+    }
+
+    pub fn camera_write_sent(&self) -> bool {
+        self.camera_write_sent.load(Ordering::SeqCst)
     }
 
     pub fn enter_transaction(&self) -> TransactionGuard<'_> {
@@ -106,9 +130,12 @@ impl InterruptLatch {
         if self.critical_region_active() || self.take_interrupts() == 0 {
             return result;
         }
+        let interrupted = Interrupted {
+            after_camera_write: self.camera_write_sent(),
+        };
         match result {
-            Ok(_) => Err(anyhow::Error::new(Interrupted)),
-            Err(error) => Err(error.context(Interrupted)),
+            Ok(_) => Err(anyhow::Error::new(interrupted)),
+            Err(error) => Err(error.context(interrupted)),
         }
     }
 }
@@ -169,6 +196,31 @@ mod tests {
             .expect_err("the failure must propagate");
         assert!(error.is::<Interrupted>());
         assert!(error.root_cause().to_string().contains("wire failure"));
+    }
+
+    #[test]
+    fn interrupt_after_a_camera_write_is_reported_as_unknown_state() {
+        let latch = InterruptLatch::new();
+        latch.record_interrupt();
+        let plain = latch
+            .after_transaction(Ok(()))
+            .expect_err("pending interrupt");
+        let plain = plain
+            .downcast_ref::<Interrupted>()
+            .expect("the marker must be the error");
+        assert!(!plain.after_camera_write);
+
+        latch.mark_camera_write_sent();
+        latch.record_interrupt();
+        let error = latch
+            .after_transaction::<()>(Err(anyhow::anyhow!("verification read failed")))
+            .expect_err("pending interrupt");
+        let marker = error
+            .downcast_ref::<Interrupted>()
+            .expect("the marker must be reachable through the context chain");
+        assert!(marker.after_camera_write);
+        assert!(marker.to_string().contains("DO NOT RETRY"));
+        assert!(latch.camera_write_sent(), "the flag is sticky");
     }
 
     #[test]

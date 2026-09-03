@@ -21,14 +21,24 @@ fn interrupt_exit_code(during_critical_write: bool) -> i32 {
 /// runs to completion and reports the interrupt itself.
 pub fn install() -> anyhow::Result<()> {
     ctrlc::set_handler(|| {
+        // Sticky for the rest of the process: once a camera write was sent,
+        // every interrupt leaves the camera state unknown, including one
+        // that lands while a restore is waiting for its verification.
+        let camera_write_sent = INTERRUPTS.camera_write_sent();
         if !INTERRUPTS.is_deferring() {
             // No PTP transaction in flight: behave like the default disposition.
-            eprintln!("interrupted");
-            std::process::exit(interrupt_exit_code(false));
+            if camera_write_sent {
+                eprintln!(
+                    "interrupted after a camera write was sent; camera state is unknown. DO NOT RETRY AUTOMATICALLY"
+                );
+            } else {
+                eprintln!("interrupted");
+            }
+            std::process::exit(interrupt_exit_code(camera_write_sent));
         }
         let seen = INTERRUPTS.record_interrupt();
         let during_critical_write = INTERRUPTS.critical_region_active();
-        match (seen, during_critical_write) {
+        match (seen, during_critical_write || camera_write_sent) {
             (0, true) => eprintln!(
                 "interrupt received during a camera write; finishing the current PTP operation first (press Ctrl-C again to force-quit; camera state will then be unknown)"
             ),

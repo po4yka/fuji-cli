@@ -43,11 +43,16 @@ fn handle_result(result: anyhow::Result<()>) -> anyhow::Result<()> {
 /// independent of added context.
 fn error_exit_code(error: &anyhow::Error) -> u8 {
     if error.is::<CameraStateUnknown>() {
-        CAMERA_STATE_UNKNOWN_EXIT_CODE
-    } else if error.is::<Interrupted>() {
-        INTERRUPTED_EXIT_CODE
-    } else {
-        1
+        return CAMERA_STATE_UNKNOWN_EXIT_CODE;
+    }
+    match error.downcast_ref::<Interrupted>() {
+        Some(Interrupted {
+            after_camera_write: true,
+        }) => CAMERA_STATE_UNKNOWN_EXIT_CODE,
+        Some(Interrupted {
+            after_camera_write: false,
+        }) => INTERRUPTED_EXIT_CODE,
+        None => 1,
     }
 }
 
@@ -65,7 +70,7 @@ fn main() -> ExitCode {
 mod tests {
     use std::io;
 
-    use super::{CameraStateUnknown, error_exit_code, handle_result};
+    use super::{CameraStateUnknown, Interrupted, error_exit_code, handle_result};
 
     #[test]
     fn broken_stdout_pipe_is_a_successful_cli_exit() {
@@ -85,16 +90,31 @@ mod tests {
 
     #[test]
     fn honoured_interrupt_maps_to_the_interrupted_exit_code() {
-        let error = anyhow::Error::new(fujicli::interrupt::Interrupted).context("after GetObject");
+        let error = anyhow::Error::new(Interrupted {
+            after_camera_write: false,
+        })
+        .context("after GetObject");
 
         assert_eq!(error_exit_code(&error), 130);
     }
 
     #[test]
+    fn interrupt_after_a_camera_write_maps_to_state_unknown_exit_code() {
+        let error = anyhow::Error::new(Interrupted {
+            after_camera_write: true,
+        })
+        .context("waiting for the camera to reconnect after restore");
+
+        assert_eq!(error_exit_code(&error), 3);
+    }
+
+    #[test]
     fn state_unknown_wins_over_an_interrupt_marker() {
-        let error = anyhow::Error::new(fujicli::interrupt::Interrupted)
-            .context(CameraStateUnknown)
-            .context("restore verification interrupted");
+        let error = anyhow::Error::new(Interrupted {
+            after_camera_write: false,
+        })
+        .context(CameraStateUnknown)
+        .context("restore verification interrupted");
 
         assert_eq!(error_exit_code(&error), 3);
     }

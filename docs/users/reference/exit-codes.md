@@ -9,7 +9,7 @@ together with stdout, stderr, JSON shape, and the physical camera state.
 | `1` | Failure before a camera write, or another safely retryable failure | Investigate the cause before retrying. Examples include no camera, a missing file, a non-clap argument error, or preflight rejection. |
 | `2` | clap rejected command grammar | Correct the invalid subcommand, missing argument, conflict, or meaningless option combination. |
 | `3` | A state-changing operation was sent but its outcome could not be confirmed | Do not retry automatically. Inspect the physical camera and establish its actual state first. |
-| `130` | Ctrl-C outside a camera write | The process was interrupted before an in-flight camera mutation required unknown-state handling. |
+| `130` | Ctrl-C before any camera write was sent | The process was interrupted before a camera mutation was dispatched, so nothing on the camera changed. |
 
 Ctrl-C never abandons a PTP transfer mid-stream. An aborted bulk transfer can
 leave the camera's USB pipe unusable until the cable is physically
@@ -22,6 +22,12 @@ closes the session normally, and exits `130`.
 During a camera write, the whole write runs to completion. The command then
 exits `3` and prints do-not-retry guidance.
 
-A second Ctrl-C forces immediate exit: `3` during a camera write because the
-camera state is necessarily unknown, otherwise `130`. After a forced quit
-during a transfer, disconnect and reconnect the camera before the next command.
+Once a camera write has been sent, every later Ctrl-C in the same process
+exits `3`, including one that lands while `backup import` waits for the camera
+to reconnect or exports the verification backup. The write already happened;
+only its persistence is unconfirmed.
+
+A second Ctrl-C forces immediate exit: `3` once a camera write is in progress
+or was already sent, because the camera state is necessarily unknown,
+otherwise `130`. After a forced quit during a transfer, disconnect and
+reconnect the camera before the next command.
