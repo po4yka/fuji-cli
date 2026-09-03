@@ -139,6 +139,15 @@ pub fn build_settings<'a, F: OptionLike + 'a>(
 ) -> anyhow::Result<BTreeMap<&'a str, SettingInfo<'a>>> {
     let mut table = BTreeMap::new();
     for item in items {
+        // Setting and field ids become Rust field names verbatim; reject a
+        // keyword or a malformed id here with a schema-level message instead
+        // of letting `Ident::new` panic inside the build script.
+        syn::parse_str::<Ident>(item.id()).map_err(|error| {
+            anyhow::anyhow!(
+                "setting id `{}` is not a valid Rust identifier ({error}); rename it in FML",
+                item.id()
+            )
+        })?;
         let info = if let Some(name) = item.option_ref() {
             let option = options.get(name).expect("ref validated during cue export");
             SettingInfo {
@@ -657,5 +666,27 @@ mod tests {
             };
             assert_eq!(message.value(), "Expected {value}");
         }
+    }
+
+    #[test]
+    fn setting_ids_must_be_rust_identifiers() {
+        struct Keyword;
+        impl super::OptionLike for Keyword {
+            fn id(&self) -> &str {
+                "self"
+            }
+            fn option_ref(&self) -> Option<&str> {
+                None
+            }
+        }
+
+        let error = super::build_settings(&std::collections::BTreeMap::new(), &[Keyword])
+            .err()
+            .expect("`self` cannot become a struct field name");
+
+        assert!(
+            error.to_string().contains("`self`") && error.to_string().contains("FML"),
+            "{error}"
+        );
     }
 }
