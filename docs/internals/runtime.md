@@ -55,8 +55,10 @@ when the backend reports a faster link.
 
 Read and write policy are independent. Writes remain at the conservative size
 for the entire session. Three successful, naturally occurring large read-only
-transactions may promote the next read transaction through 1, 4, and 8 MiB
-tiers, then to the camera ceiling. The measured aggregate rate must also imply
+transactions may promote the next read transaction through 1, 4, 8, and 16 MiB
+tiers, capped by the camera ceiling; the schema limits that ceiling to the
+runtime's 16 MiB bulk read window, so promotion always terminates. The
+measured aggregate rate must also imply
 that the candidate chunk can fill within the bulk I/O timeout. Promotion records
 the sampled bytes and duration; it never repeats a command to manufacture a
 measurement.

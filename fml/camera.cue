@@ -50,7 +50,10 @@ _ptp_data_type: {
 
 			vendor_id:          uint16 | *#FujifilmVendorID
 			product_id:         uint16
-			chunk_size_ceiling: uint | *#DefaultCameraUSBChunkSizeCeiling
+			// The runtime's bulk read window is capped at 16 MiB
+			// (MAX_PTP_BULK_READ_CHUNK_BYTES in src/lib/ptp/mod.rs); a larger
+			// ceiling could never be reached and would only retry promotion.
+			chunk_size_ceiling: (uint & <=16777216) | *#DefaultCameraUSBChunkSizeCeiling
 		}
 
 		#PTPIdentity: {
