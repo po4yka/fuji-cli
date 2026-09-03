@@ -44,6 +44,7 @@ The current discovery surface is deliberately limited:
 | `discover simulation` | `GetDevicePropValue` | read-only |
 | `discover backup export` | `GetObjectInfo`, `GetObject` | read-only |
 | `discover render-profile` | `GetDeviceInfo`, `GetDevicePropDesc`, `GetDevicePropValue` | read-only |
+| `discover surface` | `GetDeviceInfo`, `GetDevicePropDesc`, `GetDevicePropValue` | read-only |
 
 There is no `SetDevicePropValue`, custom-slot selector, upload, restore, delete,
 or generic raw-send command. Other custom-setting slots must be selected
@@ -130,6 +131,33 @@ Reverse mode does **not** verify allowed values and deliberately does not write
 the custom-setting selector. Discovering other slots or mutating an unknown
 property requires a separately reviewed probe and physical-device recovery
 plan; it is not exposed by this CLI.
+
+### Surface
+
+```sh
+cargo run --locked -p fujicli-dev --features reverse-tools -- \
+  --device BUS.ADDRESS discover surface surface.json -vvv
+```
+
+Surveys the whole advertised PTP surface of the connected camera in one pass:
+`GetDeviceInfo`, then the descriptor and the value of every property the device
+advertises. A refusal is recorded per property instead of aborting, because a
+camera refusing a descriptor is itself the finding.
+
+Where `discover simulation` reads the codes the schema already knows, this
+command starts from what the device advertises, so it also reports codes FML has
+never declared. When the reported PTP identity matches a registry entry, each
+observed value is checked against the datatype that camera's preflight profiles
+pin, and a contradiction is printed and counted. That is how a firmware-derived
+pin (see the
+[X-T5 firmware analysis](../internals/x-t5-firmware-4.31-static-analysis-2026-09-03.md))
+gets its physical-device confirmation.
+
+The JSON artifact records, per property, whether the descriptor and value were
+served, the decoded descriptor datatype, writability and form, and the value's
+length, wire shape and SHA-256. It never records payload bytes, so it needs no
+privacy review before sharing; a property may hold a serial number, an owner
+string, or GPS data. There is deliberately no `--print-values`.
 
 ## Requirements for Any Future Dangerous Probe
 

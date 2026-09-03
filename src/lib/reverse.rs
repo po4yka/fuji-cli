@@ -2,6 +2,93 @@ use serde::Serialize;
 
 const MAX_RAW_PROFILE_DISCOVERY_BYTES: usize = 1024 * 1024;
 
+/// One advertised device property as the camera answers for it right now.
+///
+/// The survey deliberately records shapes and digests, never payload bytes:
+/// a property may hold a serial number, an owner string, or GPS data, and the
+/// artifact is meant to be shareable without a privacy review.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct PropertyObservation {
+    pub code: u16,
+    pub descriptor_available: bool,
+    pub descriptor_data_type: Option<&'static str>,
+    pub descriptor_writable: Option<bool>,
+    pub descriptor_form: Option<&'static str>,
+    pub value_available: bool,
+    pub value_length: Option<usize>,
+    pub value_shape: Option<&'static str>,
+    pub value_sha256: Option<String>,
+    /// PTP datatype code the FML preflight profiles pin for this property on
+    /// the connected model and firmware, when they declare it at all.
+    pub declared_data_type: Option<u16>,
+    /// Whether the observed value has the wire shape of `declared_data_type`.
+    /// `None` when nothing is declared or no value could be read.
+    pub declaration_matches: Option<bool>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
+pub struct PropertySurveySummary {
+    pub advertised: usize,
+    pub descriptors_read: usize,
+    pub values_read: usize,
+    pub declared: usize,
+    pub declaration_mismatches: usize,
+}
+
+/// The complete read-only PTP surface of the connected camera in one artifact:
+/// what `GetDeviceInfo` advertises, what each advertised property answers, and
+/// how that compares with the FML declarations for this exact model.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct PropertySurvey {
+    pub schema_version: u8,
+    pub manufacturer: String,
+    pub model: String,
+    pub firmware: String,
+    pub usb_mode: Option<u32>,
+    /// Name of the matching entry in the generated camera registry, if the
+    /// PTP identity matches one. `None` means nothing was cross-checked.
+    pub declared_camera: Option<&'static str>,
+    pub operations_supported: Vec<u16>,
+    pub events_supported: Vec<u16>,
+    pub capture_formats: Vec<u16>,
+    pub image_formats: Vec<u16>,
+    pub properties: Vec<PropertyObservation>,
+    pub summary: PropertySurveySummary,
+}
+
+/// Wire shape of a raw property payload, by the PTP datatypes this project
+/// uses. Reported alongside the length so an unexpected width is visible even
+/// when the payload itself is never recorded.
+pub(crate) fn classify_value_shape(bytes: &[u8]) -> &'static str {
+    match bytes {
+        [] => "empty",
+        [_] => "uint8",
+        [_, _] => "uint16",
+        [_, _, _, _] => "uint32",
+        [_, _, _, _, _, _, _, _] => "uint64",
+        [count, rest @ ..]
+            if usize::from(*count) * 2 == rest.len() && rest.last_chunk::<2>() == Some(&[0, 0]) =>
+        {
+            "string"
+        }
+        _ => "bytes",
+    }
+}
+
+/// Whether a raw payload has the wire shape of `data_type`. Used to check a
+/// firmware-derived FML pin against what the camera actually answers.
+pub(crate) fn value_matches_data_type(bytes: &[u8], data_type: u16) -> bool {
+    match data_type {
+        0x0001 | 0x0002 => bytes.len() == 1,
+        0x0003 | 0x0004 => bytes.len() == 2,
+        0x0005 | 0x0006 => bytes.len() == 4,
+        0x0007 | 0x0008 => bytes.len() == 8,
+        0x0009 | 0x000a => bytes.len() == 16,
+        0xffff => classify_value_shape(bytes) == "string",
+        _ => false,
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct RawProfileEnvelope {
     pub declared_field_count: Option<i16>,
@@ -110,7 +197,45 @@ fn encode_hex(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::RawProfileDiscovery;
+    use super::{RawProfileDiscovery, classify_value_shape, value_matches_data_type};
+
+    #[test]
+    fn value_shapes_cover_the_scalars_and_ptp_strings_this_project_reads() {
+        assert_eq!(classify_value_shape(&[]), "empty");
+        assert_eq!(classify_value_shape(&[6]), "uint8");
+        assert_eq!(classify_value_shape(&[6, 0]), "uint16");
+        assert_eq!(classify_value_shape(&[6, 0, 0, 0]), "uint32");
+        assert_eq!(classify_value_shape(&[0; 8]), "uint64");
+        // A three-unit PTP string: length byte, two characters, terminator.
+        assert_eq!(
+            classify_value_shape(&[0x03, b'6', 0, b'5', 0, 0, 0]),
+            "string"
+        );
+        // One unit that is the terminator: a well-formed empty PTP string.
+        // The X-T5 audit saw exactly these bytes from D20B.
+        assert_eq!(classify_value_shape(&[0x01, 0, 0]), "string");
+        assert_eq!(classify_value_shape(&[0x01, 0, 5]), "bytes");
+    }
+
+    #[test]
+    fn a_four_byte_payload_is_reported_as_a_scalar_not_a_string() {
+        // 0x01 would frame a one-unit string, but the terminator is missing,
+        // so the survey must not claim a string shape for a uint32.
+        assert_eq!(classify_value_shape(&[0x01, 0x00, 0x0b, 0x00]), "uint32");
+    }
+
+    #[test]
+    fn declared_datatypes_are_checked_against_the_observed_wire_shape() {
+        assert!(value_matches_data_type(&[0, 0], 0x0004));
+        assert!(value_matches_data_type(&[0, 0], 0x0003));
+        assert!(!value_matches_data_type(&[0, 0], 0x0006));
+        assert!(value_matches_data_type(&[0, 0, 0, 0], 0x0006));
+        assert!(value_matches_data_type(&[0x01, 0, 0], 0xffff));
+        assert!(!value_matches_data_type(&[0, 0], 0xffff));
+        // Array datatypes are never claimed to match: the survey records
+        // shapes, and an array's element count is not verifiable from length.
+        assert!(!value_matches_data_type(&[1, 0, 0, 0, 6, 0], 0x4004));
+    }
 
     #[test]
     fn discovery_preserves_payload_and_reports_only_unambiguous_envelope_fields() {

@@ -110,6 +110,31 @@ mod tests {
     }
 
     #[test]
+    fn the_surface_survey_writes_an_artifact_and_has_no_value_printing() {
+        let parsed = Cli::try_parse_from([
+            "fujicli-dev",
+            "--device",
+            "1.2",
+            "discover",
+            "surface",
+            "surface.json",
+        ]);
+        assert!(parsed.is_ok(), "{parsed:?}");
+
+        let error = Cli::try_parse_from([
+            "fujicli-dev",
+            "--device",
+            "1.2",
+            "discover",
+            "surface",
+            "--print-values",
+            "surface.json",
+        ])
+        .expect_err("the survey never prints payload bytes");
+        assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
+    }
+
+    #[test]
     fn dangerous_commands_are_not_present() {
         let error = Cli::try_parse_from(["fujicli-dev", "--device", "1.2", "dangerous", "restore"])
             .expect_err("no state-changing reverse command is implemented");

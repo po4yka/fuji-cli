@@ -1,6 +1,6 @@
 use anyhow::{Context, anyhow};
 use clap::Subcommand;
-use fujicli::{Camera, generated::cli::SIMULATION_PROP_CODES};
+use fujicli::{Camera, generated::cli::SIMULATION_PROP_CODES, reverse::PropertySurvey};
 use log::debug;
 
 use crate::{
@@ -31,6 +31,12 @@ pub enum DiscoverCommand {
     Backup(BackupCommand),
     /// Capture the exact D185 descriptor and payload without camera mutation
     RenderProfile { output: NewOutput },
+    /// Survey the whole advertised PTP surface and compare it with FML
+    ///
+    /// Reads `GetDeviceInfo`, then the descriptor and value of every property
+    /// the camera advertises. The artifact records shapes and digests, never
+    /// payload bytes, so it is shareable without a privacy review.
+    Surface { output: NewOutput },
 }
 
 #[derive(Debug, Subcommand)]
@@ -165,12 +171,81 @@ fn render_profile(location: Location, output: &NewOutput) -> anyhow::Result<()> 
     output.write_all(&json)
 }
 
+/// One line per advertised property, so a device run is readable without
+/// opening the artifact: what the camera served, and whether the value shape
+/// agrees with the datatype FML pins for this model.
+fn report_surface(survey: &PropertySurvey) {
+    println!(
+        "{} {} firmware {} (USB mode {})",
+        survey.manufacturer,
+        survey.model,
+        survey.firmware,
+        survey
+            .usb_mode
+            .map_or_else(|| "unknown".to_owned(), |mode| format!("0x{mode:x}"))
+    );
+    println!(
+        "Advertised: {} operations, {} events, {} properties, {} image formats",
+        survey.operations_supported.len(),
+        survey.events_supported.len(),
+        survey.summary.advertised,
+        survey.image_formats.len()
+    );
+    for property in &survey.properties {
+        let descriptor = if property.descriptor_available {
+            property.descriptor_data_type.unwrap_or("unknown")
+        } else {
+            "refused"
+        };
+        let value = match (property.value_shape, property.value_length) {
+            (Some(shape), Some(length)) => format!("{shape} ({length} bytes)"),
+            _ => "refused".to_owned(),
+        };
+        let verdict = match (property.declared_data_type, property.declaration_matches) {
+            (Some(declared), Some(true)) => format!(", matches pinned 0x{declared:04X}"),
+            (Some(declared), Some(false)) => {
+                format!(", CONTRADICTS pinned 0x{declared:04X}")
+            }
+            (Some(declared), None) => format!(", pinned 0x{declared:04X} unchecked"),
+            (None, _) => String::new(),
+        };
+        println!(
+            "0x{:04X}: descriptor {descriptor}, value {value}{verdict}",
+            property.code
+        );
+    }
+    println!(
+        "Descriptors served {}/{}, values served {}/{}, FML pins checked {}, contradictions {}",
+        survey.summary.descriptors_read,
+        survey.summary.advertised,
+        survey.summary.values_read,
+        survey.summary.advertised,
+        survey.summary.declared,
+        survey.summary.declaration_mismatches
+    );
+    if survey.declared_camera.is_none() {
+        println!("No registry entry matches this PTP identity; nothing was cross-checked");
+    }
+}
+
+fn surface(location: Location, output: &NewOutput) -> anyhow::Result<()> {
+    let mut camera = open(location)?;
+    let survey = camera
+        .reverse_property_survey()
+        .context("surveying the advertised PTP property surface")?;
+    report_surface(&survey);
+    let mut json = serde_json::to_vec_pretty(&survey)?;
+    json.push(b'\n');
+    output.write_all(&json)
+}
+
 pub fn handle(command: DiscoverCommand, location: Location) -> anyhow::Result<()> {
     match command {
         DiscoverCommand::Info { print_values } => info(location, print_values),
         DiscoverCommand::Simulation { print_values } => simulation(location, print_values),
         DiscoverCommand::Backup(BackupCommand::Export { output }) => backup(location, &output),
         DiscoverCommand::RenderProfile { output } => render_profile(location, &output),
+        DiscoverCommand::Surface { output } => surface(location, &output),
     }
 }
 

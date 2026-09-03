@@ -508,6 +508,90 @@ impl Camera {
         )
     }
 
+    /// Reads the camera's entire advertised PTP surface without changing a
+    /// single byte of its state: `GetDeviceInfo`, then `GetDevicePropDesc` and
+    /// `GetDevicePropValue` for every property the device advertises. Failures
+    /// are recorded per property instead of aborting the survey, because a
+    /// camera refusing a descriptor or a value is itself the finding (the X-T5
+    /// on 4.31 refuses every descriptor in USB mode 0x6).
+    ///
+    /// Payload bytes never enter the result; see
+    /// [`crate::reverse::PropertyObservation`].
+    #[doc(hidden)]
+    #[cfg(feature = "reverse-tools")]
+    pub fn reverse_property_survey(&mut self) -> anyhow::Result<crate::reverse::PropertySurvey> {
+        const USB_MODE_PROPERTY: u16 = 0xD16E;
+
+        let info = self.ptp.get_info()?;
+        let usb_mode = self
+            .ptp
+            .get_prop::<u16>(USB_MODE_PROPERTY)
+            .ok()
+            .map(u32::from);
+        let declared = declared_property_data_types(&info.manufacturer, &info.model);
+        let mut summary = crate::reverse::PropertySurveySummary {
+            advertised: info.device_properties_supported.len(),
+            ..Default::default()
+        };
+        let mut properties = Vec::with_capacity(info.device_properties_supported.len());
+
+        for &code in &info.device_properties_supported {
+            let descriptor = self
+                .ptp
+                .get_prop_desc_raw(code)
+                .ok()
+                .and_then(|bytes| ptp::DevicePropDesc::decode(&bytes).ok());
+            if descriptor.is_some() {
+                summary.descriptors_read += 1;
+            }
+            let value = self.ptp.get_prop_raw(code).ok();
+            if value.is_some() {
+                summary.values_read += 1;
+            }
+            let declared_data_type = declared.as_ref().and_then(|map| map.get(&code).copied());
+            if declared_data_type.is_some() {
+                summary.declared += 1;
+            }
+            let declaration_matches = declared_data_type.and_then(|data_type| {
+                value
+                    .as_ref()
+                    .map(|bytes| crate::reverse::value_matches_data_type(bytes, data_type))
+            });
+            if declaration_matches == Some(false) {
+                summary.declaration_mismatches += 1;
+            }
+
+            properties.push(crate::reverse::PropertyObservation {
+                code,
+                descriptor_available: descriptor.is_some(),
+                descriptor_data_type: descriptor.as_ref().map(|desc| desc.data_type.name()),
+                descriptor_writable: descriptor.as_ref().map(|desc| desc.writable),
+                descriptor_form: descriptor.as_ref().map(|desc| desc.form.name()),
+                value_available: value.is_some(),
+                value_length: value.as_ref().map(Vec::len),
+                value_shape: value.as_deref().map(crate::reverse::classify_value_shape),
+                value_sha256: value.as_deref().map(crate::features::backup::sha256_hex),
+                declared_data_type,
+                declaration_matches,
+            });
+        }
+
+        Ok(crate::reverse::PropertySurvey {
+            schema_version: 1,
+            declared_camera: declared_camera_name(&info.manufacturer, &info.model),
+            manufacturer: info.manufacturer,
+            model: info.model,
+            firmware: info.device_version,
+            usb_mode,
+            operations_supported: info.operations_supported,
+            events_supported: info.events_supported,
+            capture_formats: info.capture_formats,
+            image_formats: info.image_formats,
+            properties,
+            summary,
+        })
+    }
+
     #[doc(hidden)]
     #[cfg(feature = "reverse-tools")]
     pub fn reverse_export_backup(&mut self) -> anyhow::Result<Vec<u8>> {
@@ -587,6 +671,55 @@ fn claim_failure(error: rusb::Error, interface: u8, macos: bool) -> anyhow::Erro
 }
 
 type CameraFactory = fn() -> Box<dyn CameraBase<Context = GlobalContext>>;
+
+/// Registry entry whose exact PTP identity matches what the device reports.
+#[cfg(feature = "reverse-tools")]
+fn declared_camera(manufacturer: &str, model: &str) -> Option<&'static SupportedCamera> {
+    SUPPORTED.iter().find(|camera| {
+        camera.ptp_identity.is_some_and(|identity| {
+            identity.manufacturer == manufacturer && identity.model == model
+        })
+    })
+}
+
+#[cfg(feature = "reverse-tools")]
+fn declared_camera_name(manufacturer: &str, model: &str) -> Option<&'static str> {
+    declared_camera(manufacturer, model).map(|camera| camera.name)
+}
+
+/// PTP datatypes the camera's preflight profiles pin, keyed by property code.
+/// A code declared with different datatypes by different profiles is left out:
+/// the survey reports what FML asserts unambiguously, nothing more.
+#[cfg(feature = "reverse-tools")]
+fn declared_property_data_types(
+    manufacturer: &str,
+    model: &str,
+) -> Option<std::collections::BTreeMap<u16, u16>> {
+    use generated::cameras::CameraPreflightDataType;
+
+    let camera = declared_camera(manufacturer, model)?;
+    use std::collections::{BTreeMap, BTreeSet};
+
+    let mut declared: BTreeMap<u16, u16> = BTreeMap::new();
+    let mut ambiguous: BTreeSet<u16> = BTreeSet::new();
+    for profile in camera.preflight_profiles {
+        for property in profile.required_properties {
+            let CameraPreflightDataType::Exact(data_type) = property.data_type else {
+                continue;
+            };
+            match declared.insert(property.code, data_type) {
+                Some(previous) if previous != data_type => {
+                    ambiguous.insert(property.code);
+                }
+                _ => {}
+            }
+        }
+    }
+    for code in ambiguous {
+        declared.remove(&code);
+    }
+    Some(declared)
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct SupportedCamera {
