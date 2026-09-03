@@ -297,14 +297,13 @@ fn handle_export(
     force: bool,
 ) -> anyhow::Result<()> {
     let DeviceOptions { device } = device;
-    let mut output_transaction = output.begin_write(force)?;
+    let output_transaction = output.begin_write(force)?;
 
     let mut camera = usb::get_native_camera(device, None)?;
 
     let backup = camera.export_backup(BackupPurpose::Portable)?;
     let artifact_sha256 = backup.fingerprint();
-    std::io::Write::write_all(&mut output_transaction, backup.as_bytes())?;
-    output_transaction.commit()?;
+    output_transaction.write_artifact(backup.as_bytes())?;
     if !output.is_stdout() {
         if json {
             let result = serde_json::json!({ "artifactSha256": artifact_sha256 });

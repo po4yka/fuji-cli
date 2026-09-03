@@ -243,15 +243,14 @@ fn handle_export(
     output: Output,
     force: bool,
 ) -> anyhow::Result<()> {
-    let mut output_transaction = output.begin_write(force)?;
+    let output_transaction = output.begin_write(force)?;
 
     let mut camera = usb::get_native_camera(device.device, None)?;
     let mut session = camera.preflight_simulation_access()?;
     let simulation = tag_selector_state_unknown(session.get_simulation(slot))?;
     drop(session);
     let simulation = camera.serialize_simulation(&*simulation)?;
-    std::io::Write::write_all(&mut output_transaction, &simulation)?;
-    output_transaction.commit()?;
+    output_transaction.write_artifact(&simulation)?;
 
     Ok(())
 }

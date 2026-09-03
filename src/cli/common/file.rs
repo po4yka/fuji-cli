@@ -153,9 +153,39 @@ pub enum OutputTransaction {
     Stdout(io::Stdout),
 }
 
+/// Marker attached to an error chain when a requested artifact could not be
+/// delivered in full. `main` never treats such a failure as a successful early
+/// termination, even when the cause is a closed stdout pipe: a truncated
+/// backup or simulation file is not a deliverable, and the artifact stream
+/// carries no fingerprint that would let a consumer notice on its own.
+#[derive(Debug)]
+pub struct ArtifactOutputIncomplete;
+
+impl fmt::Display for ArtifactOutputIncomplete {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "the requested artifact was not written in full")
+    }
+}
+
+impl std::error::Error for ArtifactOutputIncomplete {}
+
+fn write_artifact_to(writer: &mut dyn io::Write, bytes: &[u8]) -> anyhow::Result<()> {
+    writer
+        .write_all(bytes)
+        .and_then(|()| writer.flush())
+        .context(ArtifactOutputIncomplete)
+}
+
 impl OutputTransaction {
     pub(crate) const fn is_stdout(&self) -> bool {
         matches!(self, Self::Stdout(_))
+    }
+
+    /// Writes a complete artifact and commits it. Any failure, including a
+    /// consumer closing stdout early, carries [`ArtifactOutputIncomplete`].
+    pub(crate) fn write_artifact(mut self, bytes: &[u8]) -> anyhow::Result<()> {
+        write_artifact_to(&mut self, bytes)?;
+        self.commit().context(ArtifactOutputIncomplete)
     }
 
     pub(crate) fn commit(self) -> anyhow::Result<()> {
@@ -334,6 +364,22 @@ mod tests {
         fn flush(&mut self) -> io::Result<()> {
             Ok(())
         }
+    }
+
+    #[test]
+    fn artifact_output_to_a_closed_pipe_is_marked_incomplete() {
+        let error = super::write_artifact_to(&mut BrokenWriter, b"backup artifact")
+            .expect_err("a truncated artifact must be reported");
+
+        assert!(
+            error.is::<super::ArtifactOutputIncomplete>(),
+            "the marker must be on the chain so main does not treat it as success: {error:?}"
+        );
+        assert_eq!(
+            error.downcast_ref::<io::Error>().map(io::Error::kind),
+            Some(io::ErrorKind::BrokenPipe),
+            "the io cause must stay diagnosable"
+        );
     }
 
     #[test]

@@ -215,7 +215,9 @@ later interrupt in the same process exits 3 instead.",
 stderr. Commands that support \fB\-\-json\fR write one JSON document followed by
 a newline. \fBfujicli backup export \-\fR writes a binary backup artifact to
 stdout and does not add an artifact fingerprint to that stream. A consumer
-closing stdout early is treated as successful termination.",
+closing stdout early is treated as successful termination for textual output
+only; an artifact written to \fB\-\fR that cannot be delivered in full is an
+error, because a truncated backup or simulation file is not a deliverable.",
         },
         ManualSection {
             heading: "ENVIRONMENT",

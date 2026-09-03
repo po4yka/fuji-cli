@@ -74,7 +74,9 @@ Requested data is written to stdout. Diagnostics and logs are written to
 stderr. Commands that support \fB\-\-json\fR write one JSON document followed by
 a newline. \fBfujicli backup export \-\fR writes a binary backup artifact to
 stdout and does not add an artifact fingerprint to that stream. A consumer
-closing stdout early is treated as successful termination.
+closing stdout early is treated as successful termination for textual output
+only; an artifact written to \fB\-\fR that cannot be delivered in full is an
+error, because a truncated backup or simulation file is not a deliverable.
 .SH ENVIRONMENT
 No application-specific environment variables configure fujicli at runtime.
 Use command-line options such as \fB\-v\fR to control supported behavior.

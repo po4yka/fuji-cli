@@ -8,7 +8,10 @@
 
 use std::process::ExitCode;
 
-use cli::common::camera_state::{CAMERA_STATE_UNKNOWN_EXIT_CODE, CameraStateUnknown};
+use cli::common::{
+    camera_state::{CAMERA_STATE_UNKNOWN_EXIT_CODE, CameraStateUnknown},
+    file::ArtifactOutputIncomplete,
+};
 use fujicli::interrupt::{INTERRUPTED_EXIT_CODE, Interrupted};
 
 mod cli;
@@ -22,12 +25,16 @@ fn run() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// A consumer closing stdout early is a successful termination for textual
+/// output only. An artifact that was requested in full and could not be
+/// delivered in full carries [`ArtifactOutputIncomplete`] and stays a failure.
 fn handle_result(result: anyhow::Result<()>) -> anyhow::Result<()> {
     match result {
         Err(error)
-            if error
-                .downcast_ref::<std::io::Error>()
-                .is_some_and(|error| error.kind() == std::io::ErrorKind::BrokenPipe) =>
+            if !error.is::<ArtifactOutputIncomplete>()
+                && error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|error| error.kind() == std::io::ErrorKind::BrokenPipe) =>
         {
             Ok(())
         }
@@ -79,6 +86,16 @@ mod tests {
         ));
 
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn truncated_artifact_on_a_broken_pipe_stays_a_failure() {
+        let error = anyhow::Error::new(io::Error::new(io::ErrorKind::BrokenPipe, "closed"))
+            .context(super::ArtifactOutputIncomplete);
+
+        let error = handle_result(Err(error)).expect_err("a truncated artifact is not a success");
+
+        assert_eq!(error_exit_code(&error), 1);
     }
 
     #[test]

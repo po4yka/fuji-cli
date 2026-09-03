@@ -24,8 +24,14 @@ The `source` object has `cameraName`, `firmware`, `manufacturer`, `model`,
 `productId`, `serialSha256`, and `vendorId`.
 
 `productId` and `vendorId` are numeric. A consumer that closes stdout after
-receiving enough data is treated as a successful early termination, not an
-operational failure.
+receiving enough textual output is treated as a successful early termination,
+not an operational failure.
+
+That rule does not extend to artifacts. `backup export -` and
+`simulation export -` must deliver the whole file: if the consumer closes
+stdout before the artifact is complete, the command fails with exit status
+`1`, because a truncated backup or simulation file carries no fingerprint that
+would let anyone notice later.
 
 ## Logging and Privacy
 
