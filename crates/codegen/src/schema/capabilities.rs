@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::ast::{
     Camera, CameraCapabilities, CapabilitySet, CapabilityWireValue, Field, FujiOption,
     PreflightOperation, PreflightStatus, RawConversionDescriptor, RawConversionEvidenceStatus,
-    RawConversionLayout, SpecKind,
+    RawConversionLayout, Render, SpecKind,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -19,8 +19,11 @@ pub struct ResolvedOptionCapability {
     pub wire_values: BTreeMap<String, Vec<i32>>,
 }
 
+/// `render` is the camera's render feature declaration, which every RAW
+/// conversion descriptor is cross-checked against.
 pub fn resolve_firmware_capabilities(
     capabilities: &CameraCapabilities,
+    render: Option<&Render>,
 ) -> anyhow::Result<Vec<FirmwareCapabilityProfile>> {
     let mut base = BTreeMap::new();
     merge_capability_set(&mut base, &capabilities.generation);
@@ -40,7 +43,7 @@ pub fn resolve_firmware_capabilities(
         })
         .collect::<Vec<_>>();
     for profile in &profiles {
-        validate_profile(profile)?;
+        validate_profile(profile, render)?;
     }
     Ok(profiles)
 }
@@ -65,7 +68,12 @@ pub fn validate_verified_profile_coverage(
                 camera.id,
             )
         })?;
-        let profiles = resolve_firmware_capabilities(capabilities)?;
+        let render = camera
+            .spec
+            .features
+            .as_ref()
+            .and_then(|features| features.render.as_ref());
+        let profiles = resolve_firmware_capabilities(capabilities, render)?;
 
         for preflight in verified {
             let profile = profiles
@@ -160,9 +168,12 @@ fn required_enum_options(camera: &Camera, operation: PreflightOperation) -> BTre
     required
 }
 
-fn validate_profile(profile: &FirmwareCapabilityProfile) -> anyhow::Result<()> {
+fn validate_profile(
+    profile: &FirmwareCapabilityProfile,
+    render: Option<&Render>,
+) -> anyhow::Result<()> {
     if let Some(descriptor) = &profile.raw_conversion {
-        validate_raw_conversion_descriptor(&profile.firmware, descriptor)?;
+        validate_raw_conversion_descriptor(&profile.firmware, descriptor, render)?;
     }
     for (option, capability) in &profile.options {
         let mut wire_owners = BTreeMap::<i32, &str>::new();
@@ -194,6 +205,7 @@ fn validate_profile(profile: &FirmwareCapabilityProfile) -> anyhow::Result<()> {
 fn validate_raw_conversion_descriptor(
     firmware: &str,
     descriptor: &RawConversionDescriptor,
+    render: Option<&Render>,
 ) -> anyhow::Result<()> {
     anyhow::ensure!(
         !descriptor.id.trim().is_empty(),
@@ -208,6 +220,30 @@ fn validate_raw_conversion_descriptor(
     if let Some(write) = &descriptor.write {
         validate_raw_conversion_layout(firmware, &descriptor.id, "write", write)?;
     }
+    let render = render.ok_or_else(|| {
+        anyhow::anyhow!(
+            "firmware {firmware} RAW conversion descriptor {} needs the camera's render feature declaration to check against",
+            descriptor.id,
+        )
+    })?;
+    validate_raw_conversion_layout_against_render(
+        firmware,
+        &descriptor.id,
+        "read",
+        &descriptor.read,
+        render,
+        |field| !field.skip_read(),
+    )?;
+    if let Some(write) = &descriptor.write {
+        validate_raw_conversion_layout_against_render(
+            firmware,
+            &descriptor.id,
+            "write",
+            write,
+            render,
+            |field| !field.skip_write(),
+        )?;
+    }
     if descriptor.evidence.status == RawConversionEvidenceStatus::WriteVerified {
         anyhow::bail!(
             "firmware {firmware} RAW conversion descriptor {} requests write_verified, but RAW writes remain unavailable until evidence manifests, camera state, and lossless wire preservation are machine-checked",
@@ -217,6 +253,59 @@ fn validate_raw_conversion_descriptor(
     Ok(())
 }
 
+/// Cross-checks a capability layout against the camera's render feature, the
+/// other place the same wire facts are declared. The generated codec derives
+/// its profile code, header padding, and slot order from the render feature,
+/// while preflight validates live bytes against this descriptor; if the two
+/// disagree the read fingerprint can never pass. The wire field count
+/// (`declared_field_count`, PTP `n_props`) counts every render slot in both
+/// directions; the per-direction field list omits the slots that are
+/// `skip_read` or `skip_write`.
+fn validate_raw_conversion_layout_against_render(
+    firmware: &str,
+    descriptor_id: &str,
+    direction: &str,
+    layout: &RawConversionLayout,
+    render: &Render,
+    in_direction: impl Fn(&Field) -> bool,
+) -> anyhow::Result<()> {
+    let render_profile_code = format!("{:x}", render.profile_code);
+    anyhow::ensure!(
+        layout.profile_code == render_profile_code,
+        "firmware {firmware} RAW conversion descriptor {descriptor_id} {direction} profile code {} differs from the render feature's {render_profile_code}",
+        layout.profile_code,
+    );
+    anyhow::ensure!(
+        layout.header_padding == render.header_padding,
+        "firmware {firmware} RAW conversion descriptor {descriptor_id} {direction} header padding {:#x} differs from the render feature's {:#x}",
+        layout.header_padding,
+        render.header_padding,
+    );
+    anyhow::ensure!(
+        usize::from(layout.declared_field_count) == render.fields.len(),
+        "firmware {firmware} RAW conversion descriptor {descriptor_id} {direction} declares {} wire fields, but the render feature has {} slots",
+        layout.declared_field_count,
+        render.fields.len(),
+    );
+    let expected_fields = render
+        .fields
+        .iter()
+        .filter(|field| in_direction(field))
+        .map(|field| field.id().to_owned())
+        .collect::<Vec<_>>();
+    anyhow::ensure!(
+        layout.fields == expected_fields,
+        "firmware {firmware} RAW conversion descriptor {descriptor_id} {direction} field list {:?} differs from the render feature's {direction} slots {expected_fields:?}",
+        layout.fields,
+    );
+    Ok(())
+}
+
+/// Self-consistency only: every number here comes from the same FML layout,
+/// so this proves the declaration adds up, not that the camera agrees.
+/// Device agreement is the evidence status, and
+/// [`validate_raw_conversion_layout_against_render`] ties the layout to the
+/// render feature the generated codec is built from.
 fn validate_raw_conversion_layout(
     firmware: &str,
     descriptor_id: &str,
@@ -309,7 +398,7 @@ mod tests {
         )
         .unwrap();
 
-        let profiles = resolve_firmware_capabilities(&capabilities).unwrap();
+        let profiles = resolve_firmware_capabilities(&capabilities, None).unwrap();
 
         assert_eq!(
             profiles,
@@ -361,7 +450,7 @@ mod tests {
         )
         .unwrap();
 
-        let error = resolve_firmware_capabilities(&capabilities)
+        let error = resolve_firmware_capabilities(&capabilities, None)
             .expect_err("ambiguous firmware wire values must fail code generation");
 
         assert!(error.to_string().contains("wire value 1"));
@@ -382,7 +471,7 @@ mod tests {
         )
         .unwrap();
 
-        let error = resolve_firmware_capabilities(&capabilities)
+        let error = resolve_firmware_capabilities(&capabilities, None)
             .expect_err("every allowed logical value needs an exact firmware wire encoding");
 
         assert!(error.to_string().contains("provia"));
@@ -549,9 +638,55 @@ mod tests {
         )
         .unwrap();
 
-        let error = validate_raw_conversion_descriptor("4.31", &descriptor)
+        let render: Render = serde_json::from_str(
+            r#"{ "profile_code": 1, "header_padding": 2, "fields": [{ "id": "opaque" }] }"#,
+        )
+        .unwrap();
+
+        let error = validate_raw_conversion_descriptor("4.31", &descriptor, Some(&render))
             .expect_err("a manifest path alone must never authorize RAW writes");
 
         assert!(error.to_string().contains("machine-checked"));
+    }
+
+    #[test]
+    fn raw_descriptor_must_agree_with_the_render_feature_it_is_checked_against() {
+        let descriptor: RawConversionDescriptor = serde_json::from_str(
+            r#"{
+                "id": "layout",
+                "evidence": { "status": "unverified", "manifests": [] },
+                "binding": { "usb_modes": [6], "camera_state": "still" },
+                "read": {
+                    "profile_code": "ff179502", "header_padding": 494,
+                    "declared_field_count": 2, "total_length": 517,
+                    "fields": ["head_0"]
+                },
+                "write": {
+                    "profile_code": "ff179502", "header_padding": 494,
+                    "declared_field_count": 2, "total_length": 521,
+                    "fields": ["head_0", "tail_0"]
+                }
+            }"#,
+        )
+        .unwrap();
+        let render = |profile_code: u32| -> Render {
+            serde_json::from_str(&format!(
+                r#"{{ "profile_code": {profile_code}, "header_padding": 494,
+                     "fields": [{{ "id": "head_0" }}, {{ "id": "tail_0", "skip_read": true }}] }}"#
+            ))
+            .unwrap()
+        };
+
+        validate_raw_conversion_descriptor("4.31", &descriptor, Some(&render(0xff17_9502)))
+            .expect("a descriptor that mirrors the render feature is consistent");
+
+        let error =
+            validate_raw_conversion_descriptor("4.31", &descriptor, Some(&render(0xff12_9504)))
+                .expect_err("the descriptor's profile code must match the render feature's");
+        assert!(error.to_string().contains("ff129504"), "{error}");
+
+        let error = validate_raw_conversion_descriptor("4.31", &descriptor, None)
+            .expect_err("a descriptor without a render feature has nothing to check against");
+        assert!(error.to_string().contains("render feature"), "{error}");
     }
 }

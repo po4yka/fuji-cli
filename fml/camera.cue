@@ -503,6 +503,16 @@ cameras: {
 						}]
 						raw_conversion: {
 							id: "x_t5-4.31-raw-layout-unverified"
+							// Evidence state (2026-09-03): the 8-character profile
+							// code plus 0x1ee of padding places the first value at
+							// wire offset 0x201, which agrees with libfuji's captured
+							// D185 construction and with the verified 629-byte write
+							// length. libfuji's X-T5 captures embed the code
+							// "FF129504" (firmware unknown) and the live D184 pair on
+							// 4.31 reads "F179502,FA179502", so the code value itself
+							// is unconfirmed until a D185 capture with a RAF loaded.
+							// Codegen cross-checks this layout against the render
+							// feature above; it cannot check it against the camera.
 							evidence: {
 								status: "unverified"
 								manifests: []

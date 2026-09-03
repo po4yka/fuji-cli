@@ -135,8 +135,13 @@ pub fn generate(cameras: &BTreeMap<String, Camera>) -> anyhow::Result<TokenStrea
                 }
             }
         });
+        let render = camera
+            .spec
+            .features
+            .as_ref()
+            .and_then(|features| features.render.as_ref());
         let firmware_capability_profiles = match camera.spec.capabilities.as_ref() {
-            Some(capabilities) => resolve_firmware_capabilities(capabilities)?,
+            Some(capabilities) => resolve_firmware_capabilities(capabilities, render)?,
             None => Vec::new(),
         }
         .into_iter()
