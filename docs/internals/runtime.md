@@ -94,6 +94,15 @@ transport or in the signal handler between transactions, is reported as an
 unknown camera state (exit status 3), so the verification window after a
 restore cannot be mistaken for a clean interruption.
 
+Simulation writes run inside `with_restored_simulation_selector`, the write
+counterpart of the read scope below: the slot selector is snapshotted before
+the target slot is selected and restored and verified after the transaction,
+whatever its outcome, so `simulation set` and `simulation import` leave the
+camera on the slot it had before. A restore that fails after a successful
+write is reported as a `SelectorRestore`-phase `SimulationTransactionError`
+with `CameraStateUnknown`; a restore that fails after a failed write
+escalates that error's state to unknown and attaches the restore error.
+
 The temporary-selector scope (`with_temporary_simulation_selector`) is itself
 a critical region. `simulation list`, `get`, and `export` write the `0xD18C`
 slot selector before every property read, so the scope holds a

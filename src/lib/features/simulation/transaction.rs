@@ -38,6 +38,9 @@ pub enum SimulationTransactionPhase {
     ApplyReadback,
     RollbackWrite,
     RollbackReadback,
+    /// The write itself finished (or was rolled back), but restoring the
+    /// custom-setting slot selector the camera had before the write failed.
+    SelectorRestore,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,6 +58,7 @@ pub struct SimulationTransactionError {
     rollback_readback_error: Option<anyhow::Error>,
     journal: Vec<SimulationWriteReceipt>,
     rollback_journal: Vec<SimulationWriteReceipt>,
+    selector_restore_error: Option<anyhow::Error>,
 }
 
 impl SimulationTransactionError {
@@ -71,6 +75,7 @@ impl SimulationTransactionError {
             rollback_readback_error: None,
             journal: Vec::new(),
             rollback_journal: Vec::new(),
+            selector_restore_error: None,
         }
     }
 
@@ -101,6 +106,35 @@ impl SimulationTransactionError {
     pub fn rollback_journal(&self) -> &[SimulationWriteReceipt] {
         &self.rollback_journal
     }
+
+    /// The failure that left the camera on a slot other than the one it had
+    /// before the write, when the selector could not be restored.
+    pub fn selector_restore_error(&self) -> Option<&anyhow::Error> {
+        self.selector_restore_error.as_ref()
+    }
+
+    /// The write succeeded, but the selector restore afterwards did not: the
+    /// recipe is applied and verified, yet the camera is on an unknown slot.
+    fn selector_restore_failed(cause: anyhow::Error) -> Self {
+        Self {
+            state: SimulationFailureState::CameraStateUnknown,
+            phase: SimulationTransactionPhase::SelectorRestore,
+            cause,
+            rollback_error: None,
+            rollback_readback_error: None,
+            journal: Vec::new(),
+            rollback_journal: Vec::new(),
+            selector_restore_error: None,
+        }
+    }
+
+    /// A failed write whose selector restore also failed: whatever the
+    /// transaction outcome was, the camera's slot is now unknown too.
+    fn with_selector_restore_failure(mut self, error: anyhow::Error) -> Self {
+        self.state = SimulationFailureState::CameraStateUnknown;
+        self.selector_restore_error = Some(error);
+        self
+    }
 }
 
 impl fmt::Display for SimulationTransactionError {
@@ -115,6 +149,12 @@ impl fmt::Display for SimulationTransactionError {
         }
         if let Some(readback_error) = &self.rollback_readback_error {
             write!(formatter, "; rollback readback error: {readback_error}")?;
+        }
+        if let Some(restore_error) = &self.selector_restore_error {
+            write!(
+                formatter,
+                "; the previously selected slot could not be restored: {restore_error}"
+            )?;
         }
         Ok(())
     }
@@ -382,6 +422,50 @@ where
     interrupts.after_transaction(result)
 }
 
+/// Runs a simulation write with the camera's slot selector restored
+/// afterwards, so `simulation set` and `simulation import` leave the camera on
+/// the slot it had before, exactly like the read paths. The whole scope is an
+/// interrupt critical region. A failed restore after a successful write, or
+/// after a failed one, is reported as an unknown camera state carrying the
+/// restore error; an unhealthy session skips the restore entirely.
+pub(crate) fn with_restored_simulation_selector<T>(
+    io: &mut AuthorizedSimulationIo<'_>,
+    property_code: u16,
+    operation: impl FnOnce(&mut AuthorizedSimulationIo<'_>) -> Result<T, SimulationTransactionError>,
+) -> Result<T, SimulationTransactionError> {
+    with_restored_simulation_selector_io(&INTERRUPTS, io, property_code, operation)
+}
+
+fn with_restored_simulation_selector_io<IO, T>(
+    interrupts: &InterruptLatch,
+    io: &mut IO,
+    property_code: u16,
+    operation: impl FnOnce(&mut IO) -> Result<T, SimulationTransactionError>,
+) -> Result<T, SimulationTransactionError>
+where
+    IO: SimulationSelectorIo,
+{
+    let region = interrupts.enter_critical_region();
+    let original = io
+        .get_selector_raw(property_code)
+        .context("snapshotting the original simulation slot selector")
+        .map_err(|cause| SimulationTransactionError::preparation(io.is_healthy(), cause))?;
+    let result = operation(io);
+    let restore = if io.is_healthy() {
+        restore_selector(io, property_code, &original)
+    } else {
+        Err(anyhow::anyhow!(
+            "PTP session became unhealthy during the simulation write; the slot selector was not restored"
+        ))
+    };
+    drop(region);
+    match (result, restore) {
+        (result, Ok(())) => result,
+        (Ok(_), Err(restore)) => Err(SimulationTransactionError::selector_restore_failed(restore)),
+        (Err(error), Err(restore)) => Err(error.with_selector_restore_failure(restore)),
+    }
+}
+
 fn restore_selector_after<IO, T>(
     io: &mut IO,
     property_code: u16,
@@ -570,6 +654,7 @@ where
                 rollback_readback_error: None,
                 journal: Vec::new(),
                 rollback_journal: Vec::new(),
+                selector_restore_error: None,
             }),
             Ok(_) => Err(SimulationTransactionError {
                 state: SimulationFailureState::CameraStateUnknown,
@@ -579,6 +664,7 @@ where
                 rollback_readback_error: None,
                 journal: Vec::new(),
                 rollback_journal: Vec::new(),
+                selector_restore_error: None,
             }),
             Err(cause) => Err(SimulationTransactionError {
                 state: SimulationFailureState::CameraStateUnknown,
@@ -588,6 +674,7 @@ where
                 rollback_readback_error: None,
                 journal: Vec::new(),
                 rollback_journal: Vec::new(),
+                selector_restore_error: None,
             }),
         };
     }
@@ -665,6 +752,7 @@ where
             rollback_readback_error: None,
             journal: receipts,
             rollback_journal: Vec::new(),
+            selector_restore_error: None,
         };
     }
 
@@ -678,6 +766,7 @@ where
                 rollback_readback_error: None,
                 journal: receipts,
                 rollback_journal: Vec::new(),
+                selector_restore_error: None,
             },
             Ok(_) => SimulationTransactionError {
                 state: SimulationFailureState::CameraStateUnknown,
@@ -689,6 +778,7 @@ where
                 )),
                 journal: receipts,
                 rollback_journal: Vec::new(),
+                selector_restore_error: None,
             },
             Err(error) => SimulationTransactionError {
                 state: SimulationFailureState::CameraStateUnknown,
@@ -698,6 +788,7 @@ where
                 rollback_readback_error: Some(error),
                 journal: receipts,
                 rollback_journal: Vec::new(),
+                selector_restore_error: None,
             },
         };
     }
@@ -752,6 +843,7 @@ where
             rollback_readback_error,
             journal: receipts,
             rollback_journal,
+            selector_restore_error: None,
         };
     }
 
@@ -770,6 +862,7 @@ where
                 rollback_readback_error,
                 journal: receipts,
                 rollback_journal,
+                selector_restore_error: None,
             }
         }
         Ok(_) => {
@@ -784,6 +877,7 @@ where
                 rollback_readback_error,
                 journal: receipts,
                 rollback_journal,
+                selector_restore_error: None,
             }
         }
         Err(error) => SimulationTransactionError {
@@ -794,6 +888,7 @@ where
             rollback_readback_error: rollback_readback_error.or(Some(error)),
             journal: receipts,
             rollback_journal,
+            selector_restore_error: None,
         },
     }
 }
@@ -816,11 +911,12 @@ mod tests {
     use crate::ptp::codec;
 
     use super::{
-        SelectedSimulationIo, SimulationPropertyChange, SimulationPropertyIo,
-        SimulationPropertyWriteError, SimulationSelectorIo, SimulationTransactionProfile,
+        SelectedSimulationIo, SimulationFailureState, SimulationPropertyChange,
+        SimulationPropertyIo, SimulationPropertyWriteError, SimulationSelectorIo,
+        SimulationTransactionError, SimulationTransactionPhase, SimulationTransactionProfile,
         SimulationTransactionSuccess, TemporarySimulationSelectorError,
         TemporarySimulationSelectorState, execute_simulation_transaction,
-        with_temporary_simulation_selector_io,
+        with_restored_simulation_selector_io, with_temporary_simulation_selector_io,
     };
 
     #[derive(Clone, Copy, PartialEq, BinRead, BinWrite)]
@@ -1547,6 +1643,100 @@ mod tests {
             "the original selector must be restored before the interrupt is honoured"
         );
         assert_eq!(io.writes.last(), Some(&0xd000));
+    }
+
+    #[test]
+    fn restored_selector_scope_puts_the_camera_back_after_a_successful_write() {
+        use crate::interrupt::InterruptLatch;
+
+        let profile = TestProfile {
+            first: Some(1),
+            second: Some(2),
+            third: Some(5),
+        };
+        let latch = InterruptLatch::new();
+        let mut io = FakeSimulationPropertyIo::with_profile(&profile);
+        let original = codec::encode(&9_u16).expect("test selector");
+        io.properties.insert(0xd000, original.clone());
+
+        let outcome = with_restored_simulation_selector_io(&latch, &mut io, 0xd000, |io| {
+            assert!(latch.is_deferring(), "a write scope is a critical region");
+            let mut selected = SelectedSimulationIo::new(io, TestSelector(3));
+            selected.set_prop(0xd001, &7_u16).map_err(|error| {
+                SimulationTransactionError::preparation(true, error.into_cause())
+            })?;
+            Ok(SimulationTransactionSuccess::AppliedAndVerified)
+        })
+        .expect("the write must succeed and the selector must be restored");
+
+        assert_eq!(outcome, SimulationTransactionSuccess::AppliedAndVerified);
+        assert!(!latch.is_deferring());
+        assert_eq!(io.properties.get(&0xd000), Some(&original));
+        assert_eq!(io.writes, [0xd000, 0xd001, 0xd000]);
+    }
+
+    #[test]
+    fn restored_selector_scope_keeps_the_transaction_outcome_when_restore_succeeds() {
+        use crate::interrupt::InterruptLatch;
+
+        let profile = TestProfile {
+            first: Some(1),
+            second: Some(2),
+            third: Some(5),
+        };
+        let mut io = FakeSimulationPropertyIo::with_profile(&profile);
+        let original = codec::encode(&9_u16).expect("test selector");
+        io.properties.insert(0xd000, original.clone());
+
+        let error = with_restored_simulation_selector_io::<_, ()>(
+            &InterruptLatch::new(),
+            &mut io,
+            0xd000,
+            |io| {
+                let mut selected = SelectedSimulationIo::new(io, TestSelector(3));
+                let _: u16 = selected
+                    .get_prop(0xd001)
+                    .map_err(|error| SimulationTransactionError::preparation(true, error))?;
+                Err(SimulationTransactionError::preparation(
+                    true,
+                    anyhow::anyhow!("rejected before any write"),
+                ))
+            },
+        )
+        .expect_err("the operation failure must be returned");
+
+        assert_eq!(error.state(), SimulationFailureState::RejectedWithoutChange);
+        assert!(error.selector_restore_error().is_none());
+        assert_eq!(io.properties.get(&0xd000), Some(&original));
+    }
+
+    #[test]
+    fn failed_selector_restore_after_a_write_is_an_unknown_camera_state() {
+        use crate::interrupt::InterruptLatch;
+
+        let profile = TestProfile {
+            first: Some(1),
+            second: Some(2),
+            third: Some(5),
+        };
+        // The selector snapshot read succeeds, the target slot is selected,
+        // then the restore write of the original selector is rejected.
+        let mut io = FakeSimulationPropertyIo::with_profile(&profile).reject_write(0xd000);
+        io.properties
+            .insert(0xd000, codec::encode(&9_u16).expect("test selector"));
+
+        let error =
+            with_restored_simulation_selector_io(&InterruptLatch::new(), &mut io, 0xd000, |_io| {
+                Ok(SimulationTransactionSuccess::AppliedAndVerified)
+            })
+            .expect_err("a write whose selector cannot be restored must not report success");
+
+        assert_eq!(error.state(), SimulationFailureState::CameraStateUnknown);
+        assert_eq!(error.phase(), SimulationTransactionPhase::SelectorRestore);
+        assert!(
+            error.to_string().contains("SelectorRestore"),
+            "the phase must name the selector restore: {error}"
+        );
     }
 
     #[test]

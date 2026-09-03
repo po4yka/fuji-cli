@@ -87,9 +87,15 @@ Use `simulation set` for partial updates. Unspecified fields are read from the
 camera and the result is validated. If a multi-setting update fails, the CLI
 attempts to restore the original slot.
 
-A failed restoration reports unknown camera state, not success. `set` and
-`import` require the lowercase SHA-256 fingerprint of the connected camera's
-PTP serial, obtained from `device info`.
+Writing a slot selects it on the camera while the recipe is written and
+verified. Like the read commands, `set` and `import` then put the camera's
+custom-setting selector back on the slot it had before the command ran, so a
+successful write never changes which slot the camera is using.
+
+A failed restoration, of the recipe or of the previously selected slot, reports
+unknown camera state, not success. `set` and `import` require the lowercase
+SHA-256 fingerprint of the connected camera's PTP serial, obtained from
+`device info`.
 
 That binding prevents a bus/address change or a second attached body from
 receiving the write.

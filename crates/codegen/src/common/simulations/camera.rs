@@ -685,34 +685,40 @@ fn generate_manager_impl(
                         error,
                     )
                 })?;
-                let mut io = crate::features::simulation::SelectedSimulationIo::new(io, slot);
-                let original =
-                    <#struct_ident as crate::features::simulation::SimulationTransactionProfile>::pull_from(&mut io)
-                        .map_err(|error| {
+                crate::features::simulation::with_restored_simulation_selector(
+                    io,
+                    <#options_path::CustomSetting as crate::ptp::option::SimulationSetting>::prop_code(),
+                    |io| {
+                        let mut io = crate::features::simulation::SelectedSimulationIo::new(io, slot);
+                        let original =
+                            <#struct_ident as crate::features::simulation::SimulationTransactionProfile>::pull_from(&mut io)
+                                .map_err(|error| {
+                                    crate::features::simulation::SimulationTransactionError::preparation(
+                                        crate::features::simulation::SimulationPropertyIo::is_healthy(&io),
+                                        error,
+                                    )
+                                })?;
+                        let mut candidate = original.clone();
+                        candidate.try_update_from(partial).map_err(|error| {
                             crate::features::simulation::SimulationTransactionError::preparation(
                                 crate::features::simulation::SimulationPropertyIo::is_healthy(&io),
                                 error,
                             )
                         })?;
-                let mut candidate = original.clone();
-                candidate.try_update_from(partial).map_err(|error| {
-                    crate::features::simulation::SimulationTransactionError::preparation(
-                        crate::features::simulation::SimulationPropertyIo::is_healthy(&io),
-                        error,
-                    )
-                })?;
-                crate::generated::simulations::SimulationBase::from(&candidate)
-                    .validate_firmware_capabilities(firmware_profile)
-                    .map_err(|error| {
-                        crate::features::simulation::SimulationTransactionError::preparation(
-                            crate::features::simulation::SimulationPropertyIo::is_healthy(&io),
-                            error,
+                        crate::generated::simulations::SimulationBase::from(&candidate)
+                            .validate_firmware_capabilities(firmware_profile)
+                            .map_err(|error| {
+                                crate::features::simulation::SimulationTransactionError::preparation(
+                                    crate::features::simulation::SimulationPropertyIo::is_healthy(&io),
+                                    error,
+                                )
+                            })?;
+                        crate::features::simulation::execute_simulation_transaction(
+                            &mut io,
+                            &original,
+                            &candidate,
                         )
-                    })?;
-                crate::features::simulation::execute_simulation_transaction(
-                    &mut io,
-                    &original,
-                    &candidate,
+                    },
                 )
             }
 
@@ -751,16 +757,22 @@ fn generate_manager_impl(
                             error,
                         )
                     })?;
-                let mut io = crate::features::simulation::SelectedSimulationIo::new(io, slot);
-                let original =
-                    <#struct_ident as crate::features::simulation::SimulationTransactionProfile>::pull_from(&mut io)
-                        .map_err(|error| {
-                            crate::features::simulation::SimulationTransactionError::preparation(
-                                crate::features::simulation::SimulationPropertyIo::is_healthy(&io),
-                                error,
-                            )
-                        })?;
-                crate::features::simulation::execute_simulation_transaction(&mut io, &original, sim)
+                crate::features::simulation::with_restored_simulation_selector(
+                    io,
+                    <#options_path::CustomSetting as crate::ptp::option::SimulationSetting>::prop_code(),
+                    |io| {
+                        let mut io = crate::features::simulation::SelectedSimulationIo::new(io, slot);
+                        let original =
+                            <#struct_ident as crate::features::simulation::SimulationTransactionProfile>::pull_from(&mut io)
+                                .map_err(|error| {
+                                    crate::features::simulation::SimulationTransactionError::preparation(
+                                        crate::features::simulation::SimulationPropertyIo::is_healthy(&io),
+                                        error,
+                                    )
+                                })?;
+                        crate::features::simulation::execute_simulation_transaction(&mut io, &original, sim)
+                    },
+                )
             }
         }
     }
@@ -876,6 +888,30 @@ mod tests {
             validation < slot_write,
             "unsupported values must fail before the first selector mutation: {generated}"
         );
+    }
+
+    #[test]
+    fn generated_writes_restore_the_previously_selected_slot() {
+        let (options, cameras) = fixture();
+        let generated = generate(&options, &cameras).unwrap().to_string();
+
+        for method in ["fn update_simulation", "fn set_simulation"] {
+            let start = generated
+                .find(method)
+                .unwrap_or_else(|| panic!("generated manager must implement {method}"));
+            let body = &generated[start..];
+            let restore = body
+                .find("with_restored_simulation_selector")
+                .unwrap_or_else(|| panic!("{method} must restore the slot selector: {body}"));
+            let slot_write = body
+                .find("SelectedSimulationIo :: new (io , slot)")
+                .expect("write path must prepare selected-slot I/O");
+
+            assert!(
+                restore < slot_write,
+                "{method} must snapshot the selector before selecting the target slot: {body}"
+            );
+        }
     }
 
     #[test]

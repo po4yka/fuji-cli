@@ -5,7 +5,7 @@ mod transaction;
 pub(crate) use transaction::{
     AuthorizedSimulationIo, SelectedSimulationIo, SimulationPropertyChange, SimulationPropertyIo,
     SimulationPropertyWriteError, SimulationTransactionProfile, execute_simulation_transaction,
-    with_temporary_simulation_selector,
+    with_restored_simulation_selector, with_temporary_simulation_selector,
 };
 pub use transaction::{
     SimulationFailureState, SimulationTransactionError, SimulationTransactionPhase,
