@@ -53,10 +53,10 @@ After inverting the payload the image contains, in order:
 
 ## Section compression
 
-Each compressed section starts with a 24-byte header of six `u32 LE`:
+Each compressed section starts with a 20-byte header of five `u32 LE`:
 
 ```text
-uncompressed_size, stored_size (header included), page_count, 0x4000, 4, 3
+uncompressed_size, stored_size (header included), page_count, 0x4000, 4
 ```
 
 `page_count * 0x4000 >= stored_size`. `0x4000` matches the 16 KiB DMA page of
@@ -72,38 +72,22 @@ byte >= 0x80 : match token of two bytes b0 b1
                distance 0 emits `length` zero bytes (window starts zeroed)
 ```
 
-Validation: the parse of all four sections ends exactly on `stored_size`, the
-sum of literal bytes plus match lengths equals `uncompressed_size` (minus the
-page padding), and the output is valid AArch64 (24k `ret` instructions in the
-first section) with intact strings. The four sections decompress to 11.7, 15.4,
-14.5 and 7.3 MiB. Code in the decompressed buffers is misaligned by one byte
-(sections 1 and 2) or two bytes (section 3) relative to the buffer start; align
-before disassembling.
+Validation: the parse of all four sections ends exactly on `stored_size`, each
+section decodes to exactly its declared `uncompressed_size`, and the output is
+valid AArch64 with intact strings. The four sections decompress to 11.7, 15.4,
+14.5 and 7.3 MiB, and their code is four-byte aligned from the start of the
+buffer, so they can be disassembled without a shift.
 
-Reference decoder (Python, standard library only):
+The exact-size property is what pins the header length. An earlier reading of
+this file assumed a 24-byte header ending in a constant `3`; it lost the first
+few bytes of each stream, left the code misaligned, and made three of the four
+sections finish short of their declared size. The `3` is simply the first
+literal-run byte of section one.
 
-```python
-def lzss(data: bytes) -> bytes:
-    out = bytearray(); i = 0
-    while i < len(data):
-        c = data[i]
-        if c < 0x80:
-            out += data[i + 1:i + 1 + c]; i += 1 + c
-            continue
-        b1 = data[i + 1]; i += 2
-        length = b1 & 0xF
-        dist = ((c & 0x7F) << 4) | (b1 >> 4)
-        if dist == 0:
-            out += bytes(length); continue
-        p = len(out) - dist
-        for k in range(length):
-            out.append(out[p + k] if p + k >= 0 else 0)
-    return bytes(out)
-
-img = bytes(b ^ 0xFF for b in open("FWUP0030.DAT", "rb").read())
-# section header at `off`: struct.unpack_from("<6I", img, off)
-# payload = img[off + 0x18 : off + stored_size]
-```
+Use `fujicli-dev firmware inspect` and `fujicli-dev firmware unpack` (see
+[reversing](../contributors/reversing.md)) rather than re-implementing the
+decoder; `unpack` writes the bit-inverted image, one file per section, and a
+manifest with the digests.
 
 ## PTP surface found in the firmware
 

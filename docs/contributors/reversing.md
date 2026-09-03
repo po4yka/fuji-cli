@@ -159,6 +159,32 @@ length, wire shape and SHA-256. It never records payload bytes, so it needs no
 privacy review before sharing; a property may hold a serial number, an owner
 string, or GPS data. There is deliberately no `--print-values`.
 
+## Reading a Firmware Container
+
+A vendor firmware file is a second evidence source that needs no camera at all.
+`fujicli-dev firmware` reads one offline:
+
+```sh
+cargo run --locked -p fujicli-dev --features reverse-tools -- \
+  firmware inspect FWUP0030.DAT
+
+cargo run --locked -p fujicli-dev --features reverse-tools -- \
+  firmware unpack FWUP0030.DAT unpacked/
+```
+
+`inspect` prints the container type, the displayed version, the body codes the
+image may be applied to, and one line per compressed section. `unpack`
+additionally writes `image.bin` (the payload after its bitwise NOT), one
+`section_<offset>.bin` per section, and a `manifest.json` with the input digest
+and a SHA-256 per section. The output directory is created and never
+overwritten, matching the discovery artifacts.
+
+These commands take no `--device` and issue no PTP at all. A section that does
+not decode to exactly the size its header declares is an error, not a warning,
+so a wrong reading of the layout cannot pass silently. See the
+[X-T5 firmware analysis](../internals/x-t5-firmware-4.31-static-analysis-2026-09-03.md)
+for the container layout and for what the decompressed sections contain.
+
 ## Requirements for Any Future Dangerous Probe
 
 Do not add a dangerous command merely by widening `reverse-tools`. If a

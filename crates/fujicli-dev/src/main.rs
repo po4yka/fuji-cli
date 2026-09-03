@@ -9,6 +9,7 @@
 mod audit;
 #[cfg(feature = "dangerous-reverse-engineering")]
 mod decision;
+mod firmware;
 #[cfg(feature = "dangerous-reverse-engineering")]
 mod interrupt;
 mod log;
@@ -22,14 +23,15 @@ use clap::{ArgAction, Parser, Subcommand};
 
 #[cfg(feature = "dangerous-reverse-engineering")]
 use crate::probe::ProbeCommand;
-use crate::{reverse::DiscoverCommand, usb::Location};
+use crate::{firmware::FirmwareCommand, reverse::DiscoverCommand, usb::Location};
 
 #[derive(Debug, Parser)]
 #[command(version, about, long_about = None)]
 struct Cli {
-    /// Exact target device as USB `BUS.ADDRESS`
+    /// Exact target device as USB `BUS.ADDRESS`. Required by every command
+    /// that talks to a camera; `firmware` reads a file and does not use it.
     #[arg(long, short = 'd')]
-    device: Location,
+    device: Option<Location>,
 
     /// Log extra protocol metadata; repeat for more detail
     #[arg(long, short = 'v', action = ArgAction::Count, global = true)]
@@ -44,10 +46,21 @@ enum Command {
     /// Run read-only discovery against an explicitly selected camera
     #[command(subcommand)]
     Discover(DiscoverCommand),
+    /// Inspect or unpack a vendor firmware container file; no camera involved
+    #[command(subcommand)]
+    Firmware(FirmwareCommand),
     /// Run a gated, state-changing reverse-engineering probe
     #[cfg(feature = "dangerous-reverse-engineering")]
     #[command(subcommand)]
     Probe(ProbeCommand),
+}
+
+/// Every camera command names its target explicitly; there is deliberately no
+/// automatic selection, so a missing `--device` is refused before any USB I/O.
+fn device(device: Option<Location>) -> anyhow::Result<Location> {
+    device.ok_or_else(|| {
+        anyhow::anyhow!("this command talks to a camera and requires an exact --device BUS.ADDRESS")
+    })
 }
 
 fn run() -> anyhow::Result<()> {
@@ -56,9 +69,10 @@ fn run() -> anyhow::Result<()> {
     #[cfg(feature = "dangerous-reverse-engineering")]
     interrupt::install()?;
     match cli.command {
-        Command::Discover(command) => reverse::handle(command, cli.device),
+        Command::Discover(command) => reverse::handle(command, device(cli.device)?),
+        Command::Firmware(command) => firmware::handle(&command),
         #[cfg(feature = "dangerous-reverse-engineering")]
-        Command::Probe(command) => probe::handle(&command, cli.device),
+        Command::Probe(command) => probe::handle(&command, device(cli.device)?),
     }
 }
 
@@ -74,14 +88,31 @@ mod tests {
 
     #[test]
     fn every_discovery_command_requires_an_explicit_device() {
-        let error = Cli::try_parse_from(["fujicli-dev", "discover", "info"])
+        let parsed = Cli::try_parse_from(["fujicli-dev", "discover", "info"])
+            .expect("the device is validated per command, not by the parser");
+
+        let error = super::device(parsed.device)
             .expect_err("development discovery must never auto-select a camera");
 
+        assert!(error.to_string().contains("--device"), "{error}");
+    }
+
+    #[test]
+    fn firmware_commands_read_a_file_and_need_no_device() {
+        let parsed = Cli::try_parse_from(["fujicli-dev", "firmware", "inspect", "FWUP0030.DAT"])
+            .expect("unpacking a vendor file must not demand a camera");
+
+        assert!(parsed.device.is_none());
+
+        let unpack = Cli::try_parse_from(["fujicli-dev", "firmware", "unpack", "in.dat", "out"]);
+        assert!(unpack.is_ok(), "{unpack:?}");
+
+        let missing_output = Cli::try_parse_from(["fujicli-dev", "firmware", "unpack", "in.dat"])
+            .expect_err("unpacking requires an explicit output directory");
         assert_eq!(
-            error.kind(),
+            missing_output.kind(),
             clap::error::ErrorKind::MissingRequiredArgument
         );
-        assert!(error.to_string().contains("--device"));
     }
 
     #[test]
@@ -185,7 +216,7 @@ mod tests {
     #[test]
     #[cfg(feature = "dangerous-reverse-engineering")]
     fn probe_simulation_namespace_still_requires_an_explicit_device() {
-        let error = Cli::try_parse_from([
+        let parsed = Cli::try_parse_from([
             "fujicli-dev",
             "probe",
             "simulation-namespace",
@@ -197,12 +228,11 @@ mod tests {
             "--acknowledge",
             "I-UNDERSTAND-THIS-WRITES-SELECTOR-D18C",
         ])
-        .expect_err("the dangerous probe must never auto-select a camera either");
+        .expect("the device is validated per command, not by the parser");
 
-        assert_eq!(
-            error.kind(),
-            clap::error::ErrorKind::MissingRequiredArgument
-        );
-        assert!(error.to_string().contains("--device"));
+        let error = super::device(parsed.device)
+            .expect_err("the dangerous probe must never auto-select a camera either");
+
+        assert!(error.to_string().contains("--device"), "{error}");
     }
 }
