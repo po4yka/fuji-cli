@@ -1,6 +1,6 @@
 #![no_main]
 
-use fujicli::{decode_exact, ContainerInfo};
+use fujicli::{ContainerInfo, decode_exact};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {

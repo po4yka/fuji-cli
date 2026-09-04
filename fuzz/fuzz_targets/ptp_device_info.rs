@@ -1,6 +1,6 @@
 #![no_main]
 
-use fujicli::{decode_exact, encode, DeviceInfo};
+use fujicli::{DeviceInfo, decode_exact, encode};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
