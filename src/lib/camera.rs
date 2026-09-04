@@ -856,11 +856,7 @@ impl Camera {
         artifact: &BackupArtifact,
     ) -> anyhow::Result<features::backup::BackupRestoreAccepted> {
         if let Some(backups) = self.r#impl.as_backup_manager() {
-            let authorized = AuthorizedPtp::new(
-                &mut self.ptp,
-                permit,
-                &[generated::cameras::CameraPreflightOperation::BackupRestore],
-            )?;
+            let authorized = AuthorizedPtp::new(&mut self.ptp, permit, authorized::BACKUP_RESTORE)?;
             let mut transport =
                 features::backup::manager::AuthorizedBackupTransport::new(authorized);
             backups.import_backup(&mut transport, artifact)
@@ -899,14 +895,8 @@ impl Camera {
         slot: CustomSetting,
     ) -> anyhow::Result<Box<dyn Simulation>> {
         if let Some(sim) = self.r#impl.as_simulation_manager() {
-            let authorized = AuthorizedPtp::new(
-                &mut self.ptp,
-                permit,
-                &[
-                    generated::cameras::CameraPreflightOperation::SimulationAccess,
-                    generated::cameras::CameraPreflightOperation::SimulationWrite,
-                ],
-            )?;
+            let authorized =
+                AuthorizedPtp::new(&mut self.ptp, permit, authorized::SIMULATION_READ)?;
             let mut io = features::simulation::AuthorizedSimulationIo::new(authorized);
             sim.get_simulation(&mut io, slot)
         } else {
@@ -920,14 +910,8 @@ impl Camera {
         slots: &[CustomSetting],
     ) -> anyhow::Result<Vec<(CustomSetting, Box<dyn Simulation>)>> {
         if let Some(sim) = self.r#impl.as_simulation_manager() {
-            let authorized = AuthorizedPtp::new(
-                &mut self.ptp,
-                permit,
-                &[
-                    generated::cameras::CameraPreflightOperation::SimulationAccess,
-                    generated::cameras::CameraPreflightOperation::SimulationWrite,
-                ],
-            )?;
+            let authorized =
+                AuthorizedPtp::new(&mut self.ptp, permit, authorized::SIMULATION_READ)?;
             let mut io = features::simulation::AuthorizedSimulationIo::new(authorized);
             sim.get_simulations(&mut io, slots)
         } else {
@@ -943,12 +927,9 @@ impl Camera {
     ) -> Result<SimulationTransactionSuccess, SimulationTransactionError> {
         if let Some(sim) = self.r#impl.as_simulation_manager() {
             let healthy = self.ptp.is_healthy();
-            let authorized = AuthorizedPtp::new(
-                &mut self.ptp,
-                permit,
-                &[generated::cameras::CameraPreflightOperation::SimulationWrite],
-            )
-            .map_err(|error| SimulationTransactionError::preparation(healthy, error))?;
+            let authorized =
+                AuthorizedPtp::new(&mut self.ptp, permit, authorized::SIMULATION_WRITE)
+                    .map_err(|error| SimulationTransactionError::preparation(healthy, error))?;
             let mut io = features::simulation::AuthorizedSimulationIo::new(authorized);
             sim.update_simulation(&mut io, slot, partial)
         } else {
@@ -967,12 +948,9 @@ impl Camera {
     ) -> Result<SimulationTransactionSuccess, SimulationTransactionError> {
         if let Some(sim) = self.r#impl.as_simulation_manager() {
             let healthy = self.ptp.is_healthy();
-            let authorized = AuthorizedPtp::new(
-                &mut self.ptp,
-                permit,
-                &[generated::cameras::CameraPreflightOperation::SimulationWrite],
-            )
-            .map_err(|error| SimulationTransactionError::preparation(healthy, error))?;
+            let authorized =
+                AuthorizedPtp::new(&mut self.ptp, permit, authorized::SIMULATION_WRITE)
+                    .map_err(|error| SimulationTransactionError::preparation(healthy, error))?;
             let mut io = features::simulation::AuthorizedSimulationIo::new(authorized);
             sim.set_simulation(&mut io, slot, simulation)
         } else {
@@ -991,11 +969,7 @@ impl Camera {
         draft: bool,
     ) -> anyhow::Result<RenderOutcome> {
         if let Some(renders) = self.r#impl.as_render_manager() {
-            let authorized = AuthorizedPtp::new(
-                &mut self.ptp,
-                permit,
-                &[generated::cameras::CameraPreflightOperation::RawConversion],
-            )?;
+            let authorized = AuthorizedPtp::new(&mut self.ptp, permit, authorized::RENDER)?;
             let mut io = features::render::manager::AuthorizedRenderIo::new(authorized);
             renders.render(&mut io, image, partial, draft)
         } else {
@@ -1009,11 +983,8 @@ impl Camera {
         handle: u32,
     ) -> anyhow::Result<RenderedObject> {
         if let Some(renders) = self.r#impl.as_render_manager() {
-            let authorized = AuthorizedPtp::new(
-                &mut self.ptp,
-                permit,
-                &[generated::cameras::CameraPreflightOperation::RawRecoveryFetch],
-            )?;
+            let authorized =
+                AuthorizedPtp::new(&mut self.ptp, permit, authorized::RENDER_RECOVERY_FETCH)?;
             let mut io = features::render::manager::AuthorizedRenderIo::new(authorized);
             renders.recover_rendered_object(&mut io, handle)
         } else {
@@ -1027,14 +998,7 @@ impl Camera {
         handle: u32,
     ) -> anyhow::Result<features::outcome::StateChangeAudit> {
         if let Some(renders) = self.r#impl.as_render_manager() {
-            let authorized = AuthorizedPtp::new(
-                &mut self.ptp,
-                permit,
-                &[
-                    generated::cameras::CameraPreflightOperation::RawConversion,
-                    generated::cameras::CameraPreflightOperation::RawRecoveryCleanup,
-                ],
-            )?;
+            let authorized = AuthorizedPtp::new(&mut self.ptp, permit, authorized::RENDER_CLEANUP)?;
             let mut io = features::render::manager::AuthorizedRenderIo::new(authorized);
             renders.cleanup_rendered_object(&mut io, handle)
         } else {
