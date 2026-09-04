@@ -63,8 +63,8 @@ pub enum ImageCmd {
     #[command(alias = "r")]
     Render {
         /// SHA-256 fingerprint of the exact physical camera serial number
-        #[arg(long, required = true)]
-        target_serial_sha256: Option<SerialFingerprint>,
+        #[arg(long)]
+        target_serial_sha256: SerialFingerprint,
 
         /// Path to exported simulation file
         #[arg(long)]
@@ -94,8 +94,8 @@ pub enum ImageCmd {
     /// Recover a retained rendered JPEG by its camera object handle
     Recover {
         /// SHA-256 fingerprint of the exact physical camera serial number
-        #[arg(long, required = true)]
-        target_serial_sha256: Option<SerialFingerprint>,
+        #[arg(long)]
+        target_serial_sha256: SerialFingerprint,
 
         /// Camera object handle reported by a failed render
         handle: u32,
@@ -117,7 +117,7 @@ pub enum ImageCmd {
 }
 
 struct RenderRequest {
-    target_serial_sha256: Option<SerialFingerprint>,
+    target_serial_sha256: SerialFingerprint,
     simulation_file: Option<Input>,
     draft: bool,
     render: RenderArgs,
@@ -160,8 +160,6 @@ fn handle_render(device: DeviceOptions, request: RenderRequest) -> anyhow::Resul
     } else {
         None
     };
-    let target_serial_sha256 = target_serial_sha256
-        .ok_or_else(|| anyhow::anyhow!("RAW conversion requires --target-serial-sha256"))?;
     let mut session = camera.preflight_raw_conversion(&target_serial_sha256)?;
 
     let mut base = RenderBase::default();
@@ -190,7 +188,7 @@ fn handle_render(device: DeviceOptions, request: RenderRequest) -> anyhow::Resul
 )]
 fn handle_recover(
     device: DeviceOptions,
-    target_serial_sha256: Option<SerialFingerprint>,
+    target_serial_sha256: SerialFingerprint,
     handle: u32,
     output: Output,
     force: bool,
@@ -201,8 +199,6 @@ fn handle_recover(
         "--delete-after-save requires a file output, not stdout"
     );
     let output_transaction = output.begin_write(force)?;
-    let target_serial_sha256 = target_serial_sha256
-        .ok_or_else(|| anyhow::anyhow!("RAW recovery requires --target-serial-sha256"))?;
 
     let mut camera = usb::get_native_camera(device.device, None)?;
     let rendered = camera
@@ -270,7 +266,7 @@ mod tests {
     use std::{cell::Cell, fs, io};
 
     use anyhow::anyhow;
-    use fujicli::features::render::RenderSaveError;
+    use fujicli::{features::render::RenderSaveError, policy::SerialFingerprint};
     use tempfile::tempdir;
 
     use super::{Output, RenderOutput, handle_recover, save_rendered_object};
@@ -374,9 +370,12 @@ mod tests {
 
     #[test]
     fn recovery_forbids_delete_after_stdout_before_camera_access() {
+        let target_serial_sha256: SerialFingerprint =
+            "0".repeat(64).parse().expect("64 zero hex digits parse");
+
         let error = handle_recover(
             DeviceOptions::default(),
-            None,
+            target_serial_sha256,
             42,
             Output::Stdout,
             false,

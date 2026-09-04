@@ -253,8 +253,8 @@ pub enum SimulationCmd {
         simulation: SimulationArgs,
 
         /// SHA-256 fingerprint of the exact physical camera serial number
-        #[arg(long, required = true)]
-        target_serial_sha256: Option<SerialFingerprint>,
+        #[arg(long)]
+        target_serial_sha256: SerialFingerprint,
 
         #[command(flatten)]
         output_format: JsonOptions,
@@ -290,8 +290,8 @@ pub enum SimulationCmd {
         input: Input,
 
         /// SHA-256 fingerprint of the exact physical camera serial number
-        #[arg(long, required = true)]
-        target_serial_sha256: Option<SerialFingerprint>,
+        #[arg(long)]
+        target_serial_sha256: SerialFingerprint,
 
         #[command(flatten)]
         output_format: JsonOptions,
@@ -358,12 +358,10 @@ fn handle_set(
     device: DeviceOptions,
     simulation: SimulationArgs,
     slot: CustomSetting,
-    target_serial_sha256: Option<SerialFingerprint>,
+    target_serial_sha256: SerialFingerprint,
     json: bool,
 ) -> anyhow::Result<()> {
     let mut camera = usb::get_native_camera(device.device, None)?;
-    let target_serial_sha256 = target_serial_sha256
-        .ok_or_else(|| anyhow::anyhow!("simulation write requires --target-serial-sha256"))?;
     let partial: SimulationBase = simulation.into();
     let mut session = camera.preflight_simulation_write(&target_serial_sha256)?;
     let success = interrupt::critical_camera_write("simulation update", || {
@@ -402,14 +400,12 @@ fn handle_import(
     device: DeviceOptions,
     slot: CustomSetting,
     input: Input,
-    target_serial_sha256: Option<SerialFingerprint>,
+    target_serial_sha256: SerialFingerprint,
     json: bool,
 ) -> anyhow::Result<()> {
     let buffer = input.read_limited(MAX_SIMULATION_INPUT_BYTES, "simulation JSON")?;
     let mut camera = usb::get_native_camera(device.device, None)?;
     let simulation = camera.deserialize_simulation(&buffer)?;
-    let target_serial_sha256 = target_serial_sha256
-        .ok_or_else(|| anyhow::anyhow!("simulation write requires --target-serial-sha256"))?;
     let mut session = camera.preflight_simulation_write(&target_serial_sha256)?;
     let success = interrupt::critical_camera_write("simulation write", || {
         tag_transaction_state_unknown(session.set_simulation(slot, &*simulation))
