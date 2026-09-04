@@ -31,6 +31,9 @@ The current `main` branch is unreleased. A release exists only when an annotated
   a failed selector restore now reports the settings that were actually
   written (and, on the rollback path, the settings rolled back), instead of
   leaving the operator to guess what changed on the camera.
+- A `--target-serial-sha256` mismatch now names both the connected camera's
+  observed serial fingerprint and the expected value in the error, instead of
+  requiring a second `device info` run to learn the observed fingerprint.
 
 ### Fixed
 

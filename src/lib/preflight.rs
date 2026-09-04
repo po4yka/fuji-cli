@@ -797,7 +797,8 @@ fn validate_serial_binding(
     if let Some(binding) = serial_binding {
         ensure!(
             binding.as_str() == observed_serial_sha256,
-            "connected camera serial fingerprint does not match --target-serial-sha256"
+            "connected camera serial fingerprint {observed_serial_sha256} does not match --target-serial-sha256 {}",
+            binding.as_str()
         );
     }
     Ok(())
@@ -1560,7 +1561,8 @@ mod tests {
     #[test]
     fn rejects_mismatched_serial_binding() {
         let info = valid_device_info();
-        let binding = SerialFingerprint::from_str(&"0".repeat(64)).unwrap();
+        let expected_sha256 = "0".repeat(64);
+        let binding = SerialFingerprint::from_str(&expected_sha256).unwrap();
         let facts = PreflightFacts {
             binding: ModelBindingKind::Native,
             definition: &FULL_CAMERA,
@@ -1574,10 +1576,16 @@ mod tests {
         let error = decide_preflight(&facts, CameraPreflightOperation::RawConversion)
             .expect_err("a mismatched serial fingerprint must fail closed");
 
+        let message = error.to_string();
+        let observed_sha256 = crate::features::backup::sha256_hex(info.serial_number.as_bytes());
+        assert!(message.contains("does not match --target-serial-sha256"));
         assert!(
-            error
-                .to_string()
-                .contains("does not match --target-serial-sha256")
+            message.contains(&observed_sha256),
+            "message must name the observed fingerprint: {message}"
+        );
+        assert!(
+            message.contains(&expected_sha256),
+            "message must name the expected fingerprint: {message}"
         );
     }
 
@@ -1869,6 +1877,26 @@ mod tests {
         let result = validate_serial_binding(Some(&binding), &"1".repeat(64));
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn wrong_serial_binding_error_names_both_fingerprints() {
+        let expected_sha256 = "0".repeat(64);
+        let observed_sha256 = "1".repeat(64);
+        let binding = SerialFingerprint::from_str(&expected_sha256).unwrap();
+
+        let error = validate_serial_binding(Some(&binding), &observed_sha256)
+            .expect_err("a mismatched serial fingerprint must fail closed");
+
+        let message = error.to_string();
+        assert!(
+            message.contains(&observed_sha256),
+            "message must name the observed fingerprint: {message}"
+        );
+        assert!(
+            message.contains(&expected_sha256),
+            "message must name the expected fingerprint: {message}"
+        );
     }
 
     #[test]
