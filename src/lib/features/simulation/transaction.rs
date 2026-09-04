@@ -217,15 +217,15 @@ impl fmt::Display for SimulationTransactionError {
         write_receipts(formatter, "confirmed writes", &self.journal)?;
         write_receipts(formatter, "rolled back writes", &self.rollback_journal)?;
         if let Some(rollback_error) = &self.rollback_error {
-            write!(formatter, "; rollback error: {rollback_error}")?;
+            write!(formatter, "; rollback error: {rollback_error:#}")?;
         }
         if let Some(readback_error) = &self.rollback_readback_error {
-            write!(formatter, "; rollback readback error: {readback_error}")?;
+            write!(formatter, "; rollback readback error: {readback_error:#}")?;
         }
         if let Some(restore_error) = &self.selector_restore_error {
             write!(
                 formatter,
-                "; the previously selected slot could not be restored: {restore_error}"
+                "; the previously selected slot could not be restored: {restore_error:#}"
             )?;
         }
         Ok(())
@@ -1746,6 +1746,55 @@ mod tests {
         let diagnostic = error.to_string();
         assert!(diagnostic.contains("rollback error"));
         assert!(diagnostic.contains("rollback readback error"));
+    }
+
+    /// `Display` must render `rollback_error`, `rollback_readback_error`, and
+    /// `selector_restore_error` with the alternate `{:#}` form, the same as
+    /// the read path's `TemporarySimulationSelectorError` already does,
+    /// rather than `{}`: the *deeper* raw-cause frame under a `.context(...)`
+    /// label (the generated code attaches one label per setting, see
+    /// `crates/codegen/src/common/simulations/camera.rs`) is otherwise
+    /// invisible to the operator because plain `{}` on an `anyhow::Error`
+    /// shows only the outermost (label) frame, never the wrapped cause
+    /// underneath it. Each error below carries a distinct raw-cause string
+    /// so the assertions below can only pass when `{:#}` is actually in use
+    /// — the shared outer label text alone would already be visible under
+    /// the old `{}` formatting and would not catch a regression.
+    #[test]
+    fn display_reaches_context_layers_on_rollback_readback_and_selector_restore_errors() {
+        let error = SimulationTransactionError {
+            state: SimulationFailureState::CameraStateUnknown,
+            phase: SimulationTransactionPhase::RollbackReadback,
+            cause: anyhow::anyhow!("apply write failed"),
+            rollback_error: Some(
+                anyhow::anyhow!("rollback wire timeout")
+                    .context("writing simulation setting `first`"),
+            ),
+            rollback_readback_error: Some(
+                anyhow::anyhow!("readback wire timeout")
+                    .context("reading back simulation setting `second`"),
+            ),
+            journal: Vec::new(),
+            rollback_journal: Vec::new(),
+            selector_restore_error: Some(
+                anyhow::anyhow!("selector restore wire timeout")
+                    .context("restoring simulation selector"),
+            ),
+        };
+
+        let diagnostic = error.to_string();
+        assert!(
+            diagnostic.contains("rollback wire timeout"),
+            "the rollback error's deeper cause must survive Display: {diagnostic}"
+        );
+        assert!(
+            diagnostic.contains("readback wire timeout"),
+            "the rollback readback error's deeper cause must survive Display: {diagnostic}"
+        );
+        assert!(
+            diagnostic.contains("selector restore wire timeout"),
+            "the selector restore error's deeper cause must survive Display: {diagnostic}"
+        );
     }
 
     #[test]

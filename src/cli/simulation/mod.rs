@@ -67,6 +67,25 @@ fn tag_transaction_state_unknown<T>(
     })
 }
 
+/// Attach the [`CameraStateUnknown`] marker on top of `error`'s existing
+/// chain via `error.context(CameraStateUnknown)`, rather than rebuilding a
+/// fresh `anyhow::Error` from an extracted concrete error the way
+/// [`tag_state_unknown`] does. `error` here is already a full
+/// `anyhow::Error` chain rather than a bare `std::error::Error`, so it
+/// cannot satisfy `tag_state_unknown`'s `E: std::error::Error` bound; more
+/// importantly, extracting a concrete error out of the chain (`downcast`)
+/// would discard every other layer already on it -- including an
+/// [`Interrupted`](fujicli::interrupt::Interrupted) marker that
+/// `InterruptLatch::after_transaction` may have attached on the read path
+/// after the selector-restore transaction completed. `CameraStateUnknown`
+/// becomes the new head here (its own `Display` text replaces `error`'s as
+/// the outermost message), but every prior frame -- `error`'s own message
+/// and any marker on it -- stays reachable through `.source()`/`downcast_ref`
+/// and still appears in `anyhow`'s multi-line `Debug` output.
+fn context_state_unknown(error: anyhow::Error) -> anyhow::Error {
+    error.context(CameraStateUnknown)
+}
+
 /// Attach the [`CameraStateUnknown`] marker to a simulation read failure
 /// caused by a `TemporarySimulationSelectorError` whose selector-restore
 /// outcome is unknown: a `get_simulation`/`get_simulations` call that
@@ -74,16 +93,22 @@ fn tag_transaction_state_unknown<T>(
 /// selector state unknown, exactly like a failed write. Any other error
 /// (including a selector failure the library already restored and
 /// verified) passes through unchanged.
+///
+/// Inspects with `downcast_ref` rather than `downcast` so tagging never
+/// consumes and discards `error`'s own chain; see [`context_state_unknown`]
+/// for why the marker is attached to the whole original `error` rather than
+/// to the extracted `TemporarySimulationSelectorError` alone.
 fn tag_selector_state_unknown<T>(result: anyhow::Result<T>) -> anyhow::Result<T> {
-    result.map_err(
-        |error| match error.downcast::<TemporarySimulationSelectorError>() {
-            Ok(selector_error) if selector_state_is_unknown(selector_error.state()) => {
-                tag_state_unknown(selector_error)
-            }
-            Ok(selector_error) => anyhow::Error::new(selector_error),
-            Err(other) => other,
-        },
-    )
+    result.map_err(|error| {
+        if error
+            .downcast_ref::<TemporarySimulationSelectorError>()
+            .is_some_and(|selector_error| selector_state_is_unknown(selector_error.state()))
+        {
+            context_state_unknown(error)
+        } else {
+            error
+        }
+    })
 }
 
 #[derive(Subcommand, Debug)]
@@ -314,9 +339,12 @@ pub fn handle(cmd: SimulationCmd) -> anyhow::Result<()> {
 mod tests {
     use std::fmt;
 
+    use fujicli::interrupt::Interrupted;
+
     use super::{
         CameraStateUnknown, SimulationFailureState, TemporarySimulationSelectorState,
-        selector_state_is_unknown, tag_state_unknown, transaction_state_is_unknown,
+        context_state_unknown, selector_state_is_unknown, tag_state_unknown,
+        transaction_state_is_unknown,
     };
 
     /// Minimal `std::error::Error` with a known, fixed `Display` output,
@@ -373,5 +401,30 @@ mod tests {
 
         assert!(!untagged.is::<CameraStateUnknown>());
         assert_eq!(untagged.to_string(), DummyError.to_string());
+    }
+
+    /// A selector-restore failure on the read path can already carry an
+    /// `Interrupted` marker underneath it (attached by
+    /// `InterruptLatch::after_transaction` once the selector-restore
+    /// transaction completes). `context_state_unknown` -- the operation
+    /// `tag_selector_state_unknown` applies once it confirms, via
+    /// `downcast_ref`, that the selector-restore outcome is unknown -- must
+    /// keep that marker reachable rather than discard it the way extracting
+    /// the selector error with `downcast` would.
+    #[test]
+    fn tagging_a_selector_error_keeps_an_existing_interrupted_marker() {
+        let error = anyhow::Error::new(Interrupted {
+            after_camera_write: false,
+        })
+        .context("temporary simulation selector transaction failed");
+
+        let tagged = context_state_unknown(error);
+
+        assert!(tagged.is::<CameraStateUnknown>());
+        assert!(
+            tagged.downcast_ref::<Interrupted>().is_some(),
+            "the Interrupted marker underneath the selector error must survive tagging: \
+             {tagged:?}"
+        );
     }
 }
