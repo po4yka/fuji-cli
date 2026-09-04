@@ -455,23 +455,30 @@ fn read_array(
     Ok(DevicePropValue::Array(values))
 }
 
+/// PTP allows a string property to enumerate its permitted values, and a
+/// camera that answers `GetDevicePropDesc` for one (the battery string among
+/// the required properties, for instance) must not fail the whole descriptor
+/// decode. A string has no fixed width, but it never encodes in fewer than
+/// one byte, so the payload still bounds the count before anything is
+/// reserved.
 fn read_enumeration(
     reader: &mut Cursor<&[u8]>,
     element_type: DevicePropDataType,
 ) -> anyhow::Result<Vec<DevicePropValue>> {
     let count = usize::from(read_u16(reader)?);
-    let Some(element_size) = wire_size(element_type) else {
-        bail!("PTP device property enumeration element type has no fixed wire size");
+    let minimum_bytes = match wire_size(element_type) {
+        Some(element_size) => count
+            .checked_mul(element_size)
+            .ok_or_else(|| anyhow!("PTP device property enumeration size overflows"))?,
+        None if element_type == DevicePropDataType::String => count,
+        None => bail!("PTP device property enumeration element type has no fixed wire size"),
     };
-    let required_bytes = count
-        .checked_mul(element_size)
-        .ok_or_else(|| anyhow!("PTP device property enumeration size overflows"))?;
     let remaining_bytes = reader
         .get_ref()
         .len()
         .saturating_sub(usize::try_from(reader.position())?);
     ensure!(
-        required_bytes <= remaining_bytes,
+        minimum_bytes <= remaining_bytes,
         "PTP device property enumeration is larger than its payload"
     );
     let mut values = reserve_values(count, "enumeration")?;
@@ -821,6 +828,60 @@ mod tests {
                 DevicePropValue::Int(0),
                 DevicePropValue::Int(1),
             ])
+        );
+    }
+
+    #[test]
+    fn descriptor_decodes_a_string_enumeration_form() {
+        // PTP lets a string property enumerate its permitted values; the
+        // battery property is a string among the required properties, so a
+        // camera that answers with one must not fail the decode.
+        let bytes = [
+            0x6b, 0xd3, // DevicePropertyCode
+            0xff, 0xff, // DataType: STR
+            0x00, // GetSet: read-only
+            0x02, b'A', 0x00, 0x00, 0x00, // FactoryDefaultValue: "A"
+            0x02, b'B', 0x00, 0x00, 0x00, // CurrentValue: "B"
+            0x02, // FormFlag: Enumeration
+            0x02, 0x00, // NumberOfValues
+            0x02, b'A', 0x00, 0x00, 0x00, // SupportedValue[0]
+            0x02, b'B', 0x00, 0x00, 0x00, // SupportedValue[1]
+        ];
+
+        let descriptor =
+            DevicePropDesc::decode(&bytes).expect("a string enumeration form must decode");
+
+        assert_eq!(
+            descriptor.form,
+            DevicePropForm::Enumeration(vec![
+                DevicePropValue::String("A".to_owned()),
+                DevicePropValue::String("B".to_owned()),
+            ])
+        );
+        assert_eq!(descriptor.current, DevicePropValue::String("B".to_owned()));
+    }
+
+    #[test]
+    fn a_string_enumeration_longer_than_its_payload_is_rejected() {
+        // Each string costs at least one byte, so the declared count is
+        // bounded by the payload before any allocation.
+        let bytes = [
+            0x6b, 0xd3, // DevicePropertyCode
+            0xff, 0xff, // DataType: STR
+            0x00, // GetSet: read-only
+            0x00, // FactoryDefaultValue: ""
+            0x00, // CurrentValue: ""
+            0x02, // FormFlag: Enumeration
+            0xff, 0xff, // NumberOfValues: 65535
+            0x00, // SupportedValue[0]
+        ];
+
+        let error = DevicePropDesc::decode(&bytes)
+            .expect_err("a string enumeration must not outrun its payload");
+
+        assert!(
+            error.to_string().contains("larger than its payload"),
+            "{error}"
         );
     }
 
