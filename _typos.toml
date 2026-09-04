@@ -1,2 +1,4 @@
 [default.extend-words]
 lits = "lits"
+SETP = "SETP"
+BA = "BA"
