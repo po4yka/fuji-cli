@@ -589,6 +589,7 @@ options: {
 			rules: {min: 2500, max: 10000, step: 10}
 			encoding: {
 				prop_code: 0xD19C
+				// Wire range 2500..10000 step 10 is NOT confirmed against a firmware range row: the live-property twin D017 ColorTemperature (FWUP0030.DAT 4.31) is an enumeration, so this range is an FML assertion pending device or capture evidence.
 				data_type: 0x0004
 				kind:      "scale"
 				spec: scale: 1
