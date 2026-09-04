@@ -180,8 +180,14 @@ impl SimulationTransactionError {
     /// The write (and its selector restore) both completed, but a Ctrl-C
     /// recorded during the critical region turned the otherwise-successful
     /// result into an unknown camera state, the same way
-    /// `critical_camera_write` does for the CLI's own critical regions.
-    fn interrupted(interrupted: Interrupted) -> Self {
+    /// `critical_camera_write` does for the CLI's own critical regions. The
+    /// confirmed-write journal of the completed write is carried over, so the
+    /// operator still sees which settings reached the camera.
+    fn interrupted(success: SimulationTransactionSuccess, interrupted: Interrupted) -> Self {
+        let journal = match success {
+            SimulationTransactionSuccess::AppliedAndVerified(journal) => journal,
+            SimulationTransactionSuccess::NoChangeVerified => Vec::new(),
+        };
         Self {
             state: SimulationFailureState::CameraStateUnknown,
             phase: SimulationTransactionPhase::Interrupted,
@@ -190,7 +196,7 @@ impl SimulationTransactionError {
             ),
             rollback_error: None,
             rollback_readback_error: None,
-            journal: Vec::new(),
+            journal,
             rollback_journal: Vec::new(),
             selector_restore_error: None,
         }
@@ -2038,6 +2044,14 @@ mod tests {
             "the scope must drain the interrupt itself"
         );
         assert_eq!(error.state(), SimulationFailureState::CameraStateUnknown);
+        assert_eq!(
+            error.journal(),
+            [SimulationWriteReceipt {
+                setting: "first",
+                property_code: 0xd001,
+            }],
+            "the completed write's journal must survive the interrupted outcome"
+        );
         let marker = error
             .cause()
             .downcast_ref::<Interrupted>()
