@@ -25,7 +25,7 @@ use crate::{
     policy::{ModelBindingKind, PhysicalUsbIdentity, SerialFingerprint},
     ptp::{
         DevicePropCode, DevicePropDataType, DevicePropDesc, DevicePropForm, DevicePropValue, Ptp,
-        codec::PtpString,
+        ResponseCode, codec::PtpString,
     },
 };
 
@@ -818,18 +818,36 @@ fn collect_property_descriptors(
                     descriptors.push(descriptor);
                 }
             }
-            Err(error) => return Err(error),
+            Err(error) => return Err(descriptor_read_failure(requirement.code, error)),
         }
     }
     Ok(descriptors)
 }
 
+/// Wraps a `GetDevicePropDesc` failure that [`camera_refused`] does not
+/// recognise as the documented structural refusal — a transient
+/// `DeviceBusy`, an `AccessDenied`, an unsupported-property
+/// `DevicePropNotSupported`, a transport failure, or anything else — with
+/// context naming the property code, so preflight fails closed with enough
+/// detail to identify which property triggered it instead of surfacing only
+/// the bare response text.
+fn descriptor_read_failure(code: u16, error: anyhow::Error) -> anyhow::Error {
+    error.context(format!(
+        "required PTP device property descriptor 0x{code:04x}"
+    ))
+}
+
 /// A camera may refuse `GetDevicePropDesc` for a property it happily reads.
-/// The X-T5 on firmware 4.31 in USB mode 0x6 refuses every one of them: that
-/// mode's `GetDeviceInfo` is assembled at run time, and the firmware image
-/// carries no static descriptor rows for the simulation settings, so the
-/// refusal is how the camera is built rather than a fault to retry around
+/// The X-T5 on firmware 4.31 in USB mode 0x6 answers `GeneralError` (0x2002)
+/// to every one of them: that mode's `GetDeviceInfo` is assembled at run
+/// time, and the firmware image carries no static descriptor rows for the
+/// simulation settings, so the refusal is how the camera is built rather
+/// than a fault to retry around
 /// (see `docs/internals/x-t5-firmware-4.31-static-analysis-2026-09-03.md`).
+/// Only that structural `GeneralError` is eligible for this fallback; a
+/// transient `DeviceBusy`, an `AccessDenied`, or an unsupported-property
+/// `DevicePropNotSupported` is a different failure and never reaches here
+/// (see [`camera_refused`]).
 ///
 /// The live value is read instead. A requirement the FML profile equips with
 /// a static descriptor becomes a writable descriptor built from that declared
@@ -860,12 +878,21 @@ fn descriptor_after_refusal(
     }
 }
 
-/// True when the camera answered with a PTP response code (it understood the
-/// command and refused it), as opposed to a transport or decoding failure.
+/// True only when the camera answered `GetDevicePropDesc` with the specific
+/// `GeneralError` (0x2002) response the X-T5 on firmware 4.31 in USB mode
+/// 0x6 is documented to return for every descriptor (see
+/// `docs/internals/x-t5-firmware-4.31-static-analysis-2026-09-03.md`). Any
+/// other PTP response code — a transient `DeviceBusy`, an `AccessDenied`, an
+/// unsupported-property `DevicePropNotSupported`, or anything else the
+/// camera might answer — is a real failure, not the documented structural
+/// refusal, and must fail preflight instead of taking the value-shape /
+/// static-descriptor fallback that mints write authority. A transport or
+/// decoding failure is not a refusal either.
 fn camera_refused(error: &anyhow::Error) -> bool {
     matches!(
         error.downcast_ref::<crate::ptp::error::Error>(),
-        Some(crate::ptp::error::Error::Response(_))
+        Some(crate::ptp::error::Error::Response(code))
+            if *code == u16::from(ResponseCode::GeneralError)
     )
 }
 
@@ -1038,9 +1065,10 @@ mod tests {
 
     use super::{
         MAX_DISPLAY_TEXT_CHARS, MutationAuthorization, MutationPermit, PreflightFacts,
-        camera_refused, decide_preflight, descriptor_from_static, sanitize_for_display,
-        select_capability_profile, select_profile, validate_device_info, validate_mode_and_battery,
-        validate_physical_identity, validate_serial_binding, validate_value_shape,
+        camera_refused, decide_preflight, descriptor_from_static, descriptor_read_failure,
+        sanitize_for_display, select_capability_profile, select_profile, validate_device_info,
+        validate_mode_and_battery, validate_physical_identity, validate_serial_binding,
+        validate_value_shape,
     };
 
     fn requirement(data_type: CameraPreflightDataType, writable: bool) -> CameraPreflightProperty {
@@ -1260,6 +1288,55 @@ mod tests {
         assert!(camera_refused(&refused));
         assert!(!camera_refused(&transport));
         assert!(!camera_refused(&anyhow::anyhow!("decoding failed")));
+    }
+
+    // `collect_property_descriptors` dispatches solely on `camera_refused`:
+    // its `Err(error) if camera_refused(&error)` arm is the only path into
+    // `descriptor_after_refusal`, and every other `Err` propagates unchanged
+    // (`Err(error) => return Err(error)`). Proving a response code is not a
+    // refusal therefore proves collection fails closed for it without a
+    // descriptor, without needing a live device to exercise the full call.
+    #[test]
+    fn device_busy_is_a_transient_failure_not_a_camera_refusal() {
+        let busy: anyhow::Error = crate::ptp::error::Error::Response(0x2019).into();
+
+        assert!(!camera_refused(&busy), "{busy:#}");
+    }
+
+    #[test]
+    fn device_prop_not_supported_is_a_real_failure_not_a_camera_refusal() {
+        let unsupported: anyhow::Error = crate::ptp::error::Error::Response(0x200a).into();
+
+        assert!(!camera_refused(&unsupported), "{unsupported:#}");
+    }
+
+    // `collect_property_descriptors`'s `Err(error) => return
+    // Err(descriptor_read_failure(requirement.code, error))` arm is what a
+    // non-refusal response actually reaches (`camera_refused` above proves
+    // it takes that arm rather than `descriptor_after_refusal`'s). Proving
+    // `descriptor_read_failure` names both the property code and the
+    // response confirms the surfaced error is diagnosable, without needing
+    // a live device to exercise the full call.
+    #[test]
+    fn descriptor_read_failure_names_the_property_code_and_device_busy_response() {
+        let busy: anyhow::Error = crate::ptp::error::Error::Response(0x2019).into();
+
+        let error = descriptor_read_failure(0xD16E, busy);
+        let text = format!("{error:#}");
+
+        assert!(text.contains("0xd16e"), "{text}");
+        assert!(text.contains("DeviceBusy (0x2019)"), "{text}");
+    }
+
+    #[test]
+    fn descriptor_read_failure_names_the_property_code_and_unsupported_response() {
+        let unsupported: anyhow::Error = crate::ptp::error::Error::Response(0x200a).into();
+
+        let error = descriptor_read_failure(0xD16E, unsupported);
+        let text = format!("{error:#}");
+
+        assert!(text.contains("0xd16e"), "{text}");
+        assert!(text.contains("DevicePropNotSupported (0x200a)"), "{text}");
     }
 
     const PROFILE: CameraPreflightProfile = CameraPreflightProfile {

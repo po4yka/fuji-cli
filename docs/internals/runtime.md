@@ -185,9 +185,14 @@ A physical X-T5 on firmware 4.31 in USB mode 0x6 answers `GeneralError` to
 every `GetDevicePropDesc` while serving `GetDevicePropValue`; the firmware
 image shows why: the DeviceInfo for that mode is assembled at run time and the
 static descriptor table has no rows for the simulation settings (see the
-[firmware analysis](x-t5-firmware-4.31-static-analysis-2026-09-03.md)). When
-the camera refuses a descriptor with a PTP response code, preflight reads the
-value instead. Two outcomes follow:
+[firmware analysis](x-t5-firmware-4.31-static-analysis-2026-09-03.md)). Only
+that specific `GeneralError` (0x2002) counts as this documented, structural
+refusal; preflight reads the value instead only for it. Any other PTP
+response code on the descriptor read — a transient `DeviceBusy`, an
+`AccessDenied`, an unsupported-property `DevicePropNotSupported`, or anything
+else the camera answers — fails preflight outright and never reaches the
+fallback, so it cannot silently widen write authority. Two outcomes follow
+for the documented refusal:
 
 - A requirement without a `static_descriptor` is checked only for wire shape
   against the declared datatype (scalar width or PTP string framing). That is

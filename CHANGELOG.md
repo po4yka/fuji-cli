@@ -20,4 +20,12 @@ The current `main` branch is unreleased. A release exists only when an annotated
 - The repository landing page and GitHub community entry points now distinguish
   implemented behavior, authorized camera mutations, and physical-device proof.
 
+### Fixed
+
+- Preflight now treats only the PTP `GeneralError` (0x2002) response as a
+  descriptor refusal eligible for the value-shape / static-descriptor
+  fallback; a transient `DeviceBusy`, an `AccessDenied`, or an
+  unsupported-property `DevicePropNotSupported` fails preflight instead of
+  silently widening write authority.
+
 [Unreleased]: https://github.com/po4yka/fuji-cli/compare/f18cbf0d9bd39a768077c9de2d2ad7dcc299e34d...HEAD
