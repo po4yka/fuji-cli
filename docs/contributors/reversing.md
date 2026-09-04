@@ -154,10 +154,16 @@ pin (see the
 gets its physical-device confirmation.
 
 The JSON artifact records, per property, whether the descriptor and value were
-served, the decoded descriptor datatype, writability and form, and the value's
-length, wire shape and SHA-256. It never records payload bytes, so it needs no
-privacy review before sharing; a property may hold a serial number, an owner
-string, or GPS data. There is deliberately no `--print-values`.
+served, the decoded descriptor datatype, writability and form, and the
+value's length, wire shape, and a SHA-256 digest instead of the raw bytes.
+That digest is one-way only for a string-valued property, whose value space
+is too large to exhaust; for a 2- or 4-byte scalar-valued property it is
+invertible by exhaustive search, which recovered all 53 scalar values in a
+real run's artifact in seconds (see the
+[X-T5 macOS transport findings](../internals/x-t5-device-audit-2026-09-04.md)).
+So the artifact needs the same privacy review a raw scalar payload would; a
+property may hold a serial number, an owner string, or GPS data. There is
+deliberately no `--print-values`.
 
 ## Reading a Firmware Container
 
@@ -443,6 +449,44 @@ Both open questions above have been answered by the maintainer.
 The physical-device work (the capture and, if needed, the sanctioned probe run
 against an X-T5 with a recovery plan) remains a maintainer step.
 
+### macOS findings (2026-09-04)
+
+A macOS-focused follow-up session found that the "capture X RAW Studio's USB
+traffic" plan above needs a different mechanism on this platform. X RAW
+Studio 1.28.0 never opens the camera's USB interface itself: its
+`FTLPTP.dylib` talks to the camera through `ImageCaptureCore`, and
+`ptpcamerad` holds the actual PTP interface throughout. A host-side USB
+capture on Apple Silicon therefore sees no X RAW Studio traffic at all, and
+`pkill ptpcamerad` disconnects X RAW Studio itself (it reconnects once the
+daemon relaunches) rather than merely freeing the interface for another
+client. The dylib is signed with a hardened runtime, so in-process hooking of
+its calls would need a re-signed local copy; its own dormant debug logger
+cannot be enabled without code injection, and `ptpcamerad`'s unified log
+records only PTP transaction timing and counts, never opcodes or payloads.
+Full detail is in the
+[X-T5 macOS transport findings](../internals/x-t5-device-audit-2026-09-04.md).
+
+The same session found a working alternative: `ImageCaptureCore` pass-through
+from third-party code. A scratch tool built on `ICDeviceBrowser`,
+`requestOpenSession`, and `requestSendPTPCommand` sent
+`GetDevicePropValue(0xD18C)` and got back a valid response while
+`ptpcamerad` kept the interface and X RAW Studio stayed connected - the same
+mechanism the vendor apps use, and one that coexists with other PTP clients
+instead of requiring exclusive USB access. This is a candidate macOS
+transport for `fujicli` itself, though `GetObject`/`SendObject` bulk-size
+behavior over this path is unverified.
+
+Before any further mutating write toward the still/movie namespace question,
+run the read-only experiment described in the
+[X-T5 macOS transport findings](../internals/x-t5-device-audit-2026-09-04.md):
+give still and movie custom-setting slots distinguishable names on the
+camera body, then read `0xD18C` and `0xD18D` with the STILL/MOVIE switch in
+each position and compare. `0xD18D` supplies the observable open question 1
+above is missing - reading it back after a `0xD18C` write and comparing
+against the operator-declared slot names identifies which namespace the
+write landed in - so this experiment is the recommended first step, ahead of
+the mutating probe.
+
 ## Reversing Render Profiles
 
 Rendering is the hard one. Fujifilm doesn't document the conversion profile wire
@@ -486,6 +530,11 @@ creates mutation authorization.
   <https://schneegans.de/windows/unattend-generator/>.
 - **Wireshark** - for USB packet capture. A patched build that exposes
   `frame.raw` in `tshark` is required for USB traffic.
+- **macOS note** - on macOS, X RAW Studio's own traffic goes through
+  `ImageCaptureCore` and `ptpcamerad` rather than direct USB, so it cannot be
+  captured on the host; the Windows VM route above, or an in-process hook of
+  `ImageCaptureCore`, is required instead. See the
+  [X-T5 macOS transport findings](../internals/x-t5-device-audit-2026-09-04.md).
 
 ### Procedure
 

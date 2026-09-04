@@ -20,6 +20,11 @@ and dispatches everything through traits the codegen implements.
 - [X-T5 device audit](x-t5-device-audit-2026-08-31.md) - the read-only
   physical-device audit: per-USB-mode surface, the descriptor asymmetry,
   virtual object stores, the property inventory, and open questions.
+- [X-T5 device run and macOS transport findings](x-t5-device-audit-2026-09-04.md) -
+  a follow-up read-only device run plus host-side analysis of X RAW Studio's
+  macOS transport (ImageCaptureCore/`ptpcamerad`), the `discover surface`
+  artifact's privacy caveat, and a read-only design for the still/movie
+  `0xD18C` namespace question.
 - [X-T5 firmware 4.31 static analysis](x-t5-firmware-4.31-static-analysis-2026-09-03.md) -
   the `FWUP0030.DAT` container format, the section LZSS compression, and the
   static PTP surface found in the image: DeviceInfo lists, the 61- and
