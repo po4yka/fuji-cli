@@ -516,6 +516,7 @@ fn decide_preflight(
         facts.battery_percent,
         facts.serial_binding,
         facts.info,
+        facts.definition.name,
     )?;
     Ok((profile, capability_profile))
 }
@@ -552,8 +553,9 @@ fn decide_mode_battery_and_binding(
     battery_percent: u8,
     serial_binding: Option<&SerialFingerprint>,
     info: &crate::ptp::DeviceInfo,
+    camera_name: &str,
 ) -> anyhow::Result<String> {
-    validate_mode_and_battery(profile, operation, usb_mode, battery_percent)?;
+    validate_mode_and_battery(profile, operation, usb_mode, battery_percent, camera_name)?;
     let serial_sha256 = crate::features::backup::sha256_hex(info.serial_number.as_bytes());
     validate_serial_binding(serial_binding, &serial_sha256)?;
     Ok(serial_sha256)
@@ -581,6 +583,7 @@ pub(crate) fn run<'camera, Operation: OperationMarker>(
         battery_percent,
         serial_binding,
         &info,
+        definition.name,
     )?;
 
     let descriptors = collect_property_descriptors(&mut camera.ptp, profile)?;
@@ -777,10 +780,17 @@ fn validate_mode_and_battery(
     operation: CameraPreflightOperation,
     usb_mode: u32,
     battery_percent: u8,
+    camera_name: &str,
 ) -> anyhow::Result<()> {
     ensure!(
         profile.allowed_usb_modes.contains(&usb_mode),
-        "USB mode {usb_mode} is not allowed for {operation:?}; configure the X-T5 connection mode required by this operation"
+        "USB mode {usb_mode:#x} is not allowed for {operation:?} on {camera_name}; allowed USB modes: {} (set the camera's USB connection mode accordingly)",
+        profile
+            .allowed_usb_modes
+            .iter()
+            .map(|mode| format!("{mode:#x}"))
+            .collect::<Vec<_>>()
+            .join(", ")
     );
     ensure!(
         battery_percent >= profile.minimum_battery_percent,
@@ -1861,13 +1871,49 @@ mod tests {
 
     #[test]
     fn unsupported_usb_mode_and_low_battery_fail_closed() {
-        let wrong_mode =
-            validate_mode_and_battery(&PROFILE, CameraPreflightOperation::RawConversion, 1, 100);
-        let low_battery =
-            validate_mode_and_battery(&PROFILE, CameraPreflightOperation::RawConversion, 6, 99);
+        let wrong_mode = validate_mode_and_battery(
+            &PROFILE,
+            CameraPreflightOperation::RawConversion,
+            1,
+            100,
+            CAMERA.name,
+        );
+        let low_battery = validate_mode_and_battery(
+            &PROFILE,
+            CameraPreflightOperation::RawConversion,
+            6,
+            99,
+            CAMERA.name,
+        );
 
         assert!(wrong_mode.is_err());
         assert!(low_battery.is_err());
+    }
+
+    #[test]
+    fn wrong_usb_mode_error_names_camera_and_allowed_modes() {
+        let error = validate_mode_and_battery(
+            &PROFILE,
+            CameraPreflightOperation::SimulationAccess,
+            1,
+            100,
+            CAMERA.name,
+        )
+        .expect_err("USB mode 1 is not in PROFILE's allowed_usb_modes");
+
+        let message = error.to_string();
+        assert!(
+            message.contains(CAMERA.name),
+            "message must name the camera: {message}"
+        );
+        assert!(
+            message.contains("0x6"),
+            "message must list the allowed USB modes: {message}"
+        );
+        assert!(
+            message.contains("0x1"),
+            "message must name the observed USB mode: {message}"
+        );
     }
 
     #[test]
