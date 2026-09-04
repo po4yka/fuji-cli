@@ -374,6 +374,11 @@ trait SimulationSelectorIo {
     fn get_selector_raw(&mut self, property_code: u16) -> anyhow::Result<Vec<u8>>;
 
     fn set_selector_raw(&mut self, property_code: u16, value: &[u8]) -> anyhow::Result<()>;
+
+    /// Validates a selector snapshot against the permit's descriptor form,
+    /// without sending anything to the camera. Used to refuse an
+    /// out-of-form snapshot before the first write of a restore sequence.
+    fn validate_selector_raw(&self, property_code: u16, value: &[u8]) -> anyhow::Result<()>;
 }
 
 impl SimulationSelectorIo for AuthorizedSimulationIo<'_> {
@@ -389,6 +394,10 @@ impl SimulationSelectorIo for AuthorizedSimulationIo<'_> {
         self.authorized
             .set_prop_raw(property_code, value)
             .map(|_| ())
+    }
+
+    fn validate_selector_raw(&self, property_code: u16, value: &[u8]) -> anyhow::Result<()> {
+        self.authorized.validate_prop_raw(property_code, value)
     }
 }
 
@@ -450,6 +459,13 @@ where
         .get_selector_raw(property_code)
         .context("snapshotting the original simulation slot selector")
         .map_err(|cause| SimulationTransactionError::preparation(io.is_healthy(), cause))?;
+    io.validate_selector_raw(property_code, &original)
+        .with_context(|| {
+            format!(
+                "simulation slot selector (PTP property 0x{property_code:04x}): the camera's current slot value is outside the verified descriptor form, so nothing was written"
+            )
+        })
+        .map_err(|cause| SimulationTransactionError::preparation(io.is_healthy(), cause))?;
     let result = operation(io);
     let restore = if io.is_healthy() {
         restore_selector(io, property_code, &original)
@@ -477,6 +493,12 @@ where
     let original = io
         .get_selector_raw(property_code)
         .context("snapshotting the original simulation slot selector")?;
+    io.validate_selector_raw(property_code, &original)
+        .with_context(|| {
+            format!(
+                "simulation slot selector (PTP property 0x{property_code:04x}): the camera's current slot value is outside the verified descriptor form"
+            )
+        })?;
     let operation = operation(io);
 
     if !io.is_healthy() {
@@ -1071,6 +1093,10 @@ mod tests {
         writes: Vec<u16>,
         faults: VecDeque<Fault>,
         reads: Vec<u16>,
+        /// When set to a property code, `validate_selector_raw` rejects a
+        /// snapshot of that property, simulating a camera sitting on a slot
+        /// value outside the permit's verified descriptor form.
+        reject_selector_validation: Option<u16>,
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1095,6 +1121,7 @@ mod tests {
                 writes: Vec::new(),
                 faults: VecDeque::new(),
                 reads: Vec::new(),
+                reject_selector_validation: None,
             }
         }
 
@@ -1127,6 +1154,11 @@ mod tests {
         fn switch_selector_before_write(mut self, property_code: u16, selector: u16) -> Self {
             self.faults
                 .push_back(Fault::SwitchSelectorBeforeWrite(property_code, selector));
+            self
+        }
+
+        fn reject_selector_validation(mut self, property_code: u16) -> Self {
+            self.reject_selector_validation = Some(property_code);
             self
         }
     }
@@ -1231,6 +1263,15 @@ mod tests {
             }
             self.writes.push(property_code);
             self.properties.insert(property_code, value.to_vec());
+            Ok(())
+        }
+
+        fn validate_selector_raw(&self, property_code: u16, _value: &[u8]) -> anyhow::Result<()> {
+            if self.reject_selector_validation == Some(property_code) {
+                anyhow::bail!(
+                    "test simulation slot selector 0x{property_code:04x} snapshot is outside the fake's verified descriptor form"
+                );
+            }
             Ok(())
         }
     }
@@ -1794,6 +1835,55 @@ mod tests {
     }
 
     #[test]
+    fn out_of_form_selector_snapshot_is_refused_before_any_write() {
+        use crate::interrupt::InterruptLatch;
+
+        let profile = TestProfile {
+            first: Some(1),
+            second: Some(2),
+            third: Some(5),
+        };
+        // The camera reports a slot value the permit's descriptor does not
+        // recognize; the snapshot must be refused before `operation` runs
+        // and before either the profile write or any selector write.
+        let mut io =
+            FakeSimulationPropertyIo::with_profile(&profile).reject_selector_validation(0xd000);
+        io.properties
+            .insert(0xd000, codec::encode(&9_u16).expect("test selector"));
+
+        let error = with_restored_simulation_selector_io::<_, ()>(
+            &InterruptLatch::new(),
+            &mut io,
+            0xd000,
+            |_io| panic!("operation must not run when the snapshot fails validation"),
+        )
+        .expect_err("an out-of-form snapshot must be refused before any write");
+
+        assert_eq!(error.phase(), SimulationTransactionPhase::Preparation);
+        assert_eq!(error.state(), SimulationFailureState::RejectedWithoutChange);
+        assert!(
+            error.cause().to_string().contains("0xd000"),
+            "the error must name the selector property code: {error}"
+        );
+        assert!(
+            error
+                .cause()
+                .to_string()
+                .contains("outside the verified descriptor form"),
+            "the error must state the snapshot is outside the verified descriptor form: {error}"
+        );
+        assert!(
+            io.writes.is_empty(),
+            "zero property writes and zero selector writes must be recorded"
+        );
+        assert_eq!(
+            io.reads,
+            [0xd000],
+            "only the snapshot read may happen before validation refuses it"
+        );
+    }
+
+    #[test]
     fn temporary_selector_restores_once_after_failure_in_each_batch_slot() {
         let profile = TestProfile {
             first: Some(1),
@@ -1997,6 +2087,50 @@ mod tests {
                 .count(),
             1,
             "only the target selection may be written on a poisoned session"
+        );
+    }
+
+    #[test]
+    fn out_of_form_selector_snapshot_is_refused_before_the_temporary_switch() {
+        let profile = TestProfile {
+            first: Some(1),
+            second: Some(2),
+            third: Some(5),
+        };
+        // The camera reports a slot value the permit's descriptor does not
+        // recognize; the snapshot must be refused before the target slot is
+        // ever selected and before `operation` runs.
+        let mut io =
+            FakeSimulationPropertyIo::with_profile(&profile).reject_selector_validation(0xd000);
+        io.properties
+            .insert(0xd000, codec::encode(&9_u16).expect("test selector"));
+
+        let error = with_temporary_simulation_selector_io::<_, ()>(
+            &crate::interrupt::InterruptLatch::new(),
+            &mut io,
+            0xd000,
+            |_io| panic!("operation must not run when the snapshot fails validation"),
+        )
+        .expect_err("an out-of-form snapshot must be refused before the temporary switch");
+
+        assert!(
+            error.to_string().contains("0xd000"),
+            "the error must name the selector property code: {error}"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("outside the verified descriptor form"),
+            "the error must state the snapshot is outside the verified descriptor form: {error}"
+        );
+        assert!(
+            io.writes.is_empty(),
+            "zero property writes and zero selector writes must be recorded"
+        );
+        assert_eq!(
+            io.reads,
+            [0xd000],
+            "only the snapshot read may happen before validation refuses it"
         );
     }
 

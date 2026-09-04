@@ -188,6 +188,16 @@ impl MutationPermit {
         self.authorization.validate(code, params, data)
     }
 
+    /// Validates a serialized property candidate against this permit's
+    /// descriptor without sending anything to the camera and without
+    /// widening the permit's authorization. Used to refuse a value already
+    /// sitting on the camera (a snapshot taken for a later restore, for
+    /// example) before any write is attempted.
+    pub(crate) fn validate_property_value(&self, property: u16, data: &[u8]) -> anyhow::Result<()> {
+        self.authorization
+            .validate_property_candidate(property, data)
+    }
+
     pub(crate) fn firmware_option_write_value(
         &self,
         option: &str,

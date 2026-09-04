@@ -338,6 +338,16 @@ restores and verifies the exact raw snapshot. The batch API used by
 sequence, selecting each slot once as it is read in turn, and returns no
 partial list on failure.
 
+Both the read (`with_temporary_simulation_selector`) and write
+(`with_restored_simulation_selector`) snapshot-then-restore paths validate the
+selector snapshot against the mutation permit's descriptor form immediately
+after taking it, before the temporary slot switch or the profile write runs.
+A camera sitting on a slot value outside that verified form is refused up
+front instead of letting the later restore fail after a profile write has
+already landed; on the write path this surfaces as a `Preparation`-phase
+`SimulationTransactionError` naming the selector property code, with zero
+writes attempted, rather than degrading to `CameraStateUnknown`.
+
 Risk classification is separate from emulation availability. The production
 CLI still rejects emulation for these reads because validated mutation
 preflight requires a native physical model binding; it must not offer an

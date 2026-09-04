@@ -127,6 +127,16 @@ impl<'io> AuthorizedPtp<'io> {
         self.ptp.set_prop_raw(self.permit, code, value)
     }
 
+    /// Validates a raw property value against the permit's descriptor
+    /// without sending anything to the camera. Never widens the permit.
+    pub(crate) fn validate_prop_raw(
+        &self,
+        code: impl Into<u16>,
+        value: &[u8],
+    ) -> anyhow::Result<()> {
+        self.permit.validate_property_value(code.into(), value)
+    }
+
     pub(crate) fn get_prop<T>(&mut self, code: impl Into<u16>) -> anyhow::Result<T>
     where
         T: for<'a> BinRead<Args<'a> = ()>,
