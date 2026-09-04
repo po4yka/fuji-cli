@@ -29,7 +29,9 @@ result-*
 
 # ---> FML
 # Artifacts from `cue export ./fml`
-*.json
+/*.json
+/fml/**/*.json
+# JSON fixtures under tests/ must remain trackable.
 
 # Legacy build-time codegen output from checkouts predating OUT_DIR generation.
 src/lib/generated/
