@@ -129,7 +129,11 @@ impl InterruptLatch {
     /// pending interrupt turns the completed result into an [`Interrupted`]
     /// error so the caller unwinds and the session closes normally.
     pub(crate) fn after_transaction<T>(&self, result: anyhow::Result<T>) -> anyhow::Result<T> {
-        self.after_transaction_with(result, anyhow::Error::new, anyhow::Error::context)
+        self.after_transaction_with(
+            result,
+            |_, interrupted| anyhow::Error::new(interrupted),
+            anyhow::Error::context,
+        )
     }
 
     /// Generalisation of [`Self::after_transaction`] for a result type whose
