@@ -6,9 +6,9 @@ contracts.
 
 ## JSON
 
-`-j` and `--json` are available for `device list`, `device info`, `simulation list`,
-`simulation get`, file-targeted `backup export`, `backup inspect`, and `backup
-import --dry-run`.
+`-j` and `--json` are available for `device list`, `device info`, `simulation
+list`, `simulation get`, `simulation set`, `simulation import`, file-targeted
+`backup export`, `backup inspect`, and `backup import --dry-run`.
 
 Commands whose output is binary or has no structured result do not accept
 `--json`. Without it, structured command output is human-readable text.
@@ -22,6 +22,11 @@ document framing are part of the public contract.
 
 The `source` object has `cameraName`, `firmware`, `manufacturer`, `model`,
 `productId`, `serialSha256`, and `vendorId`.
+
+`simulation set --json` and `simulation import --json` contain `slot`,
+`outcome`, and `written`. `outcome` is `applied_and_verified` or
+`no_change_verified`. `written` lists each confirmed write's `setting` and
+`propertyCode`, in write order, and is empty for `no_change_verified`.
 
 `productId` and `vendorId` are numeric. A consumer that closes stdout after
 receiving enough textual output is treated as a successful early termination,

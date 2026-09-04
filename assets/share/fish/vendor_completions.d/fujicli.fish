@@ -91,6 +91,7 @@ complete -c fujicli -n "__fish_fujicli_using_subcommand simulation; and __fish_s
 complete -c fujicli -n "__fish_fujicli_using_subcommand simulation; and __fish_seen_subcommand_from set" -l white-balance-temperature -d 'White Balance Temperature' -r
 complete -c fujicli -n "__fish_fujicli_using_subcommand simulation; and __fish_seen_subcommand_from set" -l target-serial-sha256 -d 'SHA-256 fingerprint of the exact physical camera serial number' -r
 complete -c fujicli -n "__fish_fujicli_using_subcommand simulation; and __fish_seen_subcommand_from set" -s d -l device -d 'Manually specify target device using USB <BUS>.<ADDRESS>' -r
+complete -c fujicli -n "__fish_fujicli_using_subcommand simulation; and __fish_seen_subcommand_from set" -s j -l json -d 'Format output using JSON'
 complete -c fujicli -n "__fish_fujicli_using_subcommand simulation; and __fish_seen_subcommand_from set" -s v -l verbose -d 'Log extra debugging information (multiple instances increase verbosity)'
 complete -c fujicli -n "__fish_fujicli_using_subcommand simulation; and __fish_seen_subcommand_from set" -s h -l help -d 'Print help (see more with \'--help\')'
 complete -c fujicli -n "__fish_fujicli_using_subcommand simulation; and __fish_seen_subcommand_from export" -s d -l device -d 'Manually specify target device using USB <BUS>.<ADDRESS>' -r
@@ -99,6 +100,7 @@ complete -c fujicli -n "__fish_fujicli_using_subcommand simulation; and __fish_s
 complete -c fujicli -n "__fish_fujicli_using_subcommand simulation; and __fish_seen_subcommand_from export" -s h -l help -d 'Print help'
 complete -c fujicli -n "__fish_fujicli_using_subcommand simulation; and __fish_seen_subcommand_from import" -l target-serial-sha256 -d 'SHA-256 fingerprint of the exact physical camera serial number' -r
 complete -c fujicli -n "__fish_fujicli_using_subcommand simulation; and __fish_seen_subcommand_from import" -s d -l device -d 'Manually specify target device using USB <BUS>.<ADDRESS>' -r
+complete -c fujicli -n "__fish_fujicli_using_subcommand simulation; and __fish_seen_subcommand_from import" -s j -l json -d 'Format output using JSON'
 complete -c fujicli -n "__fish_fujicli_using_subcommand simulation; and __fish_seen_subcommand_from import" -s v -l verbose -d 'Log extra debugging information (multiple instances increase verbosity)'
 complete -c fujicli -n "__fish_fujicli_using_subcommand simulation; and __fish_seen_subcommand_from import" -s h -l help -d 'Print help'
 complete -c fujicli -n "__fish_fujicli_using_subcommand simulation; and __fish_seen_subcommand_from help" -f -a "list" -d 'List simulations'

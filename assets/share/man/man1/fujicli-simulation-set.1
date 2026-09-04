@@ -4,7 +4,7 @@
 .SH NAME
 fujicli\-simulation\-set \- Set simulation parameters
 .SH SYNOPSIS
-\fBfujicli simulation set\fR [\fB\-\-clarity\fR] [\fB\-\-color\fR] [\fB\-\-color\-chrome\-effect\fR] [\fB\-\-color\-chrome\-fx\-blue\fR] [\fB\-\-color\-space\fR] [\fB\-\-custom\-setting\-name\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-dynamic\-range\fR] [\fB\-\-dynamic\-range\-priority\fR] [\fB\-\-film\-simulation\fR] [\fB\-\-grain\-effect\fR] [\fB\-\-highlight\-tone\fR] [\fB\-\-image\-quality\fR] [\fB\-\-image\-size\fR] [\fB\-\-lens\-modulation\-optimizer\fR] [\fB\-\-monochromatic\-color\-temperature\fR] [\fB\-\-monochromatic\-color\-tint\fR] [\fB\-\-noise\-reduction\fR] [\fB\-\-shadow\-tone\fR] [\fB\-\-sharpness\fR] [\fB\-\-smooth\-skin\-effect\fR] [\fB\-\-white\-balance\fR] [\fB\-\-white\-balance\-shift\-blue\fR] [\fB\-\-white\-balance\-shift\-red\fR] [\fB\-\-white\-balance\-temperature\fR] [\fB\-d\fR|\fB\-\-device\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-target\-serial\-sha256\fR> <\fISLOT\fR>
+\fBfujicli simulation set\fR [\fB\-\-clarity\fR] [\fB\-\-color\fR] [\fB\-\-color\-chrome\-effect\fR] [\fB\-\-color\-chrome\-fx\-blue\fR] [\fB\-\-color\-space\fR] [\fB\-\-custom\-setting\-name\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-dynamic\-range\fR] [\fB\-\-dynamic\-range\-priority\fR] [\fB\-\-film\-simulation\fR] [\fB\-\-grain\-effect\fR] [\fB\-\-highlight\-tone\fR] [\fB\-\-image\-quality\fR] [\fB\-\-image\-size\fR] [\fB\-\-lens\-modulation\-optimizer\fR] [\fB\-\-monochromatic\-color\-temperature\fR] [\fB\-\-monochromatic\-color\-tint\fR] [\fB\-\-noise\-reduction\fR] [\fB\-\-shadow\-tone\fR] [\fB\-\-sharpness\fR] [\fB\-\-smooth\-skin\-effect\fR] [\fB\-\-white\-balance\fR] [\fB\-\-white\-balance\-shift\-blue\fR] [\fB\-\-white\-balance\-shift\-red\fR] [\fB\-\-white\-balance\-temperature\fR] [\fB\-j\fR|\fB\-\-json\fR] [\fB\-d\fR|\fB\-\-device\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-target\-serial\-sha256\fR> <\fISLOT\fR>
 .SH DESCRIPTION
 Set simulation parameters
 .SH OPTIONS
@@ -134,6 +134,9 @@ Schema range: 2500..=10000. Step: 10. Camera firmware may further restrict value
 .TP
 \fB\-\-target\-serial\-sha256\fR \fI<TARGET_SERIAL_SHA256>\fR
 SHA\-256 fingerprint of the exact physical camera serial number
+.TP
+\fB\-j\fR, \fB\-\-json\fR
+Format output using JSON
 .TP
 \fB\-d\fR, \fB\-\-device\fR \fI<DEVICE>\fR
 Manually specify target device using USB <BUS>.<ADDRESS>

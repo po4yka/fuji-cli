@@ -1,7 +1,8 @@
 use fujicli::{
     features::simulation::{
         SimulationFailureState, SimulationListItem, SimulationTransactionError,
-        TemporarySimulationSelectorError, TemporarySimulationSelectorState,
+        SimulationTransactionSuccess, SimulationWriteReceipt, TemporarySimulationSelectorError,
+        TemporarySimulationSelectorState,
     },
     generated::{cli::SimulationArgs, options::CustomSetting, simulations::SimulationBase},
     policy::SerialFingerprint,
@@ -13,6 +14,7 @@ use crate::cli::{
     common::{camera_state::CameraStateUnknown, interrupt, usb},
 };
 use clap::Subcommand;
+use serde::Serialize;
 
 pub const MAX_SIMULATION_INPUT_BYTES: usize = 1024 * 1024;
 
@@ -111,6 +113,111 @@ fn tag_selector_state_unknown<T>(result: anyhow::Result<T>) -> anyhow::Result<T>
     })
 }
 
+/// One entry of [`SimulationWriteOutcomeJson::written`]: the setting name
+/// and PTP property code of a confirmed write, in write order.
+/// `property_code` uses the `0x{:04x}` hex-string convention already used
+/// for `vendorId`/`productId` in `device list --json`, rather than a bare
+/// integer.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SimulationWriteReceiptJson {
+    setting: &'static str,
+    property_code: String,
+}
+
+impl From<&SimulationWriteReceipt> for SimulationWriteReceiptJson {
+    fn from(receipt: &SimulationWriteReceipt) -> Self {
+        Self {
+            setting: receipt.setting,
+            property_code: format!("0x{:04x}", receipt.property_code),
+        }
+    }
+}
+
+/// Discriminant for [`SimulationWriteOutcomeJson::outcome`], serialized as
+/// `snake_case` text so it reads the same as the Rust variant names on
+/// [`SimulationTransactionSuccess`].
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum SimulationWriteOutcomeName {
+    AppliedAndVerified,
+    NoChangeVerified,
+}
+
+/// The `simulation set`/`simulation import` `--json` success document: which
+/// slot was written, whether the write changed anything, and exactly what
+/// was written.
+#[derive(Debug, Serialize)]
+struct SimulationWriteOutcomeJson {
+    /// Serializes as `CustomSetting`'s `Display` text (e.g. `"C3"`) because
+    /// the generated `CustomSetting` type derives `SerializeDisplay`.
+    slot: CustomSetting,
+    outcome: SimulationWriteOutcomeName,
+    written: Vec<SimulationWriteReceiptJson>,
+}
+
+impl SimulationWriteOutcomeJson {
+    fn new(slot: CustomSetting, success: &SimulationTransactionSuccess) -> Self {
+        let outcome = match success {
+            SimulationTransactionSuccess::AppliedAndVerified(_) => {
+                SimulationWriteOutcomeName::AppliedAndVerified
+            }
+            SimulationTransactionSuccess::NoChangeVerified => {
+                SimulationWriteOutcomeName::NoChangeVerified
+            }
+        };
+        Self {
+            slot,
+            outcome,
+            written: success
+                .journal()
+                .iter()
+                .map(SimulationWriteReceiptJson::from)
+                .collect(),
+        }
+    }
+}
+
+/// The `simulation set`/`simulation import` text-mode success line: exactly
+/// what was written to `slot`, or that the slot already matched and nothing
+/// was written. Pure so it can be unit-tested against a constructed
+/// [`SimulationTransactionSuccess`] without a camera.
+fn describe_simulation_write(
+    slot: CustomSetting,
+    success: &SimulationTransactionSuccess,
+) -> String {
+    match success {
+        SimulationTransactionSuccess::AppliedAndVerified(journal) => {
+            let settings = journal
+                .iter()
+                .map(|receipt| format!("{} (0x{:04x})", receipt.setting, receipt.property_code))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let count = journal.len();
+            let noun = if count == 1 { "setting" } else { "settings" };
+            format!("simulation {slot}: applied and verified, {count} {noun} written: {settings}")
+        }
+        SimulationTransactionSuccess::NoChangeVerified => {
+            format!("simulation {slot}: no change, the slot already matched")
+        }
+    }
+}
+
+/// Report a completed simulation write on stdout: one text line by default,
+/// or one JSON document with `--json`, mirroring `handle_get`'s split.
+fn report_simulation_write(
+    json: bool,
+    slot: CustomSetting,
+    success: &SimulationTransactionSuccess,
+) -> anyhow::Result<()> {
+    if json {
+        let document = SimulationWriteOutcomeJson::new(slot, success);
+        write_stdout_line(format_args!("{}", serde_json::to_string(&document)?))
+    } else {
+        write_stdout_line(format_args!("{}", describe_simulation_write(slot, success)))
+    }
+}
+
 #[derive(Subcommand, Debug)]
 pub enum SimulationCmd {
     /// List simulations
@@ -150,6 +257,9 @@ pub enum SimulationCmd {
         target_serial_sha256: Option<SerialFingerprint>,
 
         #[command(flatten)]
+        output_format: JsonOptions,
+
+        #[command(flatten)]
         device: DeviceOptions,
     },
 
@@ -182,6 +292,9 @@ pub enum SimulationCmd {
         /// SHA-256 fingerprint of the exact physical camera serial number
         #[arg(long, required = true)]
         target_serial_sha256: Option<SerialFingerprint>,
+
+        #[command(flatten)]
+        output_format: JsonOptions,
 
         #[command(flatten)]
         device: DeviceOptions,
@@ -246,16 +359,17 @@ fn handle_set(
     simulation: SimulationArgs,
     slot: CustomSetting,
     target_serial_sha256: Option<SerialFingerprint>,
+    json: bool,
 ) -> anyhow::Result<()> {
     let mut camera = usb::get_native_camera(device.device, None)?;
     let target_serial_sha256 = target_serial_sha256
         .ok_or_else(|| anyhow::anyhow!("simulation write requires --target-serial-sha256"))?;
     let partial: SimulationBase = simulation.into();
     let mut session = camera.preflight_simulation_write(&target_serial_sha256)?;
-    interrupt::critical_camera_write("simulation update", || {
+    let success = interrupt::critical_camera_write("simulation update", || {
         tag_transaction_state_unknown(session.update_simulation(slot, partial))
     })?;
-    Ok(())
+    report_simulation_write(json, slot, &success)
 }
 
 #[expect(
@@ -289,6 +403,7 @@ fn handle_import(
     slot: CustomSetting,
     input: Input,
     target_serial_sha256: Option<SerialFingerprint>,
+    json: bool,
 ) -> anyhow::Result<()> {
     let buffer = input.read_limited(MAX_SIMULATION_INPUT_BYTES, "simulation JSON")?;
     let mut camera = usb::get_native_camera(device.device, None)?;
@@ -296,11 +411,11 @@ fn handle_import(
     let target_serial_sha256 = target_serial_sha256
         .ok_or_else(|| anyhow::anyhow!("simulation write requires --target-serial-sha256"))?;
     let mut session = camera.preflight_simulation_write(&target_serial_sha256)?;
-    interrupt::critical_camera_write("simulation write", || {
+    let success = interrupt::critical_camera_write("simulation write", || {
         tag_transaction_state_unknown(session.set_simulation(slot, &*simulation))
     })?;
 
-    Ok(())
+    report_simulation_write(json, slot, &success)
 }
 
 pub fn handle(cmd: SimulationCmd) -> anyhow::Result<()> {
@@ -318,8 +433,15 @@ pub fn handle(cmd: SimulationCmd) -> anyhow::Result<()> {
             slot,
             simulation,
             target_serial_sha256,
+            output_format,
             device,
-        } => handle_set(device, simulation, slot, target_serial_sha256),
+        } => handle_set(
+            device,
+            simulation,
+            slot,
+            target_serial_sha256,
+            output_format.json,
+        ),
         SimulationCmd::Export {
             slot,
             output,
@@ -330,8 +452,15 @@ pub fn handle(cmd: SimulationCmd) -> anyhow::Result<()> {
             slot,
             input,
             target_serial_sha256,
+            output_format,
             device,
-        } => handle_import(device, slot, input, target_serial_sha256),
+        } => handle_import(
+            device,
+            slot,
+            input,
+            target_serial_sha256,
+            output_format.json,
+        ),
     }
 }
 
@@ -339,12 +468,16 @@ pub fn handle(cmd: SimulationCmd) -> anyhow::Result<()> {
 mod tests {
     use std::fmt;
 
-    use fujicli::interrupt::Interrupted;
+    use fujicli::{
+        features::simulation::{SimulationTransactionSuccess, SimulationWriteReceipt},
+        generated::options::CustomSetting,
+        interrupt::Interrupted,
+    };
 
     use super::{
-        CameraStateUnknown, SimulationFailureState, TemporarySimulationSelectorState,
-        context_state_unknown, selector_state_is_unknown, tag_state_unknown,
-        transaction_state_is_unknown,
+        CameraStateUnknown, SimulationFailureState, SimulationWriteOutcomeJson,
+        TemporarySimulationSelectorState, context_state_unknown, describe_simulation_write,
+        selector_state_is_unknown, tag_state_unknown, transaction_state_is_unknown,
     };
 
     /// Minimal `std::error::Error` with a known, fixed `Display` output,
@@ -425,6 +558,101 @@ mod tests {
             tagged.downcast_ref::<Interrupted>().is_some(),
             "the Interrupted marker underneath the selector error must survive tagging: \
              {tagged:?}"
+        );
+    }
+
+    #[test]
+    fn describes_an_applied_write_by_setting_and_property_code() {
+        let success = SimulationTransactionSuccess::AppliedAndVerified(vec![
+            SimulationWriteReceipt {
+                setting: "film_simulation",
+                property_code: 0xd192,
+            },
+            SimulationWriteReceipt {
+                setting: "sharpness",
+                property_code: 0xd1a0,
+            },
+        ]);
+
+        let line = describe_simulation_write(CustomSetting::C3, &success);
+
+        assert_eq!(
+            line,
+            "simulation C3: applied and verified, 2 settings written: \
+             film_simulation (0xd192), sharpness (0xd1a0)"
+        );
+    }
+
+    #[test]
+    fn describes_a_single_setting_write_in_the_singular() {
+        let success =
+            SimulationTransactionSuccess::AppliedAndVerified(vec![SimulationWriteReceipt {
+                setting: "film_simulation",
+                property_code: 0xd192,
+            }]);
+
+        let line = describe_simulation_write(CustomSetting::C1, &success);
+
+        assert_eq!(
+            line,
+            "simulation C1: applied and verified, 1 setting written: film_simulation (0xd192)"
+        );
+    }
+
+    #[test]
+    fn describes_no_change_without_a_written_list() {
+        let line = describe_simulation_write(
+            CustomSetting::C3,
+            &SimulationTransactionSuccess::NoChangeVerified,
+        );
+
+        assert_eq!(line, "simulation C3: no change, the slot already matched");
+    }
+
+    #[test]
+    fn json_document_for_an_applied_write_lists_every_receipt() {
+        let success = SimulationTransactionSuccess::AppliedAndVerified(vec![
+            SimulationWriteReceipt {
+                setting: "film_simulation",
+                property_code: 0xd192,
+            },
+            SimulationWriteReceipt {
+                setting: "sharpness",
+                property_code: 0xd1a0,
+            },
+        ]);
+
+        let document = SimulationWriteOutcomeJson::new(CustomSetting::C3, &success);
+        let json = serde_json::to_value(&document).expect("document must serialize");
+
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "slot": "C3",
+                "outcome": "applied_and_verified",
+                "written": [
+                    {"setting": "film_simulation", "propertyCode": "0xd192"},
+                    {"setting": "sharpness", "propertyCode": "0xd1a0"},
+                ],
+            })
+        );
+    }
+
+    #[test]
+    fn json_document_for_no_change_carries_an_empty_written_list() {
+        let document = SimulationWriteOutcomeJson::new(
+            CustomSetting::C3,
+            &SimulationTransactionSuccess::NoChangeVerified,
+        );
+        let json = serde_json::to_value(&document).expect("document must serialize");
+
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "slot": "C3",
+                "outcome": "no_change_verified",
+                "written": [],
+            })
         );
     }
 }

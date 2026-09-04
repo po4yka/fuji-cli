@@ -1135,7 +1135,7 @@ _fujicli() {
             return 0
             ;;
         fujicli__subcmd__simulation__subcmd__import)
-            opts="-d -v -h --target-serial-sha256 --device --verbose --help"
+            opts="-j -d -v -h --target-serial-sha256 --json --device --verbose --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -1183,7 +1183,7 @@ _fujicli() {
             return 0
             ;;
         fujicli__subcmd__simulation__subcmd__set)
-            opts="-d -v -h --clarity --color --color-chrome-effect --color-chrome-fx-blue --color-space --custom-setting-name --dynamic-range --dynamic-range-priority --film-simulation --grain-effect --highlight-tone --image-quality --image-size --lens-modulation-optimizer --monochromatic-color-temperature --monochromatic-color-tint --noise-reduction --shadow-tone --sharpness --smooth-skin-effect --white-balance --white-balance-shift-blue --white-balance-shift-red --white-balance-temperature --target-serial-sha256 --device --verbose --help"
+            opts="-j -d -v -h --clarity --color --color-chrome-effect --color-chrome-fx-blue --color-space --custom-setting-name --dynamic-range --dynamic-range-priority --film-simulation --grain-effect --highlight-tone --image-quality --image-size --lens-modulation-optimizer --monochromatic-color-temperature --monochromatic-color-tint --noise-reduction --shadow-tone --sharpness --smooth-skin-effect --white-balance --white-balance-shift-blue --white-balance-shift-red --white-balance-temperature --target-serial-sha256 --json --device --verbose --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0

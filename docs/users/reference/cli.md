@@ -103,6 +103,16 @@ verified. Like the read commands, `set` and `import` then put the camera's
 custom-setting selector back on the slot it had before the command ran, so a
 successful write never changes which slot the camera is using.
 
+A successful `set` or `import` reports what it did. In text mode it prints one
+line, for example `simulation C3: applied and verified, 2 settings written:
+film_simulation (0xd192), sharpness (0xd1a0)`, or `simulation C3: no change,
+the slot already matched` when the candidate profile already matched the
+camera and nothing was written. With `--json` it prints one document instead,
+such as `{"slot":"C3","outcome":"applied_and_verified","written":[{"setting":
+"film_simulation","propertyCode":"0xd192"}]}`; `outcome` is
+`"applied_and_verified"` or `"no_change_verified"`, and `written` lists every
+confirmed write in write order (empty for `no_change_verified`).
+
 A failed restoration, of the recipe or of the previously selected slot, reports
 unknown camera state, not success. `set` and `import` require the lowercase
 SHA-256 fingerprint of the connected camera's PTP serial, obtained from
@@ -119,9 +129,9 @@ Numeric options accept negative values as separate tokens. If a string or enum
 value begins with `-`, use `--option=-value`; a detached `--next-flag` remains a
 flag, and the missing value is a usage error.
 
-`simulation get` and `list` accept `--json`. `get`, `export`, and `list` are not
-wire-level reads because selecting a stored profile temporarily writes the
-custom-setting selector.
+`simulation get`, `list`, `set`, and `import` accept `--json`. `get`,
+`export`, and `list` are not wire-level reads because selecting a stored
+profile temporarily writes the custom-setting selector.
 
 ## Image Commands
 

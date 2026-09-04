@@ -369,6 +369,51 @@ fn native_simulation_write_requires_exact_serial_binding_before_usb_lookup() {
 }
 
 #[test]
+fn simulation_set_json_is_a_recognized_flag_not_a_usage_error() {
+    let output = run(&[
+        "simulation",
+        "set",
+        "c1",
+        "--json",
+        "--target-serial-sha256",
+        "0000000000000000000000000000000000000000000000000000000000000000",
+        "--device",
+        "255.255",
+    ]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("No USB device found"), "{stderr}");
+}
+
+#[test]
+fn simulation_import_json_is_a_recognized_flag_not_a_usage_error() -> anyhow::Result<()> {
+    let directory = tempdir()?;
+    let input = directory.path().join("c1.json");
+    std::fs::write(&input, b"{}")?;
+    let input = input.to_string_lossy();
+
+    let output = run(&[
+        "simulation",
+        "import",
+        "c1",
+        &input,
+        "--json",
+        "--target-serial-sha256",
+        "0000000000000000000000000000000000000000000000000000000000000000",
+        "--device",
+        "255.255",
+    ]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("No USB device found"), "{stderr}");
+    Ok(())
+}
+
+#[test]
 fn raw_conversion_requires_exact_serial_binding_before_file_or_usb_access() {
     let output = run(&[
         "image",

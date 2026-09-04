@@ -14,6 +14,10 @@ The current `main` branch is unreleased. A release exists only when an annotated
 - Runtime shell-completion generation for Bash, Zsh, Fish, and PowerShell.
 - User documentation organized around safe first use, tasks, reference,
   troubleshooting, and the physical-evidence safety model.
+- `simulation set` and `simulation import` now report a completed write on
+  stdout: a text summary of what was applied and verified (or that the slot
+  already matched), and, with the new `--json`/`-j` flag on both commands,
+  a JSON document with the slot, outcome, and every confirmed write.
 
 ### Changed
 
