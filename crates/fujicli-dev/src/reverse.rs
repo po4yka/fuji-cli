@@ -1,4 +1,6 @@
-use anyhow::{Context, anyhow};
+use std::str::FromStr;
+
+use anyhow::{Context, anyhow, bail};
 use clap::Subcommand;
 use fujicli::{
     Camera,
@@ -27,6 +29,17 @@ pub enum DiscoverCommand {
         #[arg(long)]
         print_values: bool,
     },
+    /// Read one operator-supplied PTP property code, read-only
+    Property {
+        /// Property selector as hex, with an optional 0x/0X prefix, e.g.
+        /// 0xD18D or d18d. A digit-only value such as 5005 is read as hex,
+        /// not decimal; there is no decimal parsing path
+        code: PropertyCode,
+        /// Print the property payload; may include a custom-setting slot
+        /// name or an identity string
+        #[arg(long)]
+        print_values: bool,
+    },
     /// Read and validate the standard Fujifilm backup object
     #[command(subcommand)]
     Backup(BackupCommand),
@@ -46,6 +59,38 @@ pub enum DiscoverCommand {
 pub enum BackupCommand {
     /// Export to a new file without overwriting an existing artifact
     Export { output: NewOutput },
+}
+
+/// An operator-supplied PTP property selector, parsed as hex. Accepts an
+/// optional `0x`/`0X` prefix and 1 to 4 hex digits (`u16` covers the full
+/// range a PTP property code can take). There is deliberately no decimal
+/// parsing path: every PTP property code in this codebase and its
+/// documentation is written in hex, so a digit-only value such as `5005`
+/// parses as hex `0x5005`, not decimal 5005; supplying `0x` makes the base
+/// explicit but is never required.
+#[derive(Debug, Clone, Copy)]
+pub struct PropertyCode(u16);
+
+impl FromStr for PropertyCode {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let digits = value
+            .strip_prefix("0x")
+            .or_else(|| value.strip_prefix("0X"))
+            .unwrap_or(value);
+        if digits.is_empty()
+            || digits.len() > 4
+            || !digits.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            bail!(
+                "invalid property code {value:?}; expected 1 to 4 hex digits, with an optional 0x/0X prefix, e.g. 0xD18D"
+            );
+        }
+        let code = u16::from_str_radix(digits, 16)
+            .map_err(|_| anyhow!("invalid property code {value:?}"))?;
+        Ok(Self(code))
+    }
 }
 
 #[derive(Default)]
@@ -152,10 +197,23 @@ fn info(location: Location, print_values: bool) -> anyhow::Result<()> {
 fn simulation(location: Location, print_values: bool) -> anyhow::Result<()> {
     let mut camera = open(location)?;
     let mut probes = ProbeSummary::default();
+    probe_property(
+        &mut camera,
+        &mut probes,
+        prop_codes::CUSTOM_SETTING,
+        print_values,
+    );
     for &code in SIMULATION_PROP_CODES {
         probe_property(&mut camera, &mut probes, code, print_values);
     }
     probes.finish("simulation properties")
+}
+
+fn property(location: Location, code: PropertyCode, print_values: bool) -> anyhow::Result<()> {
+    let mut camera = open(location)?;
+    let mut probes = ProbeSummary::default();
+    probe_property(&mut camera, &mut probes, code.0, print_values);
+    probes.finish("property")
 }
 
 fn backup(location: Location, output: &NewOutput) -> anyhow::Result<()> {
@@ -246,6 +304,7 @@ pub fn handle(command: DiscoverCommand, location: Location) -> anyhow::Result<()
     match command {
         DiscoverCommand::Info { print_values } => info(location, print_values),
         DiscoverCommand::Simulation { print_values } => simulation(location, print_values),
+        DiscoverCommand::Property { code, print_values } => property(location, code, print_values),
         DiscoverCommand::Backup(BackupCommand::Export { output }) => backup(location, &output),
         DiscoverCommand::RenderProfile { output } => render_profile(location, &output),
         DiscoverCommand::Surface { output } => surface(location, &output),
@@ -254,7 +313,9 @@ pub fn handle(command: DiscoverCommand, location: Location) -> anyhow::Result<()
 
 #[cfg(test)]
 mod tests {
-    use super::describe_value;
+    use std::str::FromStr as _;
+
+    use super::{PropertyCode, describe_value};
 
     #[test]
     fn describe_value_decodes_scalars_and_ptp_strings_and_keeps_raw_hex() {
@@ -272,5 +333,57 @@ mod tests {
             "0xD36B: 7 bytes 03360035000000 (string \"65\")"
         );
         assert_eq!(describe_value(0xD20B, &[1, 0, 0]), "0xD20B: 3 bytes 010000");
+    }
+
+    #[test]
+    fn property_code_accepts_an_uppercase_hex_value_with_prefix() {
+        let code = PropertyCode::from_str("0xD18D").expect("valid hex code");
+        assert_eq!(code.0, 0xD18D);
+    }
+
+    #[test]
+    fn property_code_accepts_a_lowercase_hex_value_without_prefix() {
+        let code = PropertyCode::from_str("d18d").expect("valid hex code");
+        assert_eq!(code.0, 0xD18D);
+    }
+
+    #[test]
+    fn property_code_accepts_a_short_hex_value_with_prefix() {
+        let code = PropertyCode::from_str("0x5005").expect("valid hex code");
+        assert_eq!(code.0, 0x5005);
+    }
+
+    #[test]
+    fn property_code_treats_a_digit_only_value_as_hex_not_decimal() {
+        // There is no decimal parsing path: a digit-only value such as
+        // "5005" parses as hex 0x5005, not decimal 5005. Documented and
+        // pinned here so the behavior cannot drift silently.
+        let code = PropertyCode::from_str("5005").expect("digit-only value parses as hex");
+        assert_eq!(code.0, 0x5005);
+    }
+
+    #[test]
+    fn property_code_rejects_an_empty_value() {
+        PropertyCode::from_str("").expect_err("empty value must be rejected");
+    }
+
+    #[test]
+    fn property_code_rejects_a_bare_prefix() {
+        PropertyCode::from_str("0x").expect_err("prefix alone, with no digits, must be rejected");
+    }
+
+    #[test]
+    fn property_code_rejects_more_than_four_hex_digits() {
+        let error = PropertyCode::from_str("53645")
+            .expect_err("five digits cannot fit in a u16 property code");
+        assert!(
+            error.to_string().contains("invalid property code"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn property_code_rejects_non_hex_characters() {
+        PropertyCode::from_str("zz").expect_err("non-hex characters must be rejected");
     }
 }

@@ -42,6 +42,7 @@ The current discovery surface is deliberately limited:
 | every command | `OpenSession`, `CloseSession` | transient state-selecting session control |
 | `discover info` | `GetDeviceInfo`, `GetDevicePropValue` | read-only |
 | `discover simulation` | `GetDevicePropValue` | read-only |
+| `discover property` | `GetDevicePropValue` | read-only |
 | `discover backup export` | `GetObjectInfo`, `GetObject` | read-only |
 | `discover render-profile` | `GetDeviceInfo`, `GetDevicePropDesc`, `GetDevicePropValue` | read-only |
 | `discover surface` | `GetDeviceInfo`, `GetDevicePropDesc`, `GetDevicePropValue` | read-only |
@@ -119,8 +120,10 @@ cargo run --locked -p fujicli-dev --features reverse-tools -- \
   --device BUS.ADDRESS discover simulation -vvv
 ```
 
-Reads every PTP property code known to the schema in the camera's current slot.
-Errors on individual codes are expected for cameras that don't expose a
+Reads the custom-setting selector (`0xD18C`, `prop_codes::CUSTOM_SETTING`)
+first, so a device run shows which slot the settings below were read from,
+then every PTP property code known to the schema in the camera's current
+slot. Errors on individual codes are expected for cameras that don't expose a
 particular setting, so a partial result remains successful. If no property probe
 succeeds, the command exits unsuccessfully instead of reporting an empty
 discovery as success. The output informs the `settings:` list for the camera's
@@ -131,6 +134,24 @@ Reverse mode does **not** verify allowed values and deliberately does not write
 the custom-setting selector. Discovering other slots or mutating an unknown
 property requires a separately reviewed probe and physical-device recovery
 plan; it is not exposed by this CLI.
+
+### Property
+
+```sh
+cargo run --locked -p fujicli-dev --features reverse-tools -- \
+  --device BUS.ADDRESS discover property 0xD18D -vvv
+```
+
+Reads one operator-supplied PTP property code, read-only, with the same
+`--print-values` opt-in and privacy caveat as `discover simulation`: the
+payload may be a slot name or an identity string, so diagnostics omit it
+unless `--print-values` is given. The code accepts an optional `0x`/`0X`
+prefix and 1 to 4 hex digits; a digit-only value such as `5005` is read as
+hex, not decimal, since every PTP property code in this codebase and its
+documentation is already written in hex. This command is the tool for the
+read-only STILL/MOVIE experiment described below: read `0xD18C` and `0xD18D`
+with the body switch in each position and compare the two slot readings. No
+device run of `discover property` has been made yet.
 
 ### Surface
 
@@ -482,14 +503,15 @@ behavior over this path is unverified.
 
 Before any further mutating write toward the still/movie namespace question,
 run the read-only experiment described in the
-[X-T5 macOS transport findings](../internals/x-t5-device-audit-2026-09-04.md):
-give still and movie custom-setting slots distinguishable names on the
-camera body, then read `0xD18C` and `0xD18D` with the STILL/MOVIE switch in
-each position and compare. `0xD18D` supplies the observable open question 1
-above is missing - reading it back after a `0xD18C` write and comparing
-against the operator-declared slot names identifies which namespace the
-write landed in - so this experiment is the recommended first step, ahead of
-the mutating probe.
+[X-T5 macOS transport findings](../internals/x-t5-device-audit-2026-09-04.md),
+using the [`discover property`](#property) command above: give still and
+movie custom-setting slots distinguishable names on the camera body, then
+read `0xD18C` and `0xD18D` with the STILL/MOVIE switch in each position and
+compare. `0xD18D` supplies the observable open question 1 above is missing -
+reading it back after a `0xD18C` write and comparing against the
+operator-declared slot names identifies which namespace the write landed
+in - so this experiment is the recommended first step, ahead of the
+mutating probe.
 
 ## Reversing Render Profiles
 

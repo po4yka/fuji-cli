@@ -89,7 +89,7 @@ Design only; not yet run against the camera. The unresolved question is whether 
 ## Follow-ups
 
 - Change the `discover surface` tool so it no longer stores an exhaustively-invertible digest for scalar-valued properties (for example, salt the digest or drop it for scalar types); tracked separately, out of scope for this documentation pass (addressed: scalar values no longer carry a digest).
-- Print `0xD18C` in `discover simulation` output, so the read-only namespace experiment in the design section above can be run through the existing CLI.
+- Print `0xD18C` in `discover simulation` output, so the read-only namespace experiment in the design section above can be run through the existing CLI (addressed: `discover simulation` now reads `0xD18C` first, and `discover property CODE` reads any single property; neither has been run on a camera yet).
 - Implement the `NamespaceSignal` read of `0xD18D` in `crates/fujicli-dev/src/decision.rs` and run the read-only namespace experiment above as the maintainer's next step, ahead of any mutating `simulation-namespace` probe run.
 - Verify `GetObject`/`SendObject` bulk-size behavior over the `ImageCaptureCore` pass-through path before relying on it for anything beyond small property reads.
 - If `ImageCaptureCore` pass-through matures into a supported transport, add it as a maintainer-reviewed opt-in rather than silently replacing the direct-USB path.

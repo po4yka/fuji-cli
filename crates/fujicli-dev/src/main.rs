@@ -143,6 +143,42 @@ mod tests {
     }
 
     #[test]
+    fn discover_property_parses_a_hex_code_and_rejects_a_non_hex_one() {
+        let parsed = Cli::try_parse_from([
+            "fujicli-dev",
+            "--device",
+            "1.2",
+            "discover",
+            "property",
+            "0xD18D",
+            "--print-values",
+        ]);
+        assert!(parsed.is_ok(), "{parsed:?}");
+
+        let error = Cli::try_parse_from([
+            "fujicli-dev",
+            "--device",
+            "1.2",
+            "discover",
+            "property",
+            "zz",
+        ])
+        .expect_err("a non-hex property code must be rejected");
+        assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+    }
+
+    #[test]
+    fn discover_property_requires_an_explicit_device_like_every_other_discovery_command() {
+        let parsed = Cli::try_parse_from(["fujicli-dev", "discover", "property", "0xD18D"])
+            .expect("the device is validated per command, not by the parser");
+
+        let error = super::device(parsed.device)
+            .expect_err("discover property must never auto-select a camera either");
+
+        assert!(error.to_string().contains("--device"), "{error}");
+    }
+
+    #[test]
     fn the_surface_survey_writes_an_artifact_and_has_no_value_printing() {
         let parsed = Cli::try_parse_from([
             "fujicli-dev",
