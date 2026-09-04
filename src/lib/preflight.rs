@@ -25,7 +25,7 @@ use crate::{
     policy::{ModelBindingKind, PhysicalUsbIdentity, SerialFingerprint},
     ptp::{
         DevicePropCode, DevicePropDataType, DevicePropDesc, DevicePropForm, DevicePropValue, Ptp,
-        ResponseCode, codec::PtpString,
+        ResponseCode, codec::PtpString, parse_fuji_battery_percent,
     },
 };
 
@@ -765,14 +765,7 @@ fn read_battery_percent(ptp: &mut Ptp) -> anyhow::Result<u8> {
     let battery = ptp
         .get_prop::<PtpString>(DevicePropCode::FujiBatteryInfo2)?
         .into_inner();
-    let value = battery
-        .split(',')
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("camera battery response is empty"))?
-        .trim()
-        .parse::<u8>()?;
-    ensure!(value <= 100, "camera battery percentage exceeds 100");
-    Ok(value)
+    parse_fuji_battery_percent(&battery)
 }
 
 fn validate_mode_and_battery(

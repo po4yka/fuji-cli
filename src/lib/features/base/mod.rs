@@ -1,6 +1,5 @@
 pub mod info;
 
-use anyhow::anyhow;
 use info::{CameraInfo, DefaultCameraInfo};
 use log::debug;
 
@@ -12,7 +11,7 @@ use crate::{
         simulation::{manager::CameraSimulationManager, parser::CameraSimulationParser},
     },
     generated::options::UsbMode,
-    ptp::{DevicePropCode, Ptp, option::SimulationSetting},
+    ptp::{DevicePropCode, Ptp, option::SimulationSetting, parse_fuji_battery_percent},
 };
 
 pub(crate) trait CameraBase {
@@ -54,11 +53,7 @@ pub(crate) trait CameraBase {
             .get_prop::<crate::ptp::codec::PtpString>(DevicePropCode::FujiBatteryInfo2)?
             .into_inner();
 
-        let battery: u32 = battery_string
-            .split(',')
-            .next()
-            .ok_or_else(|| anyhow!("Failed to parse battery percentage"))?
-            .parse()?;
+        let battery: u32 = parse_fuji_battery_percent(&battery_string)?.into();
         debug!("Battery percentage: {battery}");
 
         let repr = DefaultCameraInfo {
