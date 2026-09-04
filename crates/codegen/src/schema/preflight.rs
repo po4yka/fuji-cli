@@ -91,6 +91,65 @@ pub fn validate_static_descriptors(
     Ok(())
 }
 
+/// `preflight[].firmware` must match `^[0-9]+\.[0-9]+$`, the same shape CUE
+/// already imposes on `capabilities.firmware` keys (`fml/camera.cue`
+/// `#CameraCapabilities`). CUE only requires `.+` for the preflight field
+/// itself, so a malformed string here only surfaces once the runtime
+/// compares it against a firmware string reported by a device, or against a
+/// capability key it never matches.
+pub fn validate_preflight_firmware_format(
+    cameras: &BTreeMap<String, Camera>,
+) -> anyhow::Result<()> {
+    for camera in cameras.values() {
+        for profile in &camera.spec.preflight {
+            ensure!(
+                is_firmware_format(&profile.firmware),
+                "camera `{}` preflight {:?} firmware `{}` does not match ^[0-9]+\\.[0-9]+$",
+                camera.id,
+                profile.operation,
+                profile.firmware
+            );
+        }
+    }
+    Ok(())
+}
+
+fn is_firmware_format(firmware: &str) -> bool {
+    let Some((major, minor)) = firmware.split_once('.') else {
+        return false;
+    };
+    !major.is_empty()
+        && !minor.is_empty()
+        && major.bytes().all(|byte| byte.is_ascii_digit())
+        && minor.bytes().all(|byte| byte.is_ascii_digit())
+        && !minor.contains('.')
+}
+
+/// The pair `(operation, firmware)` must be unique across a camera's
+/// preflight profiles. `src/lib/preflight.rs` `select_profile` already
+/// enforces this at runtime ("ambiguous preflight profiles") as a defense in
+/// depth, but a duplicate pair should fail the build long before it reaches
+/// a running binary.
+pub fn validate_preflight_profile_uniqueness(
+    cameras: &BTreeMap<String, Camera>,
+) -> anyhow::Result<()> {
+    for camera in cameras.values() {
+        let mut seen: Vec<(crate::ast::PreflightOperation, &str)> = Vec::new();
+        for profile in &camera.spec.preflight {
+            let key = (profile.operation, profile.firmware.as_str());
+            ensure!(
+                !seen.contains(&key),
+                "camera `{}` has more than one preflight profile for {:?} firmware `{}`",
+                camera.id,
+                profile.operation,
+                profile.firmware
+            );
+            seen.push(key);
+        }
+    }
+    Ok(())
+}
+
 fn validate_form(data_type: u16, form: &StaticForm) -> anyhow::Result<()> {
     match form {
         StaticForm::None => Ok(()),
@@ -246,7 +305,10 @@ fn lookup_wire_values(values: &BTreeMap<String, LookupValue>) -> Vec<i32> {
 mod tests {
     use std::collections::BTreeMap;
 
-    use super::{validate_option_data_types, validate_static_descriptors};
+    use super::{
+        validate_option_data_types, validate_preflight_firmware_format,
+        validate_preflight_profile_uniqueness, validate_static_descriptors,
+    };
     use crate::ast::{Camera, FujiOption};
 
     fn option(json: &str) -> (String, FujiOption) {
@@ -438,5 +500,82 @@ mod tests {
         assert!(validate_static_descriptors(&options, &empty_enum).is_err());
         assert!(validate_static_descriptors(&options, &bad_range).is_err());
         validate_static_descriptors(&options, &good).expect("a non-empty enumeration passes");
+    }
+
+    fn camera_with_profiles(profiles: &str) -> BTreeMap<String, Camera> {
+        let camera: Camera = serde_json::from_str(&format!(
+            r#"{{
+                "id": "demo",
+                "spec": {{
+                    "name": "Demo",
+                    "generation": "gen_a",
+                    "usb": {{ "vendor_id": 1227, "product_id": 764, "chunk_size_ceiling": 1024 }},
+                    "preflight": {profiles}
+                }}
+            }}"#
+        ))
+        .expect("camera must parse");
+        BTreeMap::from([(camera.id.clone(), camera)])
+    }
+
+    const PROFILE: &str = r#"{
+        "operation": "simulation_write",
+        "status": "unverified",
+        "firmware": "%FIRMWARE%",
+        "minimum_battery_percent": 100,
+        "allowed_usb_modes": [6],
+        "required_operations": [4097],
+        "required_properties": []
+    }"#;
+
+    fn profile_with_firmware(firmware: &str) -> String {
+        PROFILE.replace("%FIRMWARE%", firmware)
+    }
+
+    #[test]
+    fn a_dotted_two_part_numeric_firmware_string_passes() {
+        let cameras = camera_with_profiles(&format!("[{}]", profile_with_firmware("4.31")));
+
+        validate_preflight_firmware_format(&cameras)
+            .expect("a well-formed major.minor firmware string must pass");
+    }
+
+    #[test]
+    fn a_malformed_firmware_string_fails() {
+        for firmware in ["4.31.0", "4", "4.", ".31", "v4.31", "4.31a", ""] {
+            let cameras = camera_with_profiles(&format!("[{}]", profile_with_firmware(firmware)));
+
+            let error = validate_preflight_firmware_format(&cameras).unwrap_err();
+            let message = format!("{error:#}");
+            assert!(message.contains("demo"), "{message}");
+            assert!(message.contains("SimulationWrite"), "{message}");
+        }
+    }
+
+    #[test]
+    fn two_preflight_profiles_for_the_same_operation_and_firmware_fail() {
+        let cameras = camera_with_profiles(&format!(
+            "[{}, {}]",
+            profile_with_firmware("4.31"),
+            profile_with_firmware("4.31")
+        ));
+
+        let error = validate_preflight_profile_uniqueness(&cameras)
+            .expect_err("duplicate (operation, firmware) pairs must fail the build");
+        let message = format!("{error:#}");
+        assert!(message.contains("demo"), "{message}");
+        assert!(message.contains("4.31"), "{message}");
+    }
+
+    #[test]
+    fn two_preflight_profiles_with_distinct_firmware_pass_uniqueness() {
+        let cameras = camera_with_profiles(&format!(
+            "[{}, {}]",
+            profile_with_firmware("4.31"),
+            profile_with_firmware("4.32")
+        ));
+
+        validate_preflight_profile_uniqueness(&cameras)
+            .expect("distinct firmware for the same operation must pass");
     }
 }

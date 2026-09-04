@@ -226,6 +226,31 @@ Plus `SIMULATION_PROP_CODES: &[u16]` - the union of PTP property codes touched
 by every simulation setting, used by the runtime when polling for property
 changes.
 
+## Semantic checks
+
+`generate_into` (in [`lib.rs`](../../crates/codegen/src/lib.rs)) runs a set of
+pure functions over the parsed FML before it emits any Rust, each named for
+what it closes: `validate_option_data_types` and
+`validate_static_descriptors` (in
+[`schema/preflight.rs`](../../crates/codegen/src/schema/preflight.rs)) catch
+a pinned `data_type` that disagrees with the wire datatype an option's own
+codec emits. `validate_preflight_firmware_format` (same file) rejects a
+`preflight[].firmware` string that does not match `^[0-9]+\.[0-9]+$`, the
+same shape CUE already imposes on `capabilities.firmware` map keys, so a
+malformed preflight firmware string fails the build instead of silently
+never matching a capability profile. `validate_preflight_profile_uniqueness`
+(same file) rejects two preflight profiles on one camera that share both
+`operation` and `firmware`, closing the gap before the runtime's own
+`select_profile` defense ("ambiguous preflight profiles") would ever see it.
+`validate_simulation_setting_refs` (in
+[`schema/settings.rs`](../../crates/codegen/src/schema/settings.rs)) rejects
+a `features.simulation.settings[].ref` that names an option with no
+`prop_code`, and rejects two settings on one camera that share a `ref`;
+without this check a bad ref only fails once the generated
+`SimulationSetting::prop_code()` call does not exist, an opaque compile
+error in the generated crate rather than a codegen error naming the camera,
+setting id, and ref.
+
 ## Utilities
 
 [`util/dag.rs`](../../crates/codegen/src/util/dag.rs) - Kahn's algorithm with a

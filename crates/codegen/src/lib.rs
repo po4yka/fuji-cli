@@ -41,6 +41,12 @@ fn generate_into(fml: &ast::Fml, out_dir: &Path) -> anyhow::Result<()> {
         .context("validating pinned option datatypes")?;
     schema::preflight::validate_static_descriptors(&fml.options, &fml.cameras)
         .context("validating preflight static descriptors")?;
+    schema::preflight::validate_preflight_firmware_format(&fml.cameras)
+        .context("validating preflight firmware string format")?;
+    schema::preflight::validate_preflight_profile_uniqueness(&fml.cameras)
+        .context("validating preflight profile uniqueness")?;
+    schema::settings::validate_simulation_setting_refs(&fml.options, &fml.cameras)
+        .context("validating simulation setting refs")?;
 
     let options = common::options::generate(&fml.options).context("generating option types")?;
     write(out_dir, "options", options)?;
