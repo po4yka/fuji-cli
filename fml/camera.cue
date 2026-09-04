@@ -626,8 +626,15 @@ cameras: {
 			_preflight_simulation_access_properties: list.Concat([
 				_preflight_common_properties,
 				[_preflight_simulation_selector],
+				// The read path pins the same datatypes as the write path: when
+				// the camera refuses a descriptor, the pinned type is the only
+				// thing that checks the shape of the value it answers with.
 				[for setting in features.simulation.settings {
-					{code: options[setting.ref].spec.encoding.prop_code, writable: false}
+					{
+						code:      options[setting.ref].spec.encoding.prop_code
+						data_type: options[setting.ref].spec.encoding.data_type
+						writable:  false
+					}
 				}],
 			])
 			_preflight_raw_conversion_properties: list.Concat([
