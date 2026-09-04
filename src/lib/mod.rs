@@ -65,3 +65,17 @@ pub mod reverse;
 pub(crate) use camera::ptp;
 pub use camera::{Camera, CameraMode, SupportedCamera, preflight};
 pub use features::base::info::{CameraInfo, CameraInfoListItem, DefaultCameraInfo};
+
+// Coverage-guided fuzzing entry points for the PTP wire parsers. Gated
+// behind the non-default `fuzzing` feature, which no distributable build
+// enables, so shipped binaries keep the documented encapsulation contract:
+// `use fujicli::ptp::Ptp;` must still not compile. The descriptor entry is
+// an opaque pass/fail wrapper because `DevicePropDesc` and its companion
+// types stay crate-private.
+#[cfg(feature = "fuzzing")]
+pub use ptp::{
+    codec::{decode_exact, encode},
+    container::ContainerInfo,
+    decode_device_prop_desc_for_fuzzing,
+    structs::{DeviceInfo, ObjectInfo},
+};

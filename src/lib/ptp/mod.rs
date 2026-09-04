@@ -14,6 +14,16 @@ pub use structs::*;
 pub(crate) use chunk_policy::ChunkPolicy;
 pub(crate) use descriptor::*;
 
+// Coverage-guided fuzzing entry for the hand-rolled descriptor parser.
+// Gated behind the `fuzzing` feature, which no distributable build enables,
+// so shipped binaries keep their public surface unchanged. `DevicePropDesc`
+// and `decode` stay crate-private; the harness only needs the pass/fail
+// outcome, so the wrapper maps the decoded value away.
+#[cfg(feature = "fuzzing")]
+pub fn decode_device_prop_desc_for_fuzzing(bytes: &[u8]) -> anyhow::Result<()> {
+    descriptor::DevicePropDesc::decode(bytes).map(drop)
+}
+
 use std::{
     cell::Cell,
     cmp::min,

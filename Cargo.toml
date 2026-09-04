@@ -62,6 +62,7 @@ path = "src/lib/mod.rs"
 default = []
 reverse-tools = []
 dangerous-reverse-engineering = ["reverse-tools"]
+fuzzing = []
 
 [[bin]]
 name = "fujicli"
