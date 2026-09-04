@@ -11,28 +11,41 @@
 //! ("fix: seal raw PTP mutation access") sealed, narrowly and only for this
 //! one property round trip.
 //!
-//! No wire observable is known to distinguish the still and movie
-//! custom-setting namespaces (`reversing.md`, open question 1), so the
-//! verdict this command reaches is always [`decision::Verdict::Ambiguous`]
-//! today. Fabricating a Still/Movie verdict from an unknown signal would
-//! violate `AGENTS.md`'s prohibition on inventing camera capabilities, so
-//! this module does not do that; corroborate manually via the camera's
-//! C1-C7 LCD menu per the maintainer decision.
+//! The candidate observable for telling the still and movie custom-setting
+//! namespaces apart is `0xD18D` (`custom_setting_name`), identified in the
+//! 2026-09-04 macOS session and not yet confirmed on a camera: give the probed
+//! C1-C7 slot distinguishable names in each namespace on the camera body ahead
+//! of time, pass them via `--still-slot-name`/`--movie-slot-name`, and this
+//! command reads `0xD18D` back after the `0xD18C` write and compares it
+//! against those two declared names (`reversing.md`'s "macOS findings
+//! (2026-09-04)"). Omitting both flags, or a read/decode failure on that one
+//! extra readback, always resolves to [`decision::Verdict::Ambiguous`] -- this
+//! module never fabricates a Still/Movie verdict from an unread or undeclared
+//! signal, per `AGENTS.md`'s prohibition on inventing camera capabilities.
+//! This has been implemented and exercised only against fakes in this crate's
+//! tests; it has not yet been run against a physical camera. A resolved
+//! verdict is still a single-run observation -- corroborate it manually via
+//! the camera's C1-C7 LCD menu per the maintainer decision.
 
 use std::{
     path::{Path, PathBuf},
+    str::FromStr as _,
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context as _, ensure};
 use clap::{Subcommand, ValueEnum};
-use fujicli::{Camera, generated::options::CustomSetting};
+use fujicli::{
+    Camera,
+    generated::options::{CustomSetting, CustomSettingName, prop_codes},
+};
 
 use crate::{
     audit::{self, AuditRecord},
-    decision::{self, Verdict},
+    decision::{self, NamespaceSignal, Verdict},
     interrupt::{self, CriticalWriteError},
     output::NewOutput,
+    reverse::decode_ptp_string,
     usb::{self, Location},
 };
 
@@ -110,6 +123,22 @@ pub enum ProbeCommand {
         /// `I-UNDERSTAND-THIS-WRITES-SELECTOR-D18C` exactly.
         #[arg(long)]
         acknowledge: String,
+
+        /// Operator-declared name of the probed slot in the still
+        /// custom-setting namespace, exactly as it appears on the camera
+        /// body (set it there before running this command). Given together
+        /// with `--movie-slot-name`, it lets the probe read `0xD18D` back
+        /// after the `0xD18C` write and resolve a Still/Movie verdict
+        /// instead of Ambiguous. Omit both flags to skip that readback.
+        #[arg(long, requires = "movie_slot_name")]
+        still_slot_name: Option<String>,
+
+        /// Operator-declared name of the probed slot in the movie
+        /// custom-setting namespace, exactly as it appears on the camera
+        /// body. Required together with `--still-slot-name`; see that
+        /// flag's help.
+        #[arg(long, requires = "still_slot_name")]
+        movie_slot_name: Option<String>,
     },
 }
 
@@ -146,6 +175,52 @@ struct AuditContext {
     vid_pid: String,
     model: String,
     firmware: String,
+}
+
+/// Operator-declared slot names for both custom-setting namespaces, parsed
+/// and validated up front. Supplying this turns the `0xD18D` readback in
+/// [`run_mutating_write_sequence`] into a real Still/Movie signal; its
+/// absence keeps the verdict `Ambiguous` exactly as before this readback
+/// existed.
+struct SlotNames {
+    still: String,
+    movie: String,
+}
+
+impl SlotNames {
+    /// Validates both raw operator-supplied names as
+    /// `CustomSettingName` (reusing its `FromStr`, so the 25-character rule
+    /// is not duplicated here) and rejects equal names, which cannot
+    /// discriminate the two namespaces.
+    fn parse(still: &str, movie: &str) -> anyhow::Result<Self> {
+        let still_name = CustomSettingName::from_str(still)
+            .context("--still-slot-name is not a valid custom-setting name")?;
+        let movie_name = CustomSettingName::from_str(movie)
+            .context("--movie-slot-name is not a valid custom-setting name")?;
+        ensure!(
+            still_name.as_str() != movie_name.as_str(),
+            "--still-slot-name and --movie-slot-name must differ; equal names cannot \
+             discriminate the still and movie custom-setting namespaces"
+        );
+        Ok(Self {
+            still: still_name.as_str().to_owned(),
+            movie: movie_name.as_str().to_owned(),
+        })
+    }
+}
+
+/// Validates the raw `--still-slot-name`/`--movie-slot-name` pair. Clap's
+/// `requires` already guarantees both or neither reach here from the CLI;
+/// this function still rejects a lone one defensively for direct callers
+/// (tests, library use) rather than panicking on a caller mistake.
+fn parse_slot_names(still: Option<&str>, movie: Option<&str>) -> anyhow::Result<Option<SlotNames>> {
+    match (still, movie) {
+        (None, None) => Ok(None),
+        (Some(still), Some(movie)) => SlotNames::parse(still, movie).map(Some),
+        (Some(_), None) | (None, Some(_)) => Err(anyhow::anyhow!(
+            "--still-slot-name and --movie-slot-name must be given together"
+        )),
+    }
 }
 
 fn check_acknowledgement(provided: &str) -> anyhow::Result<()> {
@@ -221,11 +296,15 @@ struct WriteSequenceFailure {
 
 /// The five PTP round trips required by `reversing.md`'s guard sequence,
 /// step 5: snapshot, write, read-back, restore, verify. Exactly one probe
-/// write and one restore write; never retried.
+/// write and one restore write; never retried. `slot_names`, when present,
+/// adds one extra read (`0xD18D`) between the read-back and the restore
+/// write to compute the [`NamespaceSignal`]; a failure on that extra read
+/// never aborts the sequence or skips the restore.
 fn run_write_sequence<IO: ProbeIo>(
     io: &mut IO,
     slot: CustomSettingSlot,
-) -> Result<Vec<u8>, WriteSequenceFailure> {
+    slot_names: Option<&SlotNames>,
+) -> Result<(Vec<u8>, Option<NamespaceSignal>), WriteSequenceFailure> {
     let snapshot = io
         .read_prop(SIMULATION_NAMESPACE_PROPERTY)
         .context("reading 0xD18C snapshot before the probe write")
@@ -234,8 +313,10 @@ fn run_write_sequence<IO: ProbeIo>(
             source,
         })?;
 
-    match interrupt::critical_camera_write(|| run_mutating_write_sequence(io, slot, &snapshot)) {
-        Ok(observed) => Ok(observed),
+    match interrupt::critical_camera_write(|| {
+        run_mutating_write_sequence(io, slot, &snapshot, slot_names)
+    }) {
+        Ok(result) => Ok(result),
         Err(CriticalWriteError::Operation(failure)) => Err(failure),
         Err(CriticalWriteError::Interrupted) => Err(WriteSequenceFailure {
             stage: WriteSequenceStage::InterruptedAfterRestore,
@@ -246,11 +327,39 @@ fn run_write_sequence<IO: ProbeIo>(
     }
 }
 
+/// Reads `0xD18D` after the probe write and classifies it against the
+/// operator-declared slot names. Never fails the caller: a read or decode
+/// failure logs one stderr line and returns `None`, which resolves to
+/// `Verdict::Ambiguous` -- it must never abort the sequence or skip the
+/// restore write that follows it. Never prints the observed bytes, the
+/// decoded text, or either declared name.
+fn observe_namespace_signal<IO: ProbeIo>(
+    io: &mut IO,
+    names: &SlotNames,
+) -> Option<NamespaceSignal> {
+    let bytes = io
+        .read_prop(prop_codes::CUSTOM_SETTING_NAME)
+        .inspect_err(|_| {
+            eprintln!("0xD18D read failed after the probe write; verdict will be ambiguous");
+        })
+        .ok()?;
+    let Some(observed) = decode_ptp_string(&bytes) else {
+        eprintln!("0xD18D payload did not decode as a PTP string; verdict will be ambiguous");
+        return None;
+    };
+    Some(NamespaceSignal::from_slot_name(
+        &observed,
+        &names.still,
+        &names.movie,
+    ))
+}
+
 fn run_mutating_write_sequence<IO: ProbeIo>(
     io: &mut IO,
     slot: CustomSettingSlot,
     snapshot: &[u8],
-) -> Result<Vec<u8>, WriteSequenceFailure> {
+    slot_names: Option<&SlotNames>,
+) -> Result<(Vec<u8>, Option<NamespaceSignal>), WriteSequenceFailure> {
     let write_value = slot.wire_value().to_le_bytes();
     io.write_prop(SIMULATION_NAMESPACE_PROPERTY, &write_value)
         .inspect_err(|_| {
@@ -272,6 +381,8 @@ fn run_mutating_write_sequence<IO: ProbeIo>(
             stage: WriteSequenceStage::Readback,
             source,
         })?;
+
+    let signal = slot_names.and_then(|names| observe_namespace_signal(io, names));
 
     io.write_prop(SIMULATION_NAMESPACE_PROPERTY, snapshot)
         .inspect_err(|_| {
@@ -307,7 +418,7 @@ fn run_mutating_write_sequence<IO: ProbeIo>(
         });
     }
 
-    Ok(observed)
+    Ok((observed, signal))
 }
 
 /// Runs the full guard sequence (gates, pre-backup, audit record, write
@@ -323,12 +434,15 @@ fn run_guarded_sequence<IO: ProbeIo>(
     confirm_fingerprint: &str,
     acknowledge: &str,
     live_fingerprint: &str,
+    still_slot_name: Option<&str>,
+    movie_slot_name: Option<&str>,
     backup: &NewOutput,
     audit_log: &Path,
     context: AuditContext,
 ) -> anyhow::Result<Verdict> {
     check_acknowledgement(acknowledge)?;
     check_fingerprint(live_fingerprint, confirm_fingerprint)?;
+    let slot_names = parse_slot_names(still_slot_name, movie_slot_name)?;
 
     let backup_bytes = io
         .export_backup()
@@ -353,7 +467,7 @@ fn run_guarded_sequence<IO: ProbeIo>(
     };
     audit::append(audit_log, &record).context("durably recording the probe attempt")?;
 
-    let write_result = run_write_sequence(io, slot);
+    let write_result = run_write_sequence(io, slot, slot_names.as_ref());
 
     // The terminal record reuses every field of the pre-write `attempted`
     // record -- same allowlist, same invocation_id -- with only `outcome`
@@ -367,12 +481,12 @@ fn run_guarded_sequence<IO: ProbeIo>(
     let terminal_append = audit::append(audit_log, &terminal_record)
         .context("durably recording the probe terminal outcome");
 
-    let _observed = match write_result {
-        Ok(observed) => {
+    let (_observed, signal) = match write_result {
+        Ok(result) => {
             // No probe error to protect here: a failure to durably record a
             // successful sequence's outcome is itself reported.
             terminal_append?;
-            observed
+            result
         }
         Err(failure) => {
             // The original probe error is what the operator sees; a
@@ -387,16 +501,29 @@ fn run_guarded_sequence<IO: ProbeIo>(
         }
     };
 
-    // No wire observable is known to distinguish still vs movie; see the
-    // module docs. Do not fabricate one.
-    let verdict = decision::decide(None);
-    if verdict == Verdict::Ambiguous {
-        eprintln!("DO NOT RETRY AUTOMATICALLY");
-        eprintln!(
-            "Verdict: ambiguous -- no known wire observable distinguishes the still and movie \
-             custom-setting namespaces. Corroborate manually via the camera's C1-C7 LCD menu \
-             per the maintainer decision recorded in docs/contributors/reversing.md."
-        );
+    let verdict = decision::decide(signal);
+    // Never print the observed 0xD18D bytes, the decoded text, or either
+    // declared slot name here -- only the verdict and static guidance.
+    match verdict {
+        Verdict::Still => eprintln!(
+            "0xD18D read back the operator-declared still slot name after the 0xD18C write. \
+             This is a single-run observation; corroborate manually via the camera's C1-C7 \
+             LCD menu per the maintainer decision recorded in docs/contributors/reversing.md."
+        ),
+        Verdict::Movie => eprintln!(
+            "0xD18D read back the operator-declared movie slot name after the 0xD18C write. \
+             This is a single-run observation; corroborate manually via the camera's C1-C7 \
+             LCD menu per the maintainer decision recorded in docs/contributors/reversing.md."
+        ),
+        Verdict::Ambiguous => {
+            eprintln!("DO NOT RETRY AUTOMATICALLY");
+            eprintln!(
+                "Verdict: ambiguous -- either no operator-declared slot names were given, or \
+                 the 0xD18D readback did not resolve to exactly one of them. Corroborate \
+                 manually via the camera's C1-C7 LCD menu per the maintainer decision recorded \
+                 in docs/contributors/reversing.md."
+            );
+        }
     }
     Ok(verdict)
 }
@@ -416,12 +543,18 @@ fn timestamp() -> String {
     )
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each argument is independently required by a distinct guard step or CLI flag; bundling them would obscure which step needs what"
+)]
 fn simulation_namespace(
     slot: CustomSettingSlot,
     backup: &NewOutput,
     audit_log: &Path,
     confirm_fingerprint: &str,
     acknowledge: &str,
+    still_slot_name: Option<&str>,
+    movie_slot_name: Option<&str>,
     location: Location,
 ) -> anyhow::Result<()> {
     let device = usb::exact_device(location)?;
@@ -464,6 +597,8 @@ fn simulation_namespace(
         confirm_fingerprint,
         acknowledge,
         &live_fingerprint,
+        still_slot_name,
+        movie_slot_name,
         backup,
         audit_log,
         context,
@@ -481,12 +616,16 @@ pub fn handle(command: &ProbeCommand, location: Location) -> anyhow::Result<()> 
             audit_log,
             confirm_fingerprint,
             acknowledge,
+            still_slot_name,
+            movie_slot_name,
         } => simulation_namespace(
             *slot,
             backup,
             audit_log,
             confirm_fingerprint,
             acknowledge,
+            still_slot_name.as_deref(),
+            movie_slot_name.as_deref(),
             location,
         ),
     }
@@ -505,7 +644,11 @@ mod tests {
     };
     use std::sync::{Mutex, MutexGuard, PoisonError};
 
-    use crate::{decision::Verdict, output::NewOutput};
+    use crate::{
+        decision::{NamespaceSignal, Verdict},
+        output::NewOutput,
+    };
+    use fujicli::generated::options::prop_codes::CUSTOM_SETTING_NAME;
 
     /// The dangerous-probe interrupt latch is process-global, because a
     /// signal handler is: `critical_camera_write` clears the pending count on
@@ -536,6 +679,10 @@ mod tests {
         fail_write_at_call: Option<usize>,
         /// If set, simulate Ctrl-C after this successful zero-based write.
         interrupt_after_write_at_call: Option<usize>,
+        /// The raw payload served for a `0xD18D` read. `None` fails that one
+        /// read (every other read still succeeds); `Some` succeeds with the
+        /// given bytes.
+        d18d_payload: Option<Vec<u8>>,
     }
 
     impl FakeProbeIo {
@@ -547,6 +694,7 @@ mod tests {
                 fail_export_backup: false,
                 fail_write_at_call: None,
                 interrupt_after_write_at_call: None,
+                d18d_payload: None,
             }
         }
 
@@ -563,9 +711,30 @@ mod tests {
         }
     }
 
+    /// Encodes `text` the same way the real PTP string wire encoding does:
+    /// one length byte (UTF-16 code units including the terminator), the
+    /// UTF-16LE code units, then a NUL terminator -- the shape
+    /// `decode_ptp_string` expects.
+    fn ptp_string_payload(text: &str) -> Vec<u8> {
+        let units: Vec<u16> = text.encode_utf16().collect();
+        let mut bytes = Vec::with_capacity(1 + (units.len() + 1) * 2);
+        bytes.push(u8::try_from(units.len() + 1).expect("test payload count fits in a u8"));
+        for unit in &units {
+            bytes.extend_from_slice(&unit.to_le_bytes());
+        }
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        bytes
+    }
+
     impl ProbeIo for FakeProbeIo {
         fn read_prop(&mut self, prop: u16) -> anyhow::Result<Vec<u8>> {
             self.calls.borrow_mut().push(Call::Read(prop));
+            if prop == CUSTOM_SETTING_NAME {
+                return self
+                    .d18d_payload
+                    .clone()
+                    .ok_or_else(|| anyhow::anyhow!("simulated 0xD18D read failure"));
+            }
             Ok(self.prop_value.borrow().clone())
         }
 
@@ -664,6 +833,8 @@ mod tests {
             "wrong-fingerprint",
             REQUIRED_ACKNOWLEDGEMENT,
             &"a".repeat(64),
+            None,
+            None,
             &backup,
             &audit_log,
             sample_context(),
@@ -690,6 +861,8 @@ mod tests {
             &"a".repeat(64),
             "not-the-acknowledgement",
             &"a".repeat(64),
+            None,
+            None,
             &backup,
             &audit_log,
             sample_context(),
@@ -706,11 +879,15 @@ mod tests {
         let _sequence = sequence_lock();
         let mut io = FakeProbeIo::new(vec![0xAA]);
 
-        let observed =
-            run_write_sequence(&mut io, CustomSettingSlot::C1).expect("sequence must succeed");
+        let (observed, signal) = run_write_sequence(&mut io, CustomSettingSlot::C1, None)
+            .expect("sequence must succeed");
 
         let expected_write_value = CustomSettingSlot::C1.wire_value().to_le_bytes().to_vec();
         assert_eq!(observed, expected_write_value);
+        assert_eq!(
+            signal, None,
+            "no slot names were given, so no namespace signal must be computed"
+        );
 
         let calls = io.calls();
         assert_eq!(
@@ -756,6 +933,8 @@ mod tests {
             &fingerprint,
             REQUIRED_ACKNOWLEDGEMENT,
             &fingerprint,
+            None,
+            None,
             &backup,
             &audit_log,
             sample_context(),
@@ -789,6 +968,8 @@ mod tests {
             &fingerprint,
             REQUIRED_ACKNOWLEDGEMENT,
             &fingerprint,
+            None,
+            None,
             &backup,
             &audit_log,
             sample_context(),
@@ -841,6 +1022,8 @@ mod tests {
             &fingerprint,
             REQUIRED_ACKNOWLEDGEMENT,
             &fingerprint,
+            None,
+            None,
             &backup,
             &audit_log,
             sample_context(),
@@ -881,6 +1064,8 @@ mod tests {
             &fingerprint,
             REQUIRED_ACKNOWLEDGEMENT,
             &fingerprint,
+            None,
+            None,
             &backup,
             &audit_log,
             sample_context(),
@@ -923,6 +1108,8 @@ mod tests {
             &fingerprint,
             REQUIRED_ACKNOWLEDGEMENT,
             &fingerprint,
+            None,
+            None,
             &backup,
             &audit_log,
             sample_context(),
@@ -931,5 +1118,141 @@ mod tests {
 
         assert!(error.to_string().contains("backup"));
         assert_eq!(io.write_call_count(), 0);
+    }
+
+    #[test]
+    fn equal_slot_names_are_refused_before_any_write_or_backup() {
+        let _sequence = sequence_lock();
+        let mut io = FakeProbeIo::new(vec![0x01]);
+        let tempdir = tempfile::tempdir().expect("tempdir must be created");
+        let backup_path = tempdir.path().join("backup.fbk");
+        let backup =
+            NewOutput::from_str(backup_path.to_str().unwrap()).expect("backup path must parse");
+        let audit_log = tempdir.path().join("audit.jsonl");
+        let fingerprint = "a".repeat(64);
+
+        let error = run_guarded_sequence(
+            &mut io,
+            CustomSettingSlot::C1,
+            &fingerprint,
+            REQUIRED_ACKNOWLEDGEMENT,
+            &fingerprint,
+            Some("same-name"),
+            Some("same-name"),
+            &backup,
+            &audit_log,
+            sample_context(),
+        )
+        .expect_err("equal still/movie slot names cannot discriminate the namespaces");
+
+        assert!(
+            error.to_string().contains("differ"),
+            "the error must explain that the two names must differ: {error}"
+        );
+        assert_eq!(io.write_call_count(), 0);
+        assert!(io.calls().is_empty());
+        assert!(
+            !backup_path.exists(),
+            "no backup must be written when the slot-name gate refuses"
+        );
+        assert!(
+            !audit_log.exists(),
+            "no audit record must be written when the slot-name gate refuses"
+        );
+    }
+
+    #[test]
+    fn matching_d18d_readback_resolves_still_verdict_and_restores_the_snapshot() {
+        let _sequence = sequence_lock();
+        let mut io = FakeProbeIo::new(vec![0xAA]);
+        io.d18d_payload = Some(ptp_string_payload("still-c1"));
+        let tempdir = tempfile::tempdir().expect("tempdir must be created");
+        let backup = NewOutput::from_str(
+            tempdir
+                .path()
+                .join("backup.fbk")
+                .to_str()
+                .expect("path must be valid UTF-8"),
+        )
+        .expect("backup path must parse");
+        let audit_log = tempdir.path().join("audit.jsonl");
+        let fingerprint = "a".repeat(64);
+
+        let verdict = run_guarded_sequence(
+            &mut io,
+            CustomSettingSlot::C1,
+            &fingerprint,
+            REQUIRED_ACKNOWLEDGEMENT,
+            &fingerprint,
+            Some("still-c1"),
+            Some("movie-c1"),
+            &backup,
+            &audit_log,
+            sample_context(),
+        )
+        .expect("a 0xD18D readback matching the still name must resolve a verdict");
+
+        assert_eq!(verdict, Verdict::Still);
+        assert_eq!(io.write_call_count(), 2);
+        assert_eq!(
+            *io.prop_value.borrow(),
+            vec![0xAA],
+            "the pre-probe 0xD18C value must be restored"
+        );
+    }
+
+    #[test]
+    fn unreadable_d18d_stays_ambiguous_but_still_restores_the_snapshot() {
+        let _sequence = sequence_lock();
+        let mut io = FakeProbeIo::new(vec![0xAA]);
+        io.d18d_payload = None;
+        let tempdir = tempfile::tempdir().expect("tempdir must be created");
+        let backup = NewOutput::from_str(
+            tempdir
+                .path()
+                .join("backup.fbk")
+                .to_str()
+                .expect("path must be valid UTF-8"),
+        )
+        .expect("backup path must parse");
+        let audit_log = tempdir.path().join("audit.jsonl");
+        let fingerprint = "a".repeat(64);
+
+        let verdict = run_guarded_sequence(
+            &mut io,
+            CustomSettingSlot::C1,
+            &fingerprint,
+            REQUIRED_ACKNOWLEDGEMENT,
+            &fingerprint,
+            Some("still-c1"),
+            Some("movie-c1"),
+            &backup,
+            &audit_log,
+            sample_context(),
+        )
+        .expect("an unreadable 0xD18D readback must not abort the sequence");
+
+        assert_eq!(verdict, Verdict::Ambiguous);
+        assert_eq!(io.write_call_count(), 2);
+        assert_eq!(
+            *io.prop_value.borrow(),
+            vec![0xAA],
+            "the pre-probe 0xD18C value must still be restored on an unreadable 0xD18D"
+        );
+    }
+
+    #[test]
+    fn namespace_signal_computed_only_when_both_slot_names_are_given() {
+        let mut io = FakeProbeIo::new(vec![0xAA]);
+        io.d18d_payload = Some(ptp_string_payload("still-c1"));
+        let names = super::SlotNames {
+            still: "still-c1".to_owned(),
+            movie: "movie-c1".to_owned(),
+        };
+
+        let (_observed, signal) = run_write_sequence(&mut io, CustomSettingSlot::C1, Some(&names))
+            .expect("sequence must succeed against the fake");
+
+        assert_eq!(signal, Some(NamespaceSignal::OnlyStillChanged));
     }
 }

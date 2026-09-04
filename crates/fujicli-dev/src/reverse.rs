@@ -133,6 +133,29 @@ fn open(location: Location) -> anyhow::Result<Camera> {
     Camera::open_unknown(&device)
 }
 
+/// Decodes a raw property payload shaped like a PTP string: one length byte
+/// giving the UTF-16 code-unit count (terminator included), that many
+/// little-endian UTF-16 code units, with the last one required to be the NUL
+/// terminator. Returns `None` if `bytes` does not have exactly that shape --
+/// including an all-terminator payload with no text, which this heuristic
+/// declines to call a string rather than risk misreading a plain integer
+/// pair. Shared so every raw-payload caller in this crate decodes a PTP
+/// string the same way instead of reimplementing this shape check.
+pub fn decode_ptp_string(bytes: &[u8]) -> Option<String> {
+    let [count, rest @ ..] = bytes else {
+        return None;
+    };
+    if *count == 0 || rest.len() != usize::from(*count) * 2 {
+        return None;
+    }
+    let (pairs, _) = rest.as_chunks::<2>();
+    let units: Vec<u16> = pairs.iter().map(|&pair| u16::from_le_bytes(pair)).collect();
+    match units.split_last() {
+        Some((0, text)) if !text.is_empty() => String::from_utf16(text).ok(),
+        _ => None,
+    }
+}
+
 /// Human-readable, privacy-neutral rendering of a raw property payload:
 /// length, hex, and a decoded little-endian scalar or PTP string when the
 /// bytes have exactly that shape.
@@ -146,17 +169,7 @@ fn describe_value(code: u16, bytes: &[u8]) -> String {
     let decoded = match bytes {
         [low, high] => Some(format!("uint16 {}", u16::from_le_bytes([*low, *high]))),
         [a, b, c, d] => Some(format!("uint32 {}", u32::from_le_bytes([*a, *b, *c, *d]))),
-        [count, rest @ ..] if rest.len() == usize::from(*count) * 2 && *count > 0 => {
-            let (pairs, _) = rest.as_chunks::<2>();
-            let units: Vec<u16> = pairs.iter().map(|&pair| u16::from_le_bytes(pair)).collect();
-            match units.split_last() {
-                Some((0, text)) if !text.is_empty() => String::from_utf16(text)
-                    .ok()
-                    .map(|text| format!("string {text:?}")),
-                _ => None,
-            }
-        }
-        _ => None,
+        _ => decode_ptp_string(bytes).map(|text| format!("string {text:?}")),
     };
     let len = bytes.len();
     decoded.map_or_else(

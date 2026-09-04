@@ -332,8 +332,22 @@ cargo run --locked -p fujicli-dev --features reverse-tools,dangerous-reverse-eng
   --device BUS.ADDRESS -vvv probe simulation-namespace c1 \
   /path/to/new-backup.fbk /path/to/audit-log.jsonl \
   --confirm-fingerprint <SHA256> \
-  --acknowledge I-UNDERSTAND-THIS-WRITES-SELECTOR-D18C
+  --acknowledge I-UNDERSTAND-THIS-WRITES-SELECTOR-D18C \
+  --still-slot-name <NAME-ON-BODY-IN-STILL-MODE> \
+  --movie-slot-name <NAME-ON-BODY-IN-MOVIE-MODE>
 ```
+
+`--still-slot-name` and `--movie-slot-name` are optional and must be given
+together (each requires the other). Before running the command, give the
+probed C1-C7 slot two different names, one set on the camera body while in
+still mode and one set while in movie mode. Passing those same two names here
+lets the command read `0xD18D` back after the `0xD18C` write and resolve a
+Still or Movie verdict instead of Ambiguous. Omitting both flags skips that
+readback and keeps the verdict Ambiguous, exactly as before this readback
+existed. Both names are validated as a `CustomSettingName` (max 25
+characters) before any write, and the two names must differ from each other
+-- equal names cannot discriminate the two namespaces and are refused before
+the backup export.
 
 The command implements the six-step guard sequence from "Requirements for Any
 Future Dangerous Probe" above:
@@ -388,13 +402,16 @@ Future Dangerous Probe" above:
    fingerprint, or backup export -- aborts before this step is reached),
    never fewer on the failure path and never more via retry.
 
-No PTP property is currently known to distinguish the still and movie
-custom-setting namespaces on the wire (open question 1, still unresolved at
-the wire level), so the command's verdict is always "ambiguous" today: it
-prints `DO NOT RETRY AUTOMATICALLY` and instructs the operator to corroborate
-manually via the camera's own C1-C7 LCD menu, read before and after the
-write, per the maintainer decision below. The command does not fabricate a
-still/movie verdict from an unknown signal.
+The command's verdict resolves to Still or Movie only when the operator gives
+`--still-slot-name` and `--movie-slot-name` and the `0xD18D` readback after
+the write matches exactly one of them; otherwise -- both flags omitted, or a
+read or decode failure on that one extra readback -- it stays "ambiguous":
+it prints `DO NOT RETRY AUTOMATICALLY` and instructs the operator to
+corroborate manually via the camera's own C1-C7 LCD menu, read before and
+after the write, per the maintainer decision below. Even a resolved verdict
+is a single-run observation, not a substitute for that manual corroboration.
+The command does not fabricate a still/movie verdict from an unread or
+undeclared signal.
 
 What it writes: exactly one explicit C1-C7 slot value to `0xD18C`, exactly
 once per invocation, as the single mutating PTP container required by the
@@ -405,14 +422,21 @@ selector, to be restored and verified afterward) plus the existing read-only
 discovery surface (`GetDeviceInfo`, `0xD16E` USB mode, `0xD36B` battery info)
 for identity display and the pre-backup.
 
-What it reads after the write: ideally, one or more properties whose value
-differs depending on whether the write landed in the still or the movie
-custom-setting namespace. No such property is currently known.
+What it reads after the write: when `--still-slot-name` and
+`--movie-slot-name` were both given, one extra read of `0xD18D`
+(`custom_setting_name`, `prop_codes::CUSTOM_SETTING_NAME`) between the
+post-write read-back of `0xD18C` and the restore write. The decoded PTP
+string is compared against the two operator-declared names; a read or decode
+failure there yields no signal (ambiguous) without aborting the sequence or
+skipping the restore. When the two flags are omitted, this extra read is
+skipped entirely and the verdict is always ambiguous, exactly as before this
+readback existed.
 
 Decision table (as implemented in `crates/fujicli-dev/src/decision.rs`; the
-"observed still/movie signal" column is the open question below, so the
-implementation always resolves to the ambiguous row until a signal is
-supplied):
+"observed still/movie signal" column is `0xD18D` compared against the two
+declared slot names via `NamespaceSignal::from_slot_name`, computed only when
+both `--still-slot-name` and `--movie-slot-name` were given and the readback
+decoded):
 
 | Observed still/movie signal | Verdict |
 | --- | --- |
@@ -422,15 +446,18 @@ supplied):
 
 ### OPEN QUESTIONS for the maintainer
 
-1. **No known read-back observable.** Nothing in `fml/`, `docs/`, or the
-   capture-free `support/` directory identifies a PTP property (or property
-   pair) whose value distinguishes still-mode custom-setting state from
-   movie-mode custom-setting state after `0xD18C` is written. Inventing a
-   property code to fill this gap would violate `AGENTS.md`'s prohibition on
-   inventing PTP property codes, so this design does not propose one. A
-   physical run may need to pair the probe's PTP-level log with a human
-   reading the camera's own C1-C7 menu (LCD) before and after the write,
-   rather than relying on a wire-level signal alone.
+1. **Read-back observable not yet device-confirmed.** Status: candidate
+   observable identified 2026-09-04, implemented against fakes, not yet run
+   on a camera. Reading `0xD18D` (`custom_setting_name`) back after the
+   `0xD18C` write and comparing it with the names the operator gave the
+   probed slot in each namespace identifies where the write landed, provided
+   the camera serves the selected slot's name from the active namespace (see
+   "macOS findings (2026-09-04)" below). Until a physical run confirms that,
+   a run should still pair the probe's PTP-level log with a human reading
+   the camera's own C1-C7 menu (LCD) before and after the write. Inventing a
+   further property code to close the gap would violate `AGENTS.md`'s
+   prohibition on inventing PTP property codes, so this design does not
+   propose one.
 2. **No raw single-property write/read primitive is reachable from
    `fujicli-dev`.** `Ptp::set_prop_raw` in `src/lib/ptp/mod.rs` is
    `pub(super)`, and the only code path that ever constructs a
