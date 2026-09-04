@@ -60,6 +60,17 @@ rejects `--emulate`, including offline inspection.
 
 ## Simulation Commands
 
+Every simulation command is refused by preflight today, on every camera in the
+schema, including reads. On the X-T5 firmware `4.31` the refusal is `firmware
+4.31 has only an unverified SimulationAccess profile`, because the schema's
+`simulation_access` and `simulation_write` profiles are still `unverified`. On
+every other camera, including the X-S20, the refusal is `firmware X is not in
+the SimulationAccess compatibility matrix for MODEL; supported firmware: none`,
+because no camera other than the X-T5 declares a `preflight` block at all. See
+the [support matrix](../support.md) for the current per-camera state and
+[the fail-closed safety model](../explanation/fail-closed-safety-model.md) for
+why `list`, `get`, and `export` share the write path's preflight.
+
 A simulation is a camera custom-setting slot such as C1-C7. Slot count is
 camera-specific and generated as `SLOTS`.
 

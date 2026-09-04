@@ -27,7 +27,7 @@ camera or equipment.
 | FUJIFILM X-S10  | X-Trans IV  | ?         |         |             |           |
 | FUJIFILM X-T3   | X-Trans IV  | ?         |         |             |           |
 | FUJIFILM X-T4   | X-Trans IV  | ?         |         |             |           |
-| FUJIFILM X-S20  | X-Trans IV  | Y         | Y       | Y           |           |
+| FUJIFILM X-S20  | X-Trans IV  | Y         | Y       | N           |           |
 | FUJIFILM X100VI | X-Trans V   | ?         |         |             |           |
 | FUJIFILM X-H2   | X-Trans V   | ?         |         |             |           |
 | FUJIFILM X-H2S  | X-Trans V   | ?         |         |             |           |
@@ -45,6 +45,11 @@ camera or equipment.
   intentionally disabled until the exact wire descriptor is verified.
 - Blank - Not implemented yet.
 
+The X-S20's `N` for Simulations is historical only: the schema declares no
+`preflight` block for this camera, so every simulation command, including the
+read commands `list`, `get`, and `export`, fails closed today. The `N` records
+current availability, not a hardware failure.
+
 A `?` in the "Base Info" column means `fujicli device info` should succeed. A
 blank elsewhere means the FML spec for that camera does not yet declare the
 feature; see [adding a camera](../contributors/adding-cameras.md) to fill that
@@ -58,9 +63,11 @@ PTP evidence does not identify whether selector `0xD18C` addresses the still or
 movie C1-C7 namespace. RAW rendering is also disabled even on 4.31:
 the retained code documents an unverified 28-slot read/29-slot write assumption,
 not a trace-backed descriptor. Every other model, firmware, mode, or incomplete
-capability/descriptor set also fails closed before a write. Adding a row requires
-captured device evidence and an explicit FML preflight profile; a nearby
-firmware version is never assumed compatible.
+capability/descriptor set also fails closed: simulation commands, including
+`list`, `get`, and `export`, run the same preflight check as a write and are
+refused before they touch the camera. Adding a row requires captured device
+evidence and an explicit FML preflight profile; a nearby firmware version is
+never assumed compatible.
 
 ### Latest physical-device verification
 
