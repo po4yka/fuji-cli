@@ -30,7 +30,7 @@ and the bit-flip; the block layout, the section header and the compression were
 not documented anywhere and were derived here.
 
 | Offset | Content |
-|---|---|
+| --- | --- |
 | `0x000` | `u32 LE = 6`: header type. Type 6 means a 512-byte model-code field. |
 | `0x004..0x204` | 512 ASCII hex digits. Decoded they read as 8-digit body codes `00056881 00056882 00056883 00056891 ... 00055973`, zero padded. |
 | `0x204` | `u32 = 4`, `0x208` `u32 = 0x31`: shown as version `4.31`. |
@@ -42,7 +42,7 @@ not documented anywhere and were derived here.
 After inverting the payload the image contains, in order:
 
 | NOT-image offset | Content |
-|---|---|
+| --- | --- |
 | `0x274..0x80274` | Plain AArch64 boot/updater code. ThreadX banner `Copyright (c) 1996-2019 Express Logic Inc. * ThreadX Cortex-A5x-SMP/ARM Version G5.9.5.5`. |
 | `0xc037a` | Model block: `X-T5`, `FUJIDSCFBLOG_DSF.R98.X-T5`, `FUJIFILM`, body code `56881`. |
 | `0x300274`, `0x820274`, `0xf20274`, `0x24a0274` | Four compressed sections (the camera firmware proper, see below). |
@@ -99,7 +99,7 @@ The vendor extension string `fujifilm.co.jp: 1.0;` is followed by
 zero-terminated `u16` arrays:
 
 | List | Codes |
-|---|---|
+| --- | --- |
 | Properties, card-reader variant | `5001 d303 d406 d407` |
 | Events | `4002 4003 4004 4005 4006 4008 4009` |
 | Object formats | `3001 3008 300d b982 3800 3801 3812 380d b802 c802` |
@@ -159,7 +159,7 @@ Names come from the device audit (`libgphoto2` / `libfuji` / this project).
 lists whether `fml/option.cue` or `fml/camera.cue` declares the code today.
 
 | Code | Name (prior art) | Type | Access | Form | Default / range | FML |
-|---|---|---|---|---|---|---|
+| --- | --- | --- | --- | --- | --- | --- |
 | `5005` | WhiteBalance | UINT16 | get/set | enum | `0x0002` | no |
 | `5015` | Sharpness | INT16 | get/set | range | `0/-40/40/10` | no |
 | `D001` | FilmSimulation | UINT16 | get/set | enum | `0x0001` | no |

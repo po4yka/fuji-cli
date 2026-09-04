@@ -11,7 +11,7 @@ A read-only audit of a physical FUJIFILM X-T5 (PTP firmware 4.31, serial SHA-256
 The camera's advertised PTP surface differs completely between USB modes (camera menu: SET UP > CONNECTION SETTING > USB MODE).
 
 | | USB RAW CONV./BACKUP RESTORE (`0xD16E` = 6) | USB CARD READER |
-|---|---|---|
+| --- | --- | --- |
 | Operations | `1001-100b`, `100c`, `100d`, `1014`, `1015`, `1016`, `1017`, `900c`, `900d`, `901d` | `1001-100d`, `100f`, `1014`, `1015`, `1016`, `101b`, `900c`, `900d`, `901d`, `9801-9805` |
 | Events | none | none |
 | Properties | 61 (all Fuji `0xD0xx`/`0xD1xx`/`0xD2xx`/`0xD3xx` plus `5005`, `5015`) | 4 (`5001`, `d303`, `d406`, `d407`) |
@@ -41,7 +41,7 @@ macOS `ptpcamerad` claims the camera on every USB event and leaves a PTP session
 Values are little-endian; scalars shown decoded. "unnamed" means the code appears in neither `libgphoto2` nor `libfuji`.
 
 | Code | Name (source) | Observed value | Note |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | 5005 | WhiteBalance (PTP standard) | 2 | auto |
 | 5015 | Sharpness (PTP standard) | 0 | |
 | d001 | FilmSimulation (gphoto2) | 1 | PROVIA per `config.c` |
