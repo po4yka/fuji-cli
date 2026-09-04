@@ -48,10 +48,10 @@ jobs:
           fish --no-config -c 'source assets/share/fish/vendor_completions.d/fujicli.fish; test (count (complete --command fujicli)) -gt 0'
           for page in assets/share/man/man1/*.1; do mandoc -T utf8 "$page" >/dev/null; done
 
-      - name: Install cargo-udeps
+      - name: Install cargo-shear
         uses: taiki-e/install-action@742a3317eac7bd62f91cd888b4eead5e784ba833 # v2.87.1
         with:
-          tool: cargo-udeps@0.1.61
+          tool: cargo-shear@1.11.2
           fallback: none
 
       - name: Install typos
@@ -84,7 +84,7 @@ jobs:
         run: cargo build --locked --workspace --jobs 4
 
       - name: Detect unused dependencies
-        run: cargo udeps --locked --workspace --all-features --all-targets --jobs 4
+        run: cargo shear --deny-warnings
 
   platform:
     name: CI / Platform (${{ matrix.name }})

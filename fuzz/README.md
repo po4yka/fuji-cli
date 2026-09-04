@@ -3,7 +3,7 @@
 Coverage-guided fuzzing for the PTP wire parsers. Every target feeds a
 camera-shaped byte stream into one parser and asserts the parser never
 panics, hangs, or aborts. The crate is deliberately outside the workspace:
-it has its own lockfile, and the production binary never links libFuzzer.
+it has its own lockfile, and the production binary never links Honggfuzz.
 
 ## Targets
 
@@ -21,22 +21,32 @@ public surface, and the documented encapsulation contract
 
 ## Running
 
-Prerequisites: the pinned nightly toolchain, a C toolchain, `libusb-1.0`
+Prerequisites: the pinned stable toolchain, a C toolchain, `libusb-1.0`
 headers, CUE on `PATH` (the `fujicli` build script exports `fml/`), and
-`cargo-fuzz` (`cargo install cargo-fuzz --locked`).
+Honggfuzz (`cargo install honggfuzz --version 0.5.62 --locked`). On Linux,
+Honggfuzz also needs `binutils-dev`, `libunwind-dev`, `libblocksruntime-dev`,
+and `liblzma-dev`. Run the native fuzzer on Linux: Honggfuzz 0.5.62's bundled
+macOS driver rejects current macOS versions and ships an x86_64-only crash
+reporter. `cargo check` remains portable across supported project hosts.
 
 ```sh
-# Build every target (on Apple Silicon pass the host target explicitly).
-cargo fuzz build --target aarch64-apple-darwin
+# Check every target.
+cargo check --locked --all-targets
 
 # Time-boxed smoke run of one target.
-cargo fuzz run ptp_container_info --target aarch64-apple-darwin -- -max_total_time=30
+HFUZZ_BUILD_ARGS="--locked --jobs 4" \
+HFUZZ_RUN_ARGS="--run_time 30 --exit_upon_crash" \
+  cargo hfuzz run ptp_container_info
 
-# Longer run writing artifacts for any finding.
-cargo fuzz run ptp_descriptor --target aarch64-apple-darwin -- -max_total_time=600
+# Longer run.
+HFUZZ_BUILD_ARGS="--locked --jobs 4" HFUZZ_RUN_ARGS="--run_time 600" \
+  cargo hfuzz run ptp_descriptor
 ```
 
-Artifacts for findings land in `fuzz/artifacts/` (git-ignored).
+Run state and findings land in `fuzz/hfuzz_workspace/` and built targets in
+`fuzz/hfuzz_target/`; both are git-ignored. Do not add nightly-only sanitizer
+flags: stable Honggfuzz keeps feedback-driven fuzzing and crash detection, but
+does not provide the previous compiler sanitizer instrumentation.
 
 ## Rules
 

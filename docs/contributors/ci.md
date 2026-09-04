@@ -10,7 +10,7 @@ updates to those pins.
   dependencies, then generates and checks the code, verifies formatting and
   spelling, runs Clippy and rustdoc with warnings denied, tests the Rust code
   and deterministic release packager, builds the workspace, and checks unused
-  dependencies using the committed Rust toolchain and lockfile.
+  dependencies with Cargo Shear using the committed Rust toolchain and lockfile.
 - `CI / Platform (macOS x86_64)` and `CI / Platform (Windows x86_64)` build and
   test the executable on the other documented host platforms. These jobs use
   the locked Cargo graph and the same pinned CUE release as Linux.
@@ -42,7 +42,7 @@ cargo clippy --locked --all-features --all-targets --workspace --jobs 4 -- -D wa
 RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --all-features --no-deps --jobs 4
 cargo test --locked --all-features --all-targets --workspace --jobs 4
 cargo build --locked --workspace --jobs 4
-cargo udeps --locked --workspace --all-features --all-targets --jobs 4
+cargo shear --deny-warnings
 cargo deny --locked check
 markdownlint-cli2 "README.md" "docs/**/*.md"
 lychee --offline --include-fragments=anchor-only --no-progress \

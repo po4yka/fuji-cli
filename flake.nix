@@ -31,7 +31,7 @@
           manifest = builtins.fromTOML (builtins.readFile ./Cargo.toml);
           toolchain = inputs.fenix.packages.${final.system}.fromToolchainFile {
             file = ./rust-toolchain.toml;
-            sha256 = "sha256-rhEZgHt/jCYmcHMuzwInk+upD3eO86bJ6jVg6nqLkl0=";
+            sha256 = "sha256-p8h3Sl/YRByZfZTAKXdsvF6xEenXKrXSVvpphmZENH4=";
           };
           rustPlatform = final.makeRustPlatform {
             cargo = toolchain;
@@ -151,7 +151,7 @@
             packages = with pkgs; [
               cargo-expand
               cargo-outdated
-              cargo-udeps
+              cargo-shear
               cue
               deadnix
               fujicliToolchain

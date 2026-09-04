@@ -43,13 +43,17 @@ unused_self = "warn"
 name = "fujicli"
 version = "0.2.0"
 edition = "2024"
-rust-version = "1.98"
+rust-version = "1.98.1"
 description = "A fail-closed CLI for inspecting Fujifilm cameras and verified USB/PTP backup workflows"
 readme = "README.md"
 license = "MIT"
 repository = "https://github.com/po4yka/fuji-cli"
 authors = ["Nikita Pochaev"]
 build = "build.rs"
+
+[package.metadata.cargo-shear]
+# Generated Rust in OUT_DIR references this direct dependency.
+ignored = ["serde_with"]
 
 [lints]
 workspace = true

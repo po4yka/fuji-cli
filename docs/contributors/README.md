@@ -67,7 +67,7 @@ Send contributions on [GitHub](https://github.com/po4yka/fuji-cli).
 
 ## Code Style
 
-- Rust: `cargo fmt` (uses [rustfmt.toml](../../rustfmt.toml)). Do not panic on
+- Rust: `cargo fmt` with the pinned stable toolchain. Do not panic on
   user input, device responses, I/O, or external-command failures. Reserve
   `expect()` for invariants already guaranteed by the CUE schema.
 - CUE: keep field ordering consistent with the existing files (`id` first, then

@@ -9,6 +9,7 @@ authors = ["Nikita Pochaev"]
 
 [lib]
 path = "src/lib.rs"
+doctest = false
 
 [lints]
 workspace = true

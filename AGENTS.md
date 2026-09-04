@@ -56,7 +56,7 @@ after emission.
 - `cue` must be on `PATH` for compiler-backed Cargo commands. `nix develop`
   provides the intended Rust/CUE environment.
 - Source builds also require a C toolchain and `libusb-1.0` headers.
-- Rust nightly, `rustfmt`, and `clippy` are pinned in `rust-toolchain.toml`.
+- Rust 1.98.1 stable, `rustfmt`, and `clippy` are pinned in `rust-toolchain.toml`.
   Change the toolchain deliberately and validate the full workspace gate.
 - `Cargo.lock` is committed application state. Pass `--locked` to routine Cargo
   commands. Change the lockfile only for a deliberate dependency update and
@@ -80,7 +80,7 @@ after emission.
 - Use `anyhow::Result` and contextual errors at application boundaries. Do not
   panic on user input, device responses, I/O, or external command failures.
   `expect` is reserved for invariants already guaranteed by the CUE schema.
-- Format Rust with the repository `rustfmt.toml`. Keep CUE field ordering
+- Format Rust with the pinned stable `rustfmt`. Keep CUE field ordering
   consistent with neighboring definitions: `id`, then `spec`, then optional
   `codegen` data.
 
