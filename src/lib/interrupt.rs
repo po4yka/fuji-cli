@@ -129,6 +129,21 @@ impl InterruptLatch {
     /// pending interrupt turns the completed result into an [`Interrupted`]
     /// error so the caller unwinds and the session closes normally.
     pub(crate) fn after_transaction<T>(&self, result: anyhow::Result<T>) -> anyhow::Result<T> {
+        self.after_transaction_with(result, anyhow::Error::new, anyhow::Error::context)
+    }
+
+    /// Generalisation of [`Self::after_transaction`] for a result type whose
+    /// error is not `anyhow::Error`. Inside a critical region, or with no
+    /// interrupt pending, `result` is returned unchanged; otherwise
+    /// `on_interrupted` builds a fresh failure from the interrupt marker for
+    /// a result that had succeeded, and `with_interrupted_context` attaches
+    /// the same marker to a result that had already failed on its own.
+    pub(crate) fn after_transaction_with<T, E>(
+        &self,
+        result: Result<T, E>,
+        on_interrupted: impl FnOnce(Interrupted) -> E,
+        with_interrupted_context: impl FnOnce(E, Interrupted) -> E,
+    ) -> Result<T, E> {
         if self.critical_region_active() || self.take_interrupts() == 0 {
             return result;
         }
@@ -136,8 +151,8 @@ impl InterruptLatch {
             after_camera_write: self.camera_write_sent(),
         };
         match result {
-            Ok(_) => Err(anyhow::Error::new(interrupted)),
-            Err(error) => Err(error.context(interrupted)),
+            Ok(_) => Err(on_interrupted(interrupted)),
+            Err(error) => Err(with_interrupted_context(error, interrupted)),
         }
     }
 }

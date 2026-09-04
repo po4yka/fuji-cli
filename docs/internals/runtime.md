@@ -346,7 +346,13 @@ A camera sitting on a slot value outside that verified form is refused up
 front instead of letting the later restore fail after a profile write has
 already landed; on the write path this surfaces as a `Preparation`-phase
 `SimulationTransactionError` naming the selector property code, with zero
-writes attempted, rather than degrading to `CameraStateUnknown`.
+writes attempted, rather than degrading to `CameraStateUnknown`. The write
+helper also drains any interrupt latched during its own critical region the
+way the read helper already does, so a completed write that raced a Ctrl-C
+reports `CameraStateUnknown` with an `Interrupted` cause instead of leaking
+the pending interrupt into whatever critical region runs next, unless an
+outer region (the CLI's `critical_camera_write`, for example) is still
+active, in which case it stays pending for that region's owner.
 
 Risk classification is separate from emulation availability. The production
 CLI still rejects emulation for these reads because validated mutation

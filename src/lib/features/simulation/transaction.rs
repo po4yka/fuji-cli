@@ -41,6 +41,10 @@ pub enum SimulationTransactionPhase {
     /// The write itself finished (or was rolled back), but restoring the
     /// custom-setting slot selector the camera had before the write failed.
     SelectorRestore,
+    /// The write and its selector restore both finished, but a Ctrl-C
+    /// recorded during the critical region turned the completed result into
+    /// an unknown camera state once the region ended.
+    Interrupted,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -133,6 +137,35 @@ impl SimulationTransactionError {
     fn with_selector_restore_failure(mut self, error: anyhow::Error) -> Self {
         self.state = SimulationFailureState::CameraStateUnknown;
         self.selector_restore_error = Some(error);
+        self
+    }
+
+    /// The write (and its selector restore) both completed, but a Ctrl-C
+    /// recorded during the critical region turned the otherwise-successful
+    /// result into an unknown camera state, the same way
+    /// `critical_camera_write` does for the CLI's own critical regions.
+    fn interrupted(interrupted: Interrupted) -> Self {
+        Self {
+            state: SimulationFailureState::CameraStateUnknown,
+            phase: SimulationTransactionPhase::Interrupted,
+            cause: anyhow::Error::new(interrupted).context(
+                "the simulation write completed, but an interrupt was requested; stopping before any further camera work",
+            ),
+            rollback_error: None,
+            rollback_readback_error: None,
+            journal: Vec::new(),
+            rollback_journal: Vec::new(),
+            selector_restore_error: None,
+        }
+    }
+
+    /// Attaches the interrupt marker to an already-failed write's cause,
+    /// mirroring how [`InterruptLatch::after_transaction`] wraps a plain
+    /// `anyhow::Error` failure.
+    ///
+    /// [`InterruptLatch::after_transaction`]: crate::interrupt::InterruptLatch::after_transaction
+    fn with_interrupted_context(mut self, interrupted: Interrupted) -> Self {
+        self.cause = self.cause.context(interrupted);
         self
     }
 }
@@ -401,7 +434,7 @@ impl SimulationSelectorIo for AuthorizedSimulationIo<'_> {
     }
 }
 
-use crate::interrupt::{INTERRUPTS, InterruptLatch};
+use crate::interrupt::{INTERRUPTS, InterruptLatch, Interrupted};
 
 pub(crate) fn with_temporary_simulation_selector<T>(
     io: &mut AuthorizedSimulationIo<'_>,
@@ -455,6 +488,34 @@ where
     IO: SimulationSelectorIo,
 {
     let region = interrupts.enter_critical_region();
+    let combined = restore_selector_around_write(io, property_code, operation);
+    drop(region);
+    // Drain pending interrupts here too, exactly like the read helper above:
+    // otherwise a completed-but-interrupted write would return a plain `Ok`
+    // and the pending interrupt would leak into whatever critical region
+    // runs next. Inside an outer critical region (the CLI's own
+    // `critical_camera_write`, for example) this is a no-op and the region
+    // owner drains it instead.
+    interrupts.after_transaction_with(
+        combined,
+        SimulationTransactionError::interrupted,
+        SimulationTransactionError::with_interrupted_context,
+    )
+}
+
+/// Runs `operation` with the slot selector restored afterwards, folding the
+/// snapshot, validation, write, and restore into a single
+/// `Result<T, SimulationTransactionError>` so the critical region above has
+/// exactly one exit point, the same way `restore_selector_after` does for the
+/// read path.
+fn restore_selector_around_write<IO, T>(
+    io: &mut IO,
+    property_code: u16,
+    operation: impl FnOnce(&mut IO) -> Result<T, SimulationTransactionError>,
+) -> Result<T, SimulationTransactionError>
+where
+    IO: SimulationSelectorIo,
+{
     let original = io
         .get_selector_raw(property_code)
         .context("snapshotting the original simulation slot selector")
@@ -474,7 +535,6 @@ where
             "PTP session became unhealthy during the simulation write; the slot selector was not restored"
         ))
     };
-    drop(region);
     match (result, restore) {
         (result, Ok(())) => result,
         (Ok(_), Err(restore)) => Err(SimulationTransactionError::selector_restore_failed(restore)),
@@ -1766,8 +1826,110 @@ mod tests {
 
         assert_eq!(outcome, SimulationTransactionSuccess::AppliedAndVerified);
         assert!(!latch.is_deferring());
+        assert_eq!(
+            latch.take_interrupts(),
+            0,
+            "nothing was recorded, so nothing should be pending"
+        );
         assert_eq!(io.properties.get(&0xd000), Some(&original));
         assert_eq!(io.writes, [0xd000, 0xd001, 0xd000]);
+    }
+
+    #[test]
+    fn interrupt_recorded_during_a_restored_write_is_honoured_after_the_scope() {
+        use crate::interrupt::{InterruptLatch, Interrupted};
+
+        let profile = TestProfile {
+            first: Some(1),
+            second: Some(2),
+            third: Some(5),
+        };
+        let latch = InterruptLatch::new();
+        let mut io = FakeSimulationPropertyIo::with_profile(&profile);
+        let original = codec::encode(&9_u16).expect("test selector");
+        io.properties.insert(0xd000, original.clone());
+
+        let error = with_restored_simulation_selector_io(&latch, &mut io, 0xd000, |io| {
+            let mut selected = SelectedSimulationIo::new(io, TestSelector(3));
+            selected.set_prop(0xd001, &7_u16).map_err(|error| {
+                SimulationTransactionError::preparation(true, error.into_cause())
+            })?;
+            // A Ctrl-C lands after the camera write, while the write's
+            // critical region still defers it.
+            latch.mark_camera_write_sent();
+            latch.record_interrupt();
+            Ok(SimulationTransactionSuccess::AppliedAndVerified)
+        })
+        .expect_err("a pending interrupt must turn the completed write into an error");
+
+        assert!(!latch.is_deferring());
+        assert_eq!(
+            latch.take_interrupts(),
+            0,
+            "the scope must drain the interrupt itself"
+        );
+        assert_eq!(error.state(), SimulationFailureState::CameraStateUnknown);
+        let marker = error
+            .cause()
+            .downcast_ref::<Interrupted>()
+            .expect("the marker must be reachable through the error's cause chain");
+        assert!(
+            marker.after_camera_write,
+            "a camera write was already sent before the interrupt landed"
+        );
+        assert!(
+            error
+                .cause()
+                .to_string()
+                .contains("interrupt was requested"),
+            "the message must read like the CLI's own interrupted-write report: {error}"
+        );
+        assert_eq!(
+            io.properties.get(&0xd000),
+            Some(&original),
+            "the selector restore must still run before the interrupt is honoured"
+        );
+    }
+
+    #[test]
+    fn outer_critical_region_leaves_a_restored_write_untouched_for_its_owner() {
+        use crate::interrupt::InterruptLatch;
+
+        let profile = TestProfile {
+            first: Some(1),
+            second: Some(2),
+            third: Some(5),
+        };
+        let latch = InterruptLatch::new();
+        let mut io = FakeSimulationPropertyIo::with_profile(&profile);
+        let original = codec::encode(&9_u16).expect("test selector");
+        io.properties.insert(0xd000, original.clone());
+
+        // An outer owner, such as the CLI's `critical_camera_write`, has
+        // already opened its own critical region around this call.
+        let outer = latch.enter_critical_region();
+        let outcome = with_restored_simulation_selector_io(&latch, &mut io, 0xd000, |io| {
+            let mut selected = SelectedSimulationIo::new(io, TestSelector(3));
+            selected.set_prop(0xd001, &7_u16).map_err(|error| {
+                SimulationTransactionError::preparation(true, error.into_cause())
+            })?;
+            latch.record_interrupt();
+            Ok(SimulationTransactionSuccess::AppliedAndVerified)
+        })
+        .expect("an active outer critical region must defer the interrupt to its owner");
+
+        assert_eq!(outcome, SimulationTransactionSuccess::AppliedAndVerified);
+        assert!(
+            latch.is_deferring(),
+            "the outer region must still be active once the inner scope returns"
+        );
+        drop(outer);
+        assert!(!latch.is_deferring());
+        assert_eq!(
+            latch.take_interrupts(),
+            1,
+            "the interrupt must stay pending for the outer region's owner, exactly like nested CLI usage"
+        );
     }
 
     #[test]
