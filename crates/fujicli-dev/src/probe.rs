@@ -503,7 +503,21 @@ mod tests {
         SIMULATION_NAMESPACE_PROPERTY, check_acknowledgement, check_fingerprint,
         run_guarded_sequence, run_write_sequence,
     };
+    use std::sync::{Mutex, MutexGuard, PoisonError};
+
     use crate::{decision::Verdict, output::NewOutput};
+
+    /// The dangerous-probe interrupt latch is process-global, because a
+    /// signal handler is: `critical_camera_write` clears the pending count on
+    /// entry and drains it on exit. Cargo runs these tests as threads of one
+    /// process, so two overlapping sequences steal each other's interrupt.
+    /// Every test that runs a sequence takes this lock first.
+    static SEQUENCE: Mutex<()> = Mutex::new(());
+
+    fn sequence_lock() -> MutexGuard<'static, ()> {
+        // A panicking test must fail on its own, not cascade into the rest.
+        SEQUENCE.lock().unwrap_or_else(PoisonError::into_inner)
+    }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum Call {
@@ -637,6 +651,7 @@ mod tests {
 
     #[test]
     fn gate_refusal_wrong_fingerprint_records_zero_writes() {
+        let _sequence = sequence_lock();
         let mut io = FakeProbeIo::new(vec![0]);
         let tempdir = tempfile::tempdir().expect("tempdir must be created");
         let backup = NewOutput::from_str(tempdir.path().join("backup.fbk").to_str().unwrap())
@@ -662,6 +677,7 @@ mod tests {
 
     #[test]
     fn gate_refusal_wrong_acknowledgement_records_zero_writes() {
+        let _sequence = sequence_lock();
         let mut io = FakeProbeIo::new(vec![0]);
         let tempdir = tempfile::tempdir().expect("tempdir must be created");
         let backup = NewOutput::from_str(tempdir.path().join("backup.fbk").to_str().unwrap())
@@ -687,6 +703,7 @@ mod tests {
 
     #[test]
     fn write_sequence_orders_reads_and_writes_and_restores_the_snapshot() {
+        let _sequence = sequence_lock();
         let mut io = FakeProbeIo::new(vec![0xAA]);
 
         let observed =
@@ -718,6 +735,7 @@ mod tests {
 
     #[test]
     fn interrupt_after_probe_write_restores_snapshot_before_stopping() {
+        let _sequence = sequence_lock();
         let mut io = FakeProbeIo::new(vec![0xAA]);
         io.interrupt_after_write_at_call = Some(0);
         let tempdir = tempfile::tempdir().expect("tempdir must be created");
@@ -756,6 +774,7 @@ mod tests {
 
     #[test]
     fn full_sequence_exports_backup_writes_audit_record_and_never_retries() {
+        let _sequence = sequence_lock();
         let mut io = FakeProbeIo::new(vec![0x01]);
         let tempdir = tempfile::tempdir().expect("tempdir must be created");
         let backup_path = tempdir.path().join("backup.fbk");
@@ -802,6 +821,7 @@ mod tests {
 
     #[test]
     fn success_path_appends_attempted_then_restored_sharing_one_invocation_id() {
+        let _sequence = sequence_lock();
         let mut io = FakeProbeIo::new(vec![0x01]);
         let tempdir = tempfile::tempdir().expect("tempdir must be created");
         let backup = NewOutput::from_str(
@@ -839,6 +859,7 @@ mod tests {
 
     #[test]
     fn restore_failure_still_appends_a_terminal_record_and_returns_the_original_error() {
+        let _sequence = sequence_lock();
         let mut io = FakeProbeIo::new(vec![0x01]);
         // Fail the second write call: the restore write, not the probe write.
         io.fail_write_at_call = Some(1);
@@ -887,6 +908,7 @@ mod tests {
 
     #[test]
     fn backup_export_failure_aborts_before_any_write() {
+        let _sequence = sequence_lock();
         let mut io = FakeProbeIo::new(vec![0x01]);
         io.fail_export_backup = true;
         let tempdir = tempfile::tempdir().expect("tempdir must be created");
