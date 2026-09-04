@@ -562,14 +562,16 @@ impl Camera {
                 value_available: value.is_some(),
                 value_length: value.as_ref().map(Vec::len),
                 value_shape: value.as_deref().map(crate::reverse::classify_value_shape),
-                value_sha256: value.as_deref().map(crate::features::backup::sha256_hex),
+                value_sha256: value
+                    .as_deref()
+                    .and_then(crate::reverse::survey_value_digest),
                 declared_data_type,
                 declaration_matches,
             });
         }
 
         Ok(crate::reverse::PropertySurvey {
-            schema_version: 1,
+            schema_version: 2,
             declared_camera: declared_camera_name(&info.manufacturer, &info.model),
             manufacturer: info.manufacturer,
             model: info.model,

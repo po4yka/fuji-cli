@@ -35,8 +35,10 @@ pub enum DiscoverCommand {
     /// Survey the whole advertised PTP surface and compare it with FML
     ///
     /// Reads `GetDeviceInfo`, then the descriptor and value of every property
-    /// the camera advertises. The artifact records shapes and digests, never
-    /// payload bytes, so it is shareable without a privacy review.
+    /// the camera advertises. The artifact never records payload bytes: every
+    /// value gets a length and a wire shape, and only a string-valued
+    /// property also gets a SHA-256 digest, so it is shareable without a
+    /// privacy review.
     Surface { output: NewOutput },
 }
 

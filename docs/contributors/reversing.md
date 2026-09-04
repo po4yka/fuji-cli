@@ -155,15 +155,19 @@ gets its physical-device confirmation.
 
 The JSON artifact records, per property, whether the descriptor and value were
 served, the decoded descriptor datatype, writability and form, and the
-value's length, wire shape, and a SHA-256 digest instead of the raw bytes.
-That digest is one-way only for a string-valued property, whose value space
-is too large to exhaust; for a 2- or 4-byte scalar-valued property it is
-invertible by exhaustive search, which recovered all 53 scalar values in a
-real run's artifact in seconds (see the
+value's length and wire shape instead of the raw bytes. Scalar values (the
+uint8/16/32/64 and empty shapes) are recorded as length and shape only, with
+no digest at all, so exhaustive inversion is no longer possible for them; an
+earlier revision of this tool also hashed scalar values, and that digest was
+recoverable by exhaustive search in seconds (see the
 [X-T5 macOS transport findings](../internals/x-t5-device-audit-2026-09-04.md)).
-So the artifact needs the same privacy review a raw scalar payload would; a
-property may hold a serial number, an owner string, or GPS data. There is
-deliberately no `--print-values`.
+A string-valued property still also gets a SHA-256 digest of its raw bytes;
+that digest stays one-way for the value spaces PTP identity strings occupy,
+too large to exhaust, but it does let someone who already holds a candidate
+string confirm it against the artifact. A property may hold a serial number,
+an owner string, or GPS data as a string, so a reviewer who cares about that
+should still glance at string-valued properties before sharing the artifact.
+There is deliberately no `--print-values`.
 
 ## Reading a Firmware Container
 

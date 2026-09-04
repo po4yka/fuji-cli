@@ -13,9 +13,16 @@ pub const FUJI_BATTERY_INFO2_PROPERTY: u16 = DevicePropCode::FujiBatteryInfo2 as
 
 /// One advertised device property as the camera answers for it right now.
 ///
-/// The survey deliberately records shapes and digests, never payload bytes:
-/// a property may hold a serial number, an owner string, or GPS data, and the
-/// artifact is meant to be shareable without a privacy review.
+/// The survey never records payload bytes. Every value that was read
+/// contributes its length and its [`classify_value_shape`] shape; a
+/// SHA-256 digest is recorded only when that shape is `"string"`, because a
+/// digest of a 2- or 4-byte scalar is inverted by exhaustive search in
+/// seconds (an 8-byte scalar is dropped for uniformity), while a PTP
+/// string's value space is too large to exhaust. A
+/// property may still hold a serial number, an owner string, or GPS data as
+/// a string, so a reviewer who cares about that should glance at
+/// string-valued properties before sharing the artifact; scalar-valued
+/// properties need no such review.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct PropertyObservation {
     pub code: u16,
@@ -26,6 +33,8 @@ pub struct PropertyObservation {
     pub value_available: bool,
     pub value_length: Option<usize>,
     pub value_shape: Option<&'static str>,
+    /// SHA-256 digest of the raw value, present only when `value_shape` is
+    /// `"string"`. See [`survey_value_digest`] for the policy.
     pub value_sha256: Option<String>,
     /// PTP datatype code the FML preflight profiles pin for this property on
     /// the connected model and firmware, when they declare it at all.
@@ -46,7 +55,8 @@ pub struct PropertySurveySummary {
 
 /// The complete read-only PTP surface of the connected camera in one artifact:
 /// what `GetDeviceInfo` advertises, what each advertised property answers, and
-/// how that compares with the FML declarations for this exact model.
+/// how that compares with the FML declarations for this exact model. See
+/// [`PropertyObservation`] for exactly what each property records.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct PropertySurvey {
     pub schema_version: u8,
@@ -82,6 +92,22 @@ pub(crate) fn classify_value_shape(bytes: &[u8]) -> &'static str {
         }
         _ => "bytes",
     }
+}
+
+/// The digest a survey should record for a raw property value, if any.
+///
+/// A SHA-256 digest of a 2- or 4-byte scalar is inverted by exhaustive
+/// search in seconds, so the survey must never record one for a scalar
+/// shape (an 8-byte scalar is dropped for uniformity): it would make the
+/// artifact as sensitive as the raw bytes it is meant to replace. A PTP
+/// string's value space is too large to exhaust, so
+/// its digest stays one-way; recording it lets someone who already holds a
+/// candidate string confirm it without recovering strings that were never
+/// guessed. `"empty"` and `"bytes"` payloads get no digest either: an empty
+/// payload has nothing to hide, and `"bytes"` is reserved for a value this
+/// project's shapes do not otherwise classify.
+pub(crate) fn survey_value_digest(bytes: &[u8]) -> Option<String> {
+    (classify_value_shape(bytes) == "string").then(|| crate::features::backup::sha256_hex(bytes))
 }
 
 /// Whether a raw payload has the wire shape of `data_type`. Used to check a
@@ -206,7 +232,9 @@ fn encode_hex(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{RawProfileDiscovery, classify_value_shape, value_matches_data_type};
+    use super::{
+        RawProfileDiscovery, classify_value_shape, survey_value_digest, value_matches_data_type,
+    };
 
     #[test]
     fn value_shapes_cover_the_scalars_and_ptp_strings_this_project_reads() {
@@ -224,6 +252,25 @@ mod tests {
         // The X-T5 audit saw exactly these bytes from D20B.
         assert_eq!(classify_value_shape(&[0x01, 0, 0]), "string");
         assert_eq!(classify_value_shape(&[0x01, 0, 5]), "bytes");
+    }
+
+    #[test]
+    fn survey_value_digest_is_none_for_a_scalar_payload() {
+        // A uint16 payload is invertible by exhaustive search, so the survey
+        // must not record a digest for it.
+        assert_eq!(survey_value_digest(&[6, 0]), None);
+    }
+
+    #[test]
+    fn survey_value_digest_is_some_for_a_string_payload() {
+        // A three-unit PTP string: length byte, two characters, terminator.
+        let digest = survey_value_digest(&[0x03, b'6', 0, b'5', 0, 0, 0]);
+        assert_eq!(digest.as_deref().map(str::len), Some(64));
+    }
+
+    #[test]
+    fn survey_value_digest_is_none_for_an_empty_payload() {
+        assert_eq!(survey_value_digest(&[]), None);
     }
 
     #[test]
