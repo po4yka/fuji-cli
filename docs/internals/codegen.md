@@ -29,6 +29,12 @@ per option. The dispatch is in `options/mod.rs`:
 | `float`   | `raw` / `scale` | `options/float/scaled.rs`   |
 | `string`  | `raw`           | `options/string/mod.rs`     |
 
+Alongside the option blocks, `options/mod.rs` emits `prop_codes`: one
+`pub const <OPTION_ID>: u16` for every option that declares a `prop_code`.
+Runtime code reads a property through the constant its option owns, so a PTP
+property code is written down once, in `fml/option.cue`, and never repeated in
+Rust.
+
 ### Repr Resolution
 
 Numeric and enum wire types are always `i16` or `u16` (Fuji's convention).

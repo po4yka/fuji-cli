@@ -1,6 +1,15 @@
 use serde::Serialize;
 
+use crate::ptp::DevicePropCode;
+
 const MAX_RAW_PROFILE_DISCOVERY_BYTES: usize = 1024 * 1024;
+
+/// The RAW conversion profile property this discovery captures.
+const RAW_PROFILE_PROPERTY: u16 = DevicePropCode::FujiRawConversionProfile as u16;
+
+/// Battery property code, re-exported for the development tools so the
+/// unpublished adapter never repeats a code the library already owns.
+pub const FUJI_BATTERY_INFO2_PROPERTY: u16 = DevicePropCode::FujiBatteryInfo2 as u16;
 
 /// One advertised device property as the camera answers for it right now.
 ///
@@ -148,7 +157,7 @@ impl RawProfileDiscovery {
             firmware,
             usb_mode,
             camera_state: "unknown",
-            property_code: 0xD185,
+            property_code: RAW_PROFILE_PROPERTY,
             descriptor_available: descriptor.is_some(),
             descriptor_length: descriptor.map(<[u8]>::len),
             descriptor_sha256: descriptor.map(crate::features::backup::sha256_hex),

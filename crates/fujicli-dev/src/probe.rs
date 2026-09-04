@@ -36,11 +36,11 @@ use crate::{
     usb::{self, Location},
 };
 
-/// The PTP property selector this probe experiments on. Sourced from
-/// `fml/option.cue`'s `custom_setting` option (`prop_code: 0xD18C`); this is
-/// the exact selector `docs/contributors/reversing.md` and `docs/users/`
-/// already document as under investigation, not an invented code.
-const SIMULATION_NAMESPACE_PROPERTY: u16 = 0xD18C;
+/// The PTP property selector this probe experiments on. Taken from
+/// `fml/option.cue`'s `custom_setting` option, so it is the exact selector
+/// `docs/contributors/reversing.md` and `docs/users/` already document as
+/// under investigation, and cannot drift from the schema.
+const SIMULATION_NAMESPACE_PROPERTY: u16 = fujicli::generated::options::prop_codes::CUSTOM_SETTING;
 
 /// Fixed acknowledgement string required by
 /// `docs/contributors/reversing.md`'s guard sequence, step 5. Naming the

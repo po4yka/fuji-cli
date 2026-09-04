@@ -474,21 +474,17 @@ impl Camera {
     pub fn reverse_raw_profile_discovery(
         &mut self,
     ) -> anyhow::Result<crate::reverse::RawProfileDiscovery> {
-        const USB_MODE_PROPERTY: u16 = 0xD16E;
-        const RAW_PROFILE_PROPERTY: u16 = 0xD185;
+        use crate::generated::options::prop_codes::USB_MODE;
+        use ptp::DevicePropCode::FujiRawConversionProfile as RAW_PROFILE;
 
         let info = self.ptp.get_info()?;
-        let descriptor = self.ptp.get_prop_desc_raw(RAW_PROFILE_PROPERTY).ok();
-        let payload = self.ptp.get_prop_raw(RAW_PROFILE_PROPERTY)?;
-        let usb_mode = self
-            .ptp
-            .get_prop::<u16>(USB_MODE_PROPERTY)
-            .ok()
-            .map(u32::from);
+        let descriptor = self.ptp.get_prop_desc_raw(RAW_PROFILE).ok();
+        let payload = self.ptp.get_prop_raw(RAW_PROFILE)?;
+        let usb_mode = self.ptp.get_prop::<u16>(USB_MODE).ok().map(u32::from);
         let descriptor_summary = descriptor
             .as_deref()
             .and_then(|raw| ptp::DevicePropDesc::decode(raw).ok())
-            .filter(|parsed| parsed.property_code == RAW_PROFILE_PROPERTY)
+            .filter(|parsed| parsed.property_code == u16::from(RAW_PROFILE))
             .map(|parsed| {
                 (
                     parsed.data_type.name().to_owned(),
@@ -520,14 +516,10 @@ impl Camera {
     #[doc(hidden)]
     #[cfg(feature = "reverse-tools")]
     pub fn reverse_property_survey(&mut self) -> anyhow::Result<crate::reverse::PropertySurvey> {
-        const USB_MODE_PROPERTY: u16 = 0xD16E;
+        use crate::generated::options::prop_codes::USB_MODE;
 
         let info = self.ptp.get_info()?;
-        let usb_mode = self
-            .ptp
-            .get_prop::<u16>(USB_MODE_PROPERTY)
-            .ok()
-            .map(u32::from);
+        let usb_mode = self.ptp.get_prop::<u16>(USB_MODE).ok().map(u32::from);
         let declared = declared_property_data_types(&info.manufacturer, &info.model);
         let mut summary = crate::reverse::PropertySurveySummary {
             advertised: info.device_properties_supported.len(),

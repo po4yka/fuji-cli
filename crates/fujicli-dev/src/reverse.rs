@@ -1,15 +1,16 @@
 use anyhow::{Context, anyhow};
 use clap::Subcommand;
-use fujicli::{Camera, generated::cli::SIMULATION_PROP_CODES, reverse::PropertySurvey};
+use fujicli::{
+    Camera,
+    generated::{cli::SIMULATION_PROP_CODES, options::prop_codes},
+    reverse::{FUJI_BATTERY_INFO2_PROPERTY, PropertySurvey},
+};
 use log::debug;
 
 use crate::{
     output::NewOutput,
     usb::{self, Location},
 };
-
-const USB_MODE_PROPERTY: u16 = 0xD16E;
-const FUJI_BATTERY_INFO2_PROPERTY: u16 = 0xD36B;
 
 #[derive(Debug, Subcommand)]
 pub enum DiscoverCommand {
@@ -136,7 +137,7 @@ fn info(location: Location, print_values: bool) -> anyhow::Result<()> {
     let mut probes = ProbeSummary::default();
     let result = camera.reverse_device_info();
     probes.observe(&result);
-    probe_property(&mut camera, &mut probes, USB_MODE_PROPERTY, print_values);
+    probe_property(&mut camera, &mut probes, prop_codes::USB_MODE, print_values);
     probe_property(
         &mut camera,
         &mut probes,

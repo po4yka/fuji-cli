@@ -18,13 +18,14 @@ use crate::{
             CameraPreflightProfile, CameraPreflightProfileStatus, CameraPreflightProperty,
             CameraPreflightStaticDescriptor, CameraPreflightStaticForm,
         },
-        options::CustomSetting,
+        options::{CustomSetting, prop_codes},
         renders::RenderBase,
         simulations::SimulationBase,
     },
     policy::{ModelBindingKind, PhysicalUsbIdentity, SerialFingerprint},
     ptp::{
-        DevicePropDataType, DevicePropDesc, DevicePropForm, DevicePropValue, Ptp, codec::PtpString,
+        DevicePropCode, DevicePropDataType, DevicePropDesc, DevicePropForm, DevicePropValue, Ptp,
+        codec::PtpString,
     },
 };
 
@@ -561,7 +562,7 @@ pub(crate) fn run<'camera, Operation: OperationMarker>(
     let (profile, capability_profile) =
         decide_profile_and_device_info(definition, &info, Operation::KIND)?;
 
-    let usb_mode = u32::from(camera.ptp.get_prop::<u16>(0xD16E_u16)?);
+    let usb_mode = u32::from(camera.ptp.get_prop::<u16>(prop_codes::USB_MODE)?);
     let battery_percent = read_battery_percent(&mut camera.ptp)?;
     let serial_sha256 = decide_mode_battery_and_binding(
         profile,
@@ -748,7 +749,9 @@ fn validate_device_info(
 }
 
 fn read_battery_percent(ptp: &mut Ptp) -> anyhow::Result<u8> {
-    let battery = ptp.get_prop::<PtpString>(0xD36B_u16)?.into_inner();
+    let battery = ptp
+        .get_prop::<PtpString>(DevicePropCode::FujiBatteryInfo2)?
+        .into_inner();
     let value = battery
         .split(',')
         .next()
