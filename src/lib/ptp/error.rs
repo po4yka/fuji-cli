@@ -51,3 +51,52 @@ impl From<io::Error> for Error {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Error;
+
+    #[test]
+    fn known_response_code_prints_debug_name_and_lowercase_hex() {
+        assert_eq!(Error::Response(0x2001).to_string(), "Ok (0x2001)");
+        assert_eq!(Error::Response(0x2019).to_string(), "DeviceBusy (0x2019)");
+    }
+
+    #[test]
+    fn unknown_response_code_prints_unknown() {
+        assert_eq!(Error::Response(0xffff).to_string(), "Unknown (0xffff)");
+    }
+
+    #[test]
+    fn usb_error_display_keeps_the_source_text() {
+        // The tail belongs to rusb, so only the prefix is pinned here.
+        let rendered = Error::from(rusb::Error::Access).to_string();
+        assert!(rendered.starts_with("USB error: "), "got: {rendered}");
+    }
+
+    #[test]
+    fn io_error_display_keeps_the_source_text() {
+        let rendered = Error::Io(std::io::Error::other("boom")).to_string();
+        assert!(rendered.starts_with("IO error: "), "got: {rendered}");
+        // Malformed passes its message through unchanged.
+        assert_eq!(
+            Error::Malformed("bad shape".to_owned()).to_string(),
+            "bad shape"
+        );
+    }
+
+    #[test]
+    fn unexpected_eof_maps_to_malformed_end_of_message() {
+        let error = Error::from(std::io::Error::from(std::io::ErrorKind::UnexpectedEof));
+        assert!(
+            matches!(&error, Error::Malformed(message) if message == "Unexpected end of message"),
+            "got: {error:?}"
+        );
+    }
+
+    #[test]
+    fn other_io_kinds_stay_io_variant() {
+        let error = Error::from(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+        assert!(matches!(error, Error::Io(_)));
+    }
+}
