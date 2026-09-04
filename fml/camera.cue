@@ -49,8 +49,8 @@ _static_setting_form: {
 			#FujifilmVendorID:                 0x04cb
 			#DefaultCameraUSBChunkSizeCeiling: 1024 * 1024
 
-			vendor_id:          uint16 | *#FujifilmVendorID
-			product_id:         uint16
+			vendor_id:  uint16 | *#FujifilmVendorID
+			product_id: uint16
 			// The runtime's bulk read window is capped at 16 MiB
 			// (MAX_PTP_BULK_READ_CHUNK_BYTES in src/lib/ptp/mod.rs); a larger
 			// ceiling could never be reached and would only retry promotion.
