@@ -19,6 +19,10 @@ The current `main` branch is unreleased. A release exists only when an annotated
 
 - The repository landing page and GitHub community entry points now distinguish
   implemented behavior, authorized camera mutations, and physical-device proof.
+- The simulation slot adapter now selects the custom-setting slot once per
+  adapter scope instead of before and after every property, cutting a
+  24-setting profile read from 25 selector writes to 1 while still verifying
+  the selector after every property access.
 
 ### Fixed
 

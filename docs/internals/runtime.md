@@ -112,13 +112,14 @@ escalates that error's state to unknown and attaches the restore error.
 
 The temporary-selector scope (`with_temporary_simulation_selector`) is itself
 a critical region. `simulation list`, `get`, and `export` write the `0xD18C`
-slot selector before every property read, so the scope holds a
-`CriticalRegionGuard` from the selector snapshot through the restore and its
-verification, then honours any recorded interrupt. Regions nest through a
-depth counter. Selector writes under a `SimulationAccess` permit do not set
-`camera_write_sent`: the scope restores and verifies them, so an interrupt
-honoured after it exits 130, not 3. A forced quit inside the scope still
-reports the unknown-state exit status, because the restore did not run.
+slot selector once for the scope, before its first property read, so the
+scope holds a `CriticalRegionGuard` from the selector snapshot through the
+restore and its verification, then honours any recorded interrupt. Regions
+nest through a depth counter. Selector writes under a `SimulationAccess`
+permit do not set `camera_write_sent`: the scope restores and verifies them,
+so an interrupt honoured after it exits 130, not 3. A forced quit inside the
+scope still reports the unknown-state exit status, because the restore did
+not run.
 
 ## Top-Level Dispatch
 
@@ -331,10 +332,11 @@ list`.
 The PTP-talking interface: `custom_settings_slots`, `get_simulation`,
 `get_simulations`, `update_simulation`, `set_simulation`. Reads are classified
 as `ReadWithTemporaryMutation`: codegen snapshots the raw custom-setting
-selector, selects and verifies the requested slot around every property read,
-then restores and verifies the exact raw snapshot. The batch API used by
+selector, selects and verifies the requested slot once for the read, then
+restores and verifies the exact raw snapshot. The batch API used by
 `simulation list` performs one outer snapshot/restore around the complete slot
-sequence and returns no partial list on failure.
+sequence, selecting each slot once as it is read in turn, and returns no
+partial list on failure.
 
 Risk classification is separate from emulation availability. The production
 CLI still rejects emulation for these reads because validated mutation
@@ -348,10 +350,20 @@ dependency-safe property order and typed per-property read/write dispatch. The
 executor writes only changed `Some` properties and journals a property only
 after its framed PTP response succeeds.
 
-A selected-slot I/O adapter reselects and verifies the target custom-setting
-slot before and after every profile property read or write, including apply
-verification and reverse rollback. If a confirmed property write is followed
-by selector drift, that write remains journaled but the outcome is permanently
+A selected-slot I/O adapter selects and verifies the target custom-setting
+slot once, on its first profile property access, then trusts that selection
+for the rest of its scope; a selector write is a persistent camera state
+change, so repeating it before every property would multiply PTP transactions
+for no benefit once the slot is confirmed selected. Every property read or
+write, including apply verification and reverse rollback, is still followed
+by a selector verification, so drift is always caught after the fact even
+though it is no longer forced back before each access. The moment that
+verification observes drift, the adapter stops trusting the selection: the
+very next property access forces a fresh select-and-verify instead of
+carrying the stale selection forward, which keeps the reverse-rollback path
+from writing to whatever slot the camera happens to be on after drift has
+already been seen once. If a confirmed property write is followed by
+selector drift, that write remains journaled but the outcome is permanently
 `CameraStateUnknown`; recovery cannot be overstated as verified. Selector and
 property access are still separate PTP commands, so proving that an
 away-and-back UI switch cannot occur wholly between them requires physical

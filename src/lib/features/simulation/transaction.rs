@@ -532,11 +532,22 @@ fn restore_selector<IO: SimulationSelectorIo>(
 pub(crate) struct SelectedSimulationIo<'io, IO, Selector> {
     io: &'io mut IO,
     selector: Selector,
+    /// Set once the target slot has been selected and verified for this
+    /// adapter scope. Every property access after that point trusts the
+    /// selection instead of rewriting it, and only re-verifies it. Cleared
+    /// again the moment `verify_selector` observes drift, so the very next
+    /// access reselects instead of trusting a selection already known to be
+    /// stale.
+    selected: bool,
 }
 
 impl<'io, IO, Selector> SelectedSimulationIo<'io, IO, Selector> {
     pub(crate) fn new(io: &'io mut IO, selector: Selector) -> Self {
-        Self { io, selector }
+        Self {
+            io,
+            selector,
+            selected: false,
+        }
     }
 }
 
@@ -553,7 +564,7 @@ where
     where
         T: for<'a> BinRead<Args<'a> = ()>,
     {
-        self.select_and_verify()?;
+        self.ensure_selected()?;
         let value = self.io.get_prop(code)?;
         self.verify_selector()?;
         Ok(value)
@@ -563,7 +574,7 @@ where
     where
         T: for<'a> BinWrite<Args<'a> = ()>,
     {
-        self.select_and_verify()
+        self.ensure_selected()
             .map_err(SimulationPropertyWriteError::unconfirmed)?;
         self.io.set_prop(code, value)?;
         self.verify_selector()
@@ -593,18 +604,41 @@ where
     IO: SimulationPropertyIo,
     Selector: crate::ptp::option::SimulationSetting + PartialEq,
 {
-    fn select_and_verify(&mut self) -> anyhow::Result<()> {
+    /// Selects and verifies the target slot exactly once for this adapter's
+    /// scope, on its first property access. Later accesses in the same scope
+    /// trust that selection and skip straight to `verify_selector`; the
+    /// selector write is a persistent camera state change, so repeating it
+    /// on every access would multiply PTP transactions for no benefit once
+    /// the slot is confirmed selected.
+    fn ensure_selected(&mut self) -> anyhow::Result<()> {
+        if self.selected {
+            return Ok(());
+        }
         Selector::try_push_to(&self.selector, self.io)
             .map_err(SimulationPropertyWriteError::into_cause)?;
-        self.verify_selector()
+        self.verify_selector()?;
+        self.selected = true;
+        Ok(())
     }
 
+    /// Re-reads the active slot and compares it against the target. Any
+    /// failure here (a transport error or an observed mismatch) clears
+    /// `selected` so the next access forces a fresh select-and-verify
+    /// instead of trusting a selection that is now known to be stale; this
+    /// matters most for the rollback path, which must never write to the
+    /// wrong slot after drift has already been detected once.
     fn verify_selector(&mut self) -> anyhow::Result<()> {
-        let selected = Selector::try_pull_from(self.io)?;
-        anyhow::ensure!(
-            selected == self.selector,
-            "selected simulation slot changed during profile property access"
-        );
+        let selected = match Selector::try_pull_from(self.io) {
+            Ok(selected) => selected,
+            Err(err) => {
+                self.selected = false;
+                return Err(err);
+            }
+        };
+        if selected != self.selector {
+            self.selected = false;
+            anyhow::bail!("selected simulation slot changed during profile property access");
+        }
         Ok(())
     }
 }
@@ -1583,7 +1617,7 @@ mod tests {
     }
 
     #[test]
-    fn selected_io_reselects_the_target_before_every_profile_access() {
+    fn selected_io_selects_the_target_once_per_scope_and_verifies_every_access() {
         let profile = TestProfile {
             first: Some(1),
             second: Some(2),
@@ -1595,10 +1629,24 @@ mod tests {
             let mut selected = SelectedSimulationIo::new(&mut io, TestSelector(7));
             selected.set_prop(0xd001, &3_u16).unwrap();
             let _: u16 = selected.get_prop(0xd002).unwrap();
+            let _: u16 = selected.get_prop(0xd003).unwrap();
         }
 
-        assert_eq!(io.writes, [0xd000, 0xd001, 0xd000]);
-        assert_eq!(io.reads, [0xd000, 0xd000, 0xd000, 0xd002, 0xd000]);
+        assert_eq!(
+            io.writes
+                .iter()
+                .filter(|property| **property == 0xd000)
+                .count(),
+            1,
+            "reading and writing a multi-property profile through one adapter \
+             scope must select the target slot exactly once"
+        );
+        assert_eq!(io.writes, [0xd000, 0xd001]);
+        assert_eq!(
+            io.reads,
+            [0xd000, 0xd000, 0xd002, 0xd000, 0xd003, 0xd000],
+            "every access is still verified against the selector after the fact"
+        );
     }
 
     #[test]
@@ -1982,6 +2030,86 @@ mod tests {
                 .cause()
                 .to_string()
                 .contains("selected simulation slot changed")
+        );
+    }
+
+    #[test]
+    fn selector_drift_after_a_confirmed_write_maps_to_uncertain_binding() {
+        let profile = TestProfile {
+            first: Some(1),
+            second: Some(2),
+            third: Some(5),
+        };
+        let mut raw_io = FakeSimulationPropertyIo::with_profile(&profile)
+            .switch_selector_before_write(0xd001, 2);
+        let mut selected = SelectedSimulationIo::new(&mut raw_io, TestSelector(1));
+
+        let error = selected
+            .set_prop(0xd001, &3_u16)
+            .expect_err("selector drift after the write must be reported");
+
+        assert!(
+            error.property_confirmed,
+            "the framed PTP write itself accepted the value"
+        );
+        assert!(
+            error.binding_uncertain,
+            "drift discovered after a confirmed write is uncertain binding, not unconfirmed"
+        );
+        assert_eq!(
+            raw_io
+                .writes
+                .iter()
+                .filter(|property| **property == 0xd000)
+                .count(),
+            1,
+            "the adapter must not select again just to detect the drift"
+        );
+    }
+
+    #[test]
+    fn selector_drift_after_a_write_forces_reselect_before_the_next_access() {
+        let profile = TestProfile {
+            first: Some(1),
+            second: Some(2),
+            third: Some(5),
+        };
+        let mut raw_io = FakeSimulationPropertyIo::with_profile(&profile)
+            .switch_selector_before_write(0xd001, 2);
+
+        {
+            let mut selected = SelectedSimulationIo::new(&mut raw_io, TestSelector(1));
+
+            selected
+                .set_prop(0xd001, &3_u16)
+                .expect_err("selector drift after the write must be reported");
+
+            let value: u16 = selected.get_prop(0xd002).expect(
+                "a detected drift must force a fresh select before the next access, \
+                 not carry the stale selection forward",
+            );
+            assert_eq!(
+                value, 2,
+                "the reselected slot must still read back the expected property value"
+            );
+        }
+
+        assert_eq!(
+            raw_io
+                .writes
+                .iter()
+                .filter(|property| **property == 0xd000)
+                .count(),
+            2,
+            "detected drift must force exactly one fresh select before the next access, \
+             on top of the initial select"
+        );
+        assert_eq!(
+            codec::decode_exact::<u16>(raw_io.properties.get(&0xd000).expect("selector"))
+                .expect("selector value decodes"),
+            1,
+            "the reselect must restore the target slot rather than trust the drifted one, \
+             which is what protects the rollback path from writing to the wrong slot"
         );
     }
 }
