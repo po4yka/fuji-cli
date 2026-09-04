@@ -352,7 +352,12 @@ way the read helper already does, so a completed write that raced a Ctrl-C
 reports `CameraStateUnknown` with an `Interrupted` cause instead of leaking
 the pending interrupt into whatever critical region runs next, unless an
 outer region (the CLI's `critical_camera_write`, for example) is still
-active, in which case it stays pending for that region's owner.
+active, in which case it stays pending for that region's owner. A selector
+restore that fails after a successful write still carries that write's
+confirmed-write journal into the resulting `SimulationTransactionError`
+(reachable through `selector_restore_error` and printed by `Display`), so the
+operator can see exactly which settings landed on the camera even though the
+custom-setting slot ended up unknown afterwards.
 
 Risk classification is separate from emulation availability. The production
 CLI still rejects emulation for these reads because validated mutation

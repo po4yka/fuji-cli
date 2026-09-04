@@ -23,6 +23,10 @@ The current `main` branch is unreleased. A release exists only when an annotated
   adapter scope instead of before and after every property, cutting a
   24-setting profile read from 25 selector writes to 1 while still verifying
   the selector after every property access.
+- A simulation write whose confirmed changes are lost to a failed rollback or
+  a failed selector restore now reports the settings that were actually
+  written (and, on the rollback path, the settings rolled back), instead of
+  leaving the operator to guess what changed on the camera.
 
 ### Fixed
 

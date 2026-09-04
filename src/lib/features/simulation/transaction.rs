@@ -5,21 +5,36 @@ use binrw::{BinRead, BinWrite};
 
 use crate::features::outcome::{OutcomeStatus, StateChangeAudit};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SimulationTransactionSuccess {
-    AppliedAndVerified,
+    /// The candidate profile differed from the camera's current state, and
+    /// every changed property was written and confirmed. Carries the
+    /// confirmed-write journal, in write order, so a caller can report
+    /// exactly what changed on the camera.
+    AppliedAndVerified(Vec<SimulationWriteReceipt>),
+    /// The candidate profile already matched the camera, so nothing was
+    /// written.
     NoChangeVerified,
 }
 
 impl SimulationTransactionSuccess {
-    pub const fn audit(self) -> StateChangeAudit {
+    pub const fn audit(&self) -> StateChangeAudit {
         match self {
-            Self::AppliedAndVerified => {
+            Self::AppliedAndVerified(_) => {
                 StateChangeAudit::ptp_accepted().with_semantic(OutcomeStatus::Succeeded)
             }
             Self::NoChangeVerified => {
                 StateChangeAudit::not_attempted().with_semantic(OutcomeStatus::Succeeded)
             }
+        }
+    }
+
+    /// The settings actually written to the camera, in write order. Empty
+    /// for [`Self::NoChangeVerified`].
+    pub fn journal(&self) -> &[SimulationWriteReceipt] {
+        match self {
+            Self::AppliedAndVerified(journal) => journal,
+            Self::NoChangeVerified => &[],
         }
     }
 }
@@ -119,16 +134,38 @@ impl SimulationTransactionError {
 
     /// The write succeeded, but the selector restore afterwards did not: the
     /// recipe is applied and verified, yet the camera is on an unknown slot.
-    fn selector_restore_failed(cause: anyhow::Error) -> Self {
+    /// Carries the confirmed-write journal forward from `success` so the
+    /// operator can see exactly what was written before the slot went
+    /// unknown, and records `restore` through
+    /// [`Self::selector_restore_error`], the same as a failed write's
+    /// restore failure does.
+    fn selector_restore_failed(
+        success: SimulationTransactionSuccess,
+        restore: anyhow::Error,
+    ) -> Self {
+        let (journal, cause) = match success {
+            SimulationTransactionSuccess::AppliedAndVerified(journal) => {
+                let cause = anyhow::anyhow!(
+                    "the simulation profile write was applied and verified, but the camera's custom-setting slot selector could not be restored afterwards; the camera is now on an unknown slot"
+                );
+                (journal, cause)
+            }
+            SimulationTransactionSuccess::NoChangeVerified => {
+                let cause = anyhow::anyhow!(
+                    "the simulation profile required no changes and none were written, but the camera's custom-setting slot selector could not be restored afterwards; the camera is now on an unknown slot"
+                );
+                (Vec::new(), cause)
+            }
+        };
         Self {
             state: SimulationFailureState::CameraStateUnknown,
             phase: SimulationTransactionPhase::SelectorRestore,
             cause,
             rollback_error: None,
             rollback_readback_error: None,
-            journal: Vec::new(),
+            journal,
             rollback_journal: Vec::new(),
-            selector_restore_error: None,
+            selector_restore_error: Some(restore),
         }
     }
 
@@ -177,6 +214,8 @@ impl fmt::Display for SimulationTransactionError {
             "simulation transaction failed during {:?}: {:?}: {}",
             self.phase, self.state, self.cause
         )?;
+        write_receipts(formatter, "confirmed writes", &self.journal)?;
+        write_receipts(formatter, "rolled back writes", &self.rollback_journal)?;
         if let Some(rollback_error) = &self.rollback_error {
             write!(formatter, "; rollback error: {rollback_error}")?;
         }
@@ -197,6 +236,28 @@ impl std::error::Error for SimulationTransactionError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         Some(self.cause.as_ref())
     }
+}
+
+/// Renders a non-empty receipt list as `"; <label>: <setting>(0x<code>) ..."`,
+/// in write order, so `Display` can show the operator which settings were
+/// actually written. Writes nothing for an empty list.
+fn write_receipts(
+    formatter: &mut fmt::Formatter<'_>,
+    label: &str,
+    receipts: &[SimulationWriteReceipt],
+) -> fmt::Result {
+    if receipts.is_empty() {
+        return Ok(());
+    }
+    write!(formatter, "; {label}:")?;
+    for receipt in receipts {
+        write!(
+            formatter,
+            " {}(0x{:04x})",
+            receipt.setting, receipt.property_code
+        )?;
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -470,20 +531,22 @@ where
 /// interrupt critical region. A failed restore after a successful write, or
 /// after a failed one, is reported as an unknown camera state carrying the
 /// restore error; an unhealthy session skips the restore entirely.
-pub(crate) fn with_restored_simulation_selector<T>(
+pub(crate) fn with_restored_simulation_selector(
     io: &mut AuthorizedSimulationIo<'_>,
     property_code: u16,
-    operation: impl FnOnce(&mut AuthorizedSimulationIo<'_>) -> Result<T, SimulationTransactionError>,
-) -> Result<T, SimulationTransactionError> {
+    operation: impl FnOnce(
+        &mut AuthorizedSimulationIo<'_>,
+    ) -> Result<SimulationTransactionSuccess, SimulationTransactionError>,
+) -> Result<SimulationTransactionSuccess, SimulationTransactionError> {
     with_restored_simulation_selector_io(&INTERRUPTS, io, property_code, operation)
 }
 
-fn with_restored_simulation_selector_io<IO, T>(
+fn with_restored_simulation_selector_io<IO>(
     interrupts: &InterruptLatch,
     io: &mut IO,
     property_code: u16,
-    operation: impl FnOnce(&mut IO) -> Result<T, SimulationTransactionError>,
-) -> Result<T, SimulationTransactionError>
+    operation: impl FnOnce(&mut IO) -> Result<SimulationTransactionSuccess, SimulationTransactionError>,
+) -> Result<SimulationTransactionSuccess, SimulationTransactionError>
 where
     IO: SimulationSelectorIo,
 {
@@ -505,14 +568,14 @@ where
 
 /// Runs `operation` with the slot selector restored afterwards, folding the
 /// snapshot, validation, write, and restore into a single
-/// `Result<T, SimulationTransactionError>` so the critical region above has
-/// exactly one exit point, the same way `restore_selector_after` does for the
-/// read path.
-fn restore_selector_around_write<IO, T>(
+/// `Result<SimulationTransactionSuccess, SimulationTransactionError>` so the
+/// critical region above has exactly one exit point, the same way
+/// `restore_selector_after` does for the read path.
+fn restore_selector_around_write<IO>(
     io: &mut IO,
     property_code: u16,
-    operation: impl FnOnce(&mut IO) -> Result<T, SimulationTransactionError>,
-) -> Result<T, SimulationTransactionError>
+    operation: impl FnOnce(&mut IO) -> Result<SimulationTransactionSuccess, SimulationTransactionError>,
+) -> Result<SimulationTransactionSuccess, SimulationTransactionError>
 where
     IO: SimulationSelectorIo,
 {
@@ -537,7 +600,9 @@ where
     };
     match (result, restore) {
         (result, Ok(())) => result,
-        (Ok(_), Err(restore)) => Err(SimulationTransactionError::selector_restore_failed(restore)),
+        (Ok(success), Err(restore)) => Err(SimulationTransactionError::selector_restore_failed(
+            success, restore,
+        )),
         (Err(error), Err(restore)) => Err(error.with_selector_restore_failure(restore)),
     }
 }
@@ -831,7 +896,9 @@ where
 
     match P::pull_from(io) {
         Ok(readback) if readback == *candidate => {
-            Ok(SimulationTransactionSuccess::AppliedAndVerified)
+            Ok(SimulationTransactionSuccess::AppliedAndVerified(
+                journal.iter().copied().map(Into::into).collect(),
+            ))
         }
         Ok(_) => Err(recover_original(
             io,
@@ -1036,7 +1103,7 @@ mod tests {
         SelectedSimulationIo, SimulationFailureState, SimulationPropertyChange,
         SimulationPropertyIo, SimulationPropertyWriteError, SimulationSelectorIo,
         SimulationTransactionError, SimulationTransactionPhase, SimulationTransactionProfile,
-        SimulationTransactionSuccess, TemporarySimulationSelectorError,
+        SimulationTransactionSuccess, SimulationWriteReceipt, TemporarySimulationSelectorError,
         TemporarySimulationSelectorState, execute_simulation_transaction,
         with_restored_simulation_selector_io, with_temporary_simulation_selector_io,
     };
@@ -1354,7 +1421,10 @@ mod tests {
 
         assert_eq!(
             result.unwrap(),
-            SimulationTransactionSuccess::AppliedAndVerified
+            SimulationTransactionSuccess::AppliedAndVerified(vec![SimulationWriteReceipt {
+                setting: "second",
+                property_code: 0xd002,
+            }])
         );
         assert_eq!(io.writes, [0xd002]);
     }
@@ -1404,8 +1474,42 @@ mod tests {
             super::SimulationFailureState::RollbackVerified
         );
         assert_eq!(io.writes, [0xd001, 0xd002, 0xd002, 0xd001]);
-        assert_eq!(error.journal().len(), 2);
-        assert_eq!(error.rollback_journal().len(), 2);
+        assert_eq!(
+            error.journal(),
+            [
+                SimulationWriteReceipt {
+                    setting: "first",
+                    property_code: 0xd001,
+                },
+                SimulationWriteReceipt {
+                    setting: "second",
+                    property_code: 0xd002,
+                },
+            ]
+        );
+        assert_eq!(
+            error.rollback_journal(),
+            [
+                SimulationWriteReceipt {
+                    setting: "second",
+                    property_code: 0xd002,
+                },
+                SimulationWriteReceipt {
+                    setting: "first",
+                    property_code: 0xd001,
+                },
+            ]
+        );
+
+        let diagnostic = error.to_string();
+        assert!(
+            diagnostic.contains("confirmed writes: first(0xd001) second(0xd002)"),
+            "the confirmed writes must name the settings, in write order: {diagnostic}"
+        );
+        assert!(
+            diagnostic.contains("rolled back writes: second(0xd002) first(0xd001)"),
+            "the rolled-back writes must name the settings, in rollback order: {diagnostic}"
+        );
     }
 
     #[test]
@@ -1820,11 +1924,22 @@ mod tests {
             selected.set_prop(0xd001, &7_u16).map_err(|error| {
                 SimulationTransactionError::preparation(true, error.into_cause())
             })?;
-            Ok(SimulationTransactionSuccess::AppliedAndVerified)
+            Ok(SimulationTransactionSuccess::AppliedAndVerified(vec![
+                SimulationWriteReceipt {
+                    setting: "first",
+                    property_code: 0xd001,
+                },
+            ]))
         })
         .expect("the write must succeed and the selector must be restored");
 
-        assert_eq!(outcome, SimulationTransactionSuccess::AppliedAndVerified);
+        assert_eq!(
+            outcome,
+            SimulationTransactionSuccess::AppliedAndVerified(vec![SimulationWriteReceipt {
+                setting: "first",
+                property_code: 0xd001,
+            }])
+        );
         assert!(!latch.is_deferring());
         assert_eq!(
             latch.take_interrupts(),
@@ -1858,7 +1973,12 @@ mod tests {
             // critical region still defers it.
             latch.mark_camera_write_sent();
             latch.record_interrupt();
-            Ok(SimulationTransactionSuccess::AppliedAndVerified)
+            Ok(SimulationTransactionSuccess::AppliedAndVerified(vec![
+                SimulationWriteReceipt {
+                    setting: "first",
+                    property_code: 0xd001,
+                },
+            ]))
         })
         .expect_err("a pending interrupt must turn the completed write into an error");
 
@@ -1914,11 +2034,22 @@ mod tests {
                 SimulationTransactionError::preparation(true, error.into_cause())
             })?;
             latch.record_interrupt();
-            Ok(SimulationTransactionSuccess::AppliedAndVerified)
+            Ok(SimulationTransactionSuccess::AppliedAndVerified(vec![
+                SimulationWriteReceipt {
+                    setting: "first",
+                    property_code: 0xd001,
+                },
+            ]))
         })
         .expect("an active outer critical region must defer the interrupt to its owner");
 
-        assert_eq!(outcome, SimulationTransactionSuccess::AppliedAndVerified);
+        assert_eq!(
+            outcome,
+            SimulationTransactionSuccess::AppliedAndVerified(vec![SimulationWriteReceipt {
+                setting: "first",
+                property_code: 0xd001,
+            }])
+        );
         assert!(
             latch.is_deferring(),
             "the outer region must still be active once the inner scope returns"
@@ -1945,11 +2076,8 @@ mod tests {
         let original = codec::encode(&9_u16).expect("test selector");
         io.properties.insert(0xd000, original.clone());
 
-        let error = with_restored_simulation_selector_io::<_, ()>(
-            &InterruptLatch::new(),
-            &mut io,
-            0xd000,
-            |io| {
+        let error =
+            with_restored_simulation_selector_io(&InterruptLatch::new(), &mut io, 0xd000, |io| {
                 let mut selected = SelectedSimulationIo::new(io, TestSelector(3));
                 let _: u16 = selected
                     .get_prop(0xd001)
@@ -1958,9 +2086,8 @@ mod tests {
                     true,
                     anyhow::anyhow!("rejected before any write"),
                 ))
-            },
-        )
-        .expect_err("the operation failure must be returned");
+            })
+            .expect_err("the operation failure must be returned");
 
         assert_eq!(error.state(), SimulationFailureState::RejectedWithoutChange);
         assert!(error.selector_restore_error().is_none());
@@ -1982,17 +2109,45 @@ mod tests {
         io.properties
             .insert(0xd000, codec::encode(&9_u16).expect("test selector"));
 
+        let journal = vec![SimulationWriteReceipt {
+            setting: "first",
+            property_code: 0xd001,
+        }];
+
         let error =
             with_restored_simulation_selector_io(&InterruptLatch::new(), &mut io, 0xd000, |_io| {
-                Ok(SimulationTransactionSuccess::AppliedAndVerified)
+                Ok(SimulationTransactionSuccess::AppliedAndVerified(
+                    journal.clone(),
+                ))
             })
             .expect_err("a write whose selector cannot be restored must not report success");
 
         assert_eq!(error.state(), SimulationFailureState::CameraStateUnknown);
         assert_eq!(error.phase(), SimulationTransactionPhase::SelectorRestore);
+        // The write already succeeded and was verified: the journal must
+        // survive into the error so the operator can see what was written
+        // even though the camera ended up on an unknown slot afterwards.
+        assert_eq!(error.journal(), journal.as_slice());
+        assert!(error.rollback_journal().is_empty());
         assert!(
-            error.to_string().contains("SelectorRestore"),
-            "the phase must name the selector restore: {error}"
+            error.selector_restore_error().is_some(),
+            "a failed restore after a successful write must be reachable through \
+             selector_restore_error(), the same as a failed write's restore failure"
+        );
+        let diagnostic = error.to_string();
+        assert!(
+            diagnostic.contains("SelectorRestore"),
+            "the phase must name the selector restore: {diagnostic}"
+        );
+        assert!(
+            diagnostic.contains("applied and verified"),
+            "the cause must state the write was applied and verified before the slot went \
+             unknown: {diagnostic}"
+        );
+        assert!(
+            diagnostic.contains("confirmed writes: first(0xd001)"),
+            "the confirmed-write journal must name the setting and property code that were \
+             written: {diagnostic}"
         );
     }
 
@@ -2013,13 +2168,11 @@ mod tests {
         io.properties
             .insert(0xd000, codec::encode(&9_u16).expect("test selector"));
 
-        let error = with_restored_simulation_selector_io::<_, ()>(
-            &InterruptLatch::new(),
-            &mut io,
-            0xd000,
-            |_io| panic!("operation must not run when the snapshot fails validation"),
-        )
-        .expect_err("an out-of-form snapshot must be refused before any write");
+        let error =
+            with_restored_simulation_selector_io(&InterruptLatch::new(), &mut io, 0xd000, |_io| {
+                panic!("operation must not run when the snapshot fails validation")
+            })
+            .expect_err("an out-of-form snapshot must be refused before any write");
 
         assert_eq!(error.phase(), SimulationTransactionPhase::Preparation);
         assert_eq!(error.state(), SimulationFailureState::RejectedWithoutChange);
