@@ -209,7 +209,7 @@ fn format(tokens: TokenStream) -> anyhow::Result<String> {
 mod tests {
     use std::{
         fs,
-        path::PathBuf,
+        path::{Path, PathBuf},
         sync::atomic::{AtomicUsize, Ordering},
     };
 
@@ -266,6 +266,98 @@ mod tests {
 
         let published = fs::read_to_string(sentinel).unwrap_or_else(|_| "<missing>".to_owned());
         assert_eq!(published, "known good");
+
+        Ok(())
+    }
+
+    fn listed_files(out_dir: &Path) -> anyhow::Result<Vec<String>> {
+        Ok(fs::read_dir(out_dir)?
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect())
+    }
+
+    #[test]
+    fn generate_twice_from_live_fml_is_byte_identical() -> anyhow::Result<()> {
+        use anyhow::{Context, ensure};
+        use std::process::Command;
+
+        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .context("resolving the repository root two levels above crates/codegen")?;
+        ensure!(
+            repo_root.join("fml").is_dir(),
+            "the fml schema directory must sit at the repository root"
+        );
+
+        let export = match Command::new("cue")
+            .args(["export", "./fml", "--out", "json"])
+            .current_dir(&repo_root)
+            .output()
+        {
+            Ok(output) => output,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                eprintln!(
+                    "skipping generate_twice_from_live_fml_is_byte_identical: `cue` is not on PATH"
+                );
+                return Ok(());
+            }
+            Err(error) => {
+                return Err(error).context("spawning `cue export ./fml --out json`");
+            }
+        };
+        ensure!(
+            export.status.success(),
+            "`cue export ./fml --out json` failed:\n{}",
+            String::from_utf8_lossy(&export.stderr),
+        );
+        let json = str::from_utf8(&export.stdout).context("the CUE export must be UTF-8 JSON")?;
+
+        let first = TempDir::new()?;
+        let second = TempDir::new()?;
+        let out_first = first.0.join("generated");
+        let out_second = second.0.join("generated");
+
+        generate(json, &out_first)?;
+        generate(json, &out_second)?;
+
+        // The published file set is exactly what `generate_into` writes, so an
+        // extra or missing file is itself a determinism failure.
+        const EXPECTED_FILES: [&str; 6] = [
+            "cameras.rs",
+            "cli.rs",
+            "mod.rs",
+            "options.rs",
+            "renders.rs",
+            "simulations.rs",
+        ];
+        let mut first_files = listed_files(&out_first)?;
+        let mut second_files = listed_files(&out_second)?;
+        first_files.sort();
+        second_files.sort();
+        assert_eq!(
+            first_files, second_files,
+            "both runs must produce the same file set"
+        );
+        assert_eq!(
+            first_files, EXPECTED_FILES,
+            "generation must publish exactly the six expected modules"
+        );
+
+        for name in &first_files {
+            let left = fs::read(out_first.join(name))?;
+            let right = fs::read(out_second.join(name))?;
+            assert_eq!(
+                left,
+                right,
+                "generated file {name} is not byte-identical between the two runs \
+                 ({} vs {} bytes)",
+                left.len(),
+                right.len(),
+            );
+        }
 
         Ok(())
     }
