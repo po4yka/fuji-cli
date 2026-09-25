@@ -14,7 +14,7 @@ pub const FUJI_BATTERY_INFO2_PROPERTY: u16 = DevicePropCode::FujiBatteryInfo2 as
 /// One advertised device property as the camera answers for it right now.
 ///
 /// The survey never records payload bytes. Every value that was read
-/// contributes its length and its [`classify_value_shape`] shape; a
+/// contributes its length and its `classify_value_shape` shape; a
 /// SHA-256 digest is recorded only when that shape is `"string"`, because a
 /// digest of a 2- or 4-byte scalar is inverted by exhaustive search in
 /// seconds (an 8-byte scalar is dropped for uniformity), while a PTP
@@ -34,7 +34,7 @@ pub struct PropertyObservation {
     pub value_length: Option<usize>,
     pub value_shape: Option<&'static str>,
     /// SHA-256 digest of the raw value, present only when `value_shape` is
-    /// `"string"`. See [`survey_value_digest`] for the policy.
+    /// `"string"`. See `survey_value_digest` for the policy.
     pub value_sha256: Option<String>,
     /// PTP datatype code the FML preflight profiles pin for this property on
     /// the connected model and firmware, when they declare it at all.
