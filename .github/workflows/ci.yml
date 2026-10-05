@@ -66,6 +66,9 @@ jobs:
       - name: Check all targets
         run: cargo check --locked --all-features --all-targets --workspace --jobs 4
 
+      - name: Check locked fuzz targets
+        run: cargo check --locked --manifest-path fuzz/Cargo.toml --all-targets --jobs 4
+
       - name: Verify formatting
         run: cargo fmt --all --check
 

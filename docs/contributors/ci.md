@@ -7,7 +7,8 @@ updates to those pins.
 ## Required checks
 
 - `CI / Rust` installs checksum-verified CUE 0.16.1 and the native USB
-  dependencies, then generates and checks the code, verifies formatting and
+  dependencies, then generates and checks the code and the separately locked
+  fuzz targets, verifies formatting and
   spelling, runs Clippy and rustdoc with warnings denied, tests the Rust code
   and deterministic release packager, builds the workspace, and checks unused
   dependencies with Cargo Shear using the committed Rust toolchain and lockfile.
@@ -36,6 +37,7 @@ then run:
 
 ```sh
 cargo check --locked --all-features --all-targets --workspace --jobs 4
+cargo check --locked --manifest-path fuzz/Cargo.toml --all-targets --jobs 4
 cargo fmt --all --check
 typos . .github
 cargo clippy --locked --all-features --all-targets --workspace --jobs 4 -- -D warnings
