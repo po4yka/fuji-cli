@@ -197,6 +197,9 @@ jobs:
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+        env:
+          # Keep the installer upgrade from enabling OpenTelemetry export.
+          OTEL_SDK_DISABLED: "true"
 
       - name: Build fujicli package
         run: nix build .#packages.x86_64-linux.fujicli --no-update-lock-file --print-build-logs
