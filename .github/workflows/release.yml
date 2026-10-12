@@ -77,7 +77,10 @@ jobs:
           printf '%s\n' "$RUNNER_TEMP/cue-bin" >>"$GITHUB_PATH"
 
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+        uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+        env:
+          # Keep the installer upgrade from enabling OpenTelemetry export.
+          OTEL_SDK_DISABLED: "true"
 
       - name: Match Cargo, Nix, and tag versions
         env:
