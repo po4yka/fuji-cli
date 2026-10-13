@@ -49,13 +49,13 @@ jobs:
           for page in assets/share/man/man1/*.1; do mandoc -T utf8 "$page" >/dev/null; done
 
       - name: Install cargo-shear
-        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
+        uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
         with:
           tool: cargo-shear@1.11.2
           fallback: none
 
       - name: Install typos
-        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
+        uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
         with:
           tool: typos@1.50.0
           fallback: none
@@ -157,7 +157,7 @@ jobs:
           printf '%s\n' "$RUNNER_TEMP/cue-bin" >>"$GITHUB_PATH"
 
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
+        uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
         with:
           tool: cargo-llvm-cov@0.9.0
           fallback: none
